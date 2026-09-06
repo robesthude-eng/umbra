@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -20,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -37,9 +40,20 @@ import com.umbra.app.di.AppContainer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatsScreen(container: AppContainer) {
+fun ChatsScreen(
+    container: AppContainer,
+    onOpenChat: (String) -> Unit,
+    onLogout: () -> Unit,
+) {
     val vm: ChatsViewModel = viewModel(factory = ChatsViewModel.Factory(container))
     val chats by vm.chats.collectAsState(initial = emptyList())
+    val newChat by vm.newChatState.collectAsState()
+
+    // Обработка результата диалога «новый чат».
+    (newChat as? ChatsViewModel.NewChatState.Started)?.let { started ->
+        vm.hideNewChatDialog()
+        onOpenChat(started.chat.id)
+    }
 
     Scaffold(
         topBar = {
@@ -47,21 +61,40 @@ fun ChatsScreen(container: AppContainer) {
                 title = { Text("Чаты") },
                 actions = {
                     Icon(Icons.Filled.Lock, contentDescription = "E2E", tint = MaterialTheme.colorScheme.secondary)
-                    IconButton(onClick = { vm.logout() }) { Text("⏻") }
+                    IconButton(onClick = onLogout) { Text("⏻") }
                 },
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { vm.startNewChat() }) {
-                Icon(Icons.Filled.Send, contentDescription = "Новый чат")
+            FloatingActionButton(onClick = { vm.showNewChatDialog() }) {
+                Icon(Icons.Filled.Add, contentDescription = "Новый чат")
             }
         },
     ) { padding ->
-        LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-            items(chats) { chat ->
-                ChatRow(chat, onClick = { vm.openChat(chat) })
+        if (chats.isEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("Пока нет чатов", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Нажмите «+», чтобы начать диалог по имени пользователя.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
+                items(chats, key = { it.id }) { chat ->
+                    ChatRow(chat, onClick = { onOpenChat(chat.id) })
+                }
             }
         }
+    }
+
+    // Диалог нового чата.
+    if (newChat != ChatsViewModel.NewChatState.Hidden) {
+        NewChatDialog(vm)
     }
 }
 
@@ -86,4 +119,40 @@ private fun ChatRow(chat: ChatEntity, onClick: () -> Unit) {
             )
         }
     }
+}
+
+@Composable
+private fun NewChatDialog(vm: ChatsViewModel) {
+    var username by remember { mutableStateOf("") }
+    val loading = vm.newChatState.collectAsState().value == ChatsViewModel.NewChatState.Loading
+    val error = (vm.newChatState.collectAsState().value as? ChatsViewModel.NewChatState.Error)?.message
+
+    AlertDialog(
+        onDismissRequest = { vm.hideNewChatDialog() },
+        title = { Text("Новый диалог") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("Имя пользователя") },
+                    singleLine = true,
+                )
+                if (loading) {
+                    CircularProgressIndicator(modifier = Modifier.padding(top = 12.dp))
+                }
+                error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { vm.startChat(username) }, enabled = !loading) {
+                Text("Начать")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { vm.hideNewChatDialog() }) { Text("Отмена") }
+        },
+    )
 }

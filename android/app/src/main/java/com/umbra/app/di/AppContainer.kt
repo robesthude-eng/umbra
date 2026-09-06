@@ -25,5 +25,5 @@ class AppContainer(context: Context) {
 
     val webSocketClient = WebSocketClient(baseUrl)
 
-    val chatRepository = ChatRepository(api, database, cryptoManager)
+    val chatRepository = ChatRepository(api, database, cryptoManager, webSocketClient)
 }

@@ -42,6 +42,9 @@ data class VerifyRequest(val username: String, val challenge: String, val signat
 data class VerifyResponse(val token: String, val expires_at: String)
 
 @Serializable
+data class AccountResponse(val id: String, val username: String, val created_at: String = "")
+
+@Serializable
 data class PreKeyBundle(
     val id: String,
     val username: String,
@@ -117,6 +120,9 @@ interface UmbraApi {
 
     @POST("/v1/auth/verify")
     suspend fun verify(@Body body: VerifyRequest): VerifyResponse
+
+    @GET("/v1/account")
+    suspend fun account(@Header("Authorization") auth: String): AccountResponse
 
     @GET("/v1/users/{username}/prekeys")
     suspend fun prekeys(@Path("username") username: String): PreKeyBundle

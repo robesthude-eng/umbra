@@ -23,7 +23,10 @@ class AuthViewModel(private val container: AppContainer) : ViewModel() {
     fun onUsernameChange(v: String) = _state.update { it.copy(username = v.trim()) }
 
     fun register() = run("register") {
-        container.chatRepository.register(_state.value.username)
+        val name = _state.value.username
+        container.chatRepository.register(name)
+        // Регистрация не выдаёт токен — сразу входим для получения сессии.
+        container.chatRepository.login(name)
     }
 
     fun login() = run("login") {

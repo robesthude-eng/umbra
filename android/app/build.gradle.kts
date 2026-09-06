@@ -26,6 +26,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Для разработки подписываем release тем же debug-ключом (устанавливается).
+            // Для публикации в Play Store замените на собственный keystore.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

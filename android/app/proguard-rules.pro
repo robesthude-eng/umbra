@@ -2,6 +2,9 @@
 -keep class org.signal.libsignal.** { *; }
 -keep class org.whispersystems.** { *; }
 
+# Tink (зависимость libsignal) ссылается на аннотации errorprone, отсутствующие в рантайме.
+-dontwarn com.google.errorprone.annotations.**
+
 # kotlinx.serialization — сохраняем сериализаторы.
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.AnnotationsKt

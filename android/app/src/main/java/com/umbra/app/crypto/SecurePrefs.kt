@@ -8,7 +8,6 @@ import androidx.security.crypto.MasterKey
 import org.signal.libsignal.protocol.ecc.Curve
 import org.signal.libsignal.protocol.ecc.ECKeyPair
 import org.signal.libsignal.protocol.ecc.ECPrivateKey
-import org.signal.libsignal.protocol.ecc.ECPublicKey
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.spec.PKCS8EncodedKeySpec
@@ -60,7 +59,7 @@ class SecurePrefs(context: Context) {
     fun xIdentity(): ECKeyPair {
         val priv = fromB64(prefs.getString("x_identity_priv", null) ?: throw IllegalStateException("x25519 не сгенерирован"))
         val privateKey: ECPrivateKey = Curve.decodePrivatePoint(priv)
-        return ECKeyPair(privateKey.publicKey, privateKey)
+        return ECKeyPair(privateKey.publicKey(), privateKey)
     }
 
     // signed pre-key (временный, для текущей сессии регистрации)
@@ -79,7 +78,3 @@ class SecurePrefs(context: Context) {
     private fun b64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
     private fun fromB64(s: String): ByteArray = Base64.decode(s, Base64.NO_WRAP)
 }
-
-/** Заглушка для типов ECPublicKey/ECPrivateKey (используются через libsignal). */
-@Suppress("unused")
-private val unusedEcpub: ECPublicKey? = null

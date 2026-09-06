@@ -28,7 +28,6 @@ data class MessageEntity(
     val ciphertext: String, // base64
     val createdAt: String,
     val expiresAt: String?,
-    val decryptedBody: String?, // кэш расшифрованного текста в памяти (опционально)
 )
 
 @Entity(tableName = "chats")

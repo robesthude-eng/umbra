@@ -4,16 +4,15 @@ import android.content.Context
 import android.util.Base64
 import com.umbra.app.data.api.PreKeyBundle
 import com.umbra.app.data.api.RegisterRequest
+import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.SessionCipher
 import org.signal.libsignal.protocol.SignalProtocolAddress
 import org.signal.libsignal.protocol.ecc.Curve
 import org.signal.libsignal.protocol.ecc.ECKeyPair
-import org.signal.libsignal.protocol.message.CiphertextMessage
 import org.signal.libsignal.protocol.message.PreKeySignalMessage
 import org.signal.libsignal.protocol.message.SignalMessage
-import org.signal.libsignal.protocol.state.SignedPreKeyRecord
 import org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -38,8 +37,7 @@ class CryptoManager(context: Context) {
 
     /** Signal Protocol store (X3DH + Double Ratchet) для текущего пользователя. */
     private val signalStore: InMemorySignalProtocolStore by lazy {
-        val identity = identityKeyPair()
-        InMemorySignalProtocolStore(identity, REGISTRATION_ID)
+        InMemorySignalProtocolStore(identityKeyPair(), REGISTRATION_ID)
     }
 
     /**
@@ -60,7 +58,7 @@ class CryptoManager(context: Context) {
     /** Identity-пара X25519 (для Signal Protocol). */
     private fun identityKeyPair(): IdentityKeyPair {
         val pair = securePrefs.xIdentity()
-        return IdentityKeyPair(pair.publicKey, pair.privateKey)
+        return IdentityKeyPair(IdentityKey(pair.publicKey), pair.privateKey)
     }
 
     /**
@@ -114,16 +112,14 @@ class CryptoManager(context: Context) {
     fun establishSession(recipientUserId: String, bundle: PreKeyBundle) {
         val address = SignalProtocolAddress(recipientUserId, DEVICE_ID)
         val preKeyBundle = org.signal.libsignal.protocol.state.PreKeyBundle(
-            REGISTRATION_ID,
-            DEVICE_ID,
-            preKeyId = 1,
-            preKeyPublic = Curve.decodePoint(fromB64(bundle.identity_x25519), 0),
-            signedPreKeyId = 1,
-            signedPreKeyPublic = Curve.decodePoint(fromB64(bundle.signed_prekey), 0),
-            signedPreKeySignature = fromB64(bundle.signed_prekey_signature),
-            identityKey = org.signal.libsignal.protocol.IdentityKey(
-                Curve.decodePoint(fromB64(bundle.identity_x25519), 0)
-            ),
+            REGISTRATION_ID,                                    // registrationId
+            DEVICE_ID,                                          // deviceId
+            1,                                                  // preKeyId
+            Curve.decodePoint(fromB64(bundle.identity_x25519), 0), // preKeyPublic
+            1,                                                  // signedPreKeyId
+            Curve.decodePoint(fromB64(bundle.signed_prekey), 0),   // signedPreKeyPublic
+            fromB64(bundle.signed_prekey_signature),            // signedPreKeySignature
+            IdentityKey(Curve.decodePoint(fromB64(bundle.identity_x25519), 0)), // identityKey
         )
         SessionBuilder(signalStore, address).process(preKeyBundle)
     }
@@ -135,7 +131,7 @@ class CryptoManager(context: Context) {
     fun encrypt(recipientUserId: String, plaintext: String): String {
         val address = SignalProtocolAddress(recipientUserId, DEVICE_ID)
         val cipher = SessionCipher(signalStore, address)
-        val message: CiphertextMessage = cipher.encrypt(plaintext.toByteArray(Charsets.UTF_8))
+        val message = cipher.encrypt(plaintext.toByteArray(Charsets.UTF_8))
         return b64(message.serialize())
     }
 
@@ -144,12 +140,11 @@ class CryptoManager(context: Context) {
         val address = SignalProtocolAddress(senderUserId, DEVICE_ID)
         val cipher = SessionCipher(signalStore, address)
         val bytes = fromB64(ciphertextBase64)
-        val message: CiphertextMessage = try {
-            PreKeySignalMessage(bytes)
+        val plaintext: ByteArray = try {
+            cipher.decrypt(PreKeySignalMessage(bytes))
         } catch (_: Exception) {
-            SignalMessage(bytes)
+            cipher.decrypt(SignalMessage(bytes))
         }
-        val plaintext = cipher.decrypt(message)
         return String(plaintext, Charsets.UTF_8)
     }
 
@@ -171,7 +166,3 @@ class CryptoManager(context: Context) {
         const val ONE_TIME_PREKEY_COUNT = 100
     }
 }
-
-/** Заглушка подписи SignedPreKeyRecord — сигнатура уточняется под версию libsignal. */
-fun signedPreKeyRecord(id: Int, pair: ECKeyPair, signature: ByteArray): SignedPreKeyRecord =
-    SignedPreKeyRecord(id, System.currentTimeMillis(), pair, signature)

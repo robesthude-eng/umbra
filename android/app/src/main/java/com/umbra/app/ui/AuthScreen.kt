@@ -12,10 +12,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -23,23 +21,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.umbra.app.di.AppContainer
 
-/** Корневой экран: авторизация → список чатов. */
-@Composable
-fun UmbraRoot(container: AppContainer) {
-    val repo = container.chatRepository
-    var loggedIn by remember { mutableStateOf(repo.isLoggedIn()) }
-
-    if (loggedIn) {
-        ChatsScreen(container)
-    } else {
-        AuthScreen(container, onAuthed = { loggedIn = true })
-    }
-}
-
 @Composable
 fun AuthScreen(container: AppContainer, onAuthed: () -> Unit) {
     val vm: AuthViewModel = viewModel(factory = AuthViewModel.Factory(container))
-    val state by vm.state
+    val state by vm.state.collectAsState()
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
