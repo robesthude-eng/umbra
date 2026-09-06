@@ -1,0 +1,9 @@
+.git
+.env
+*.pem
+*.key
+bin
+data
+dist
+build
+*.zip

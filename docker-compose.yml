@@ -1,0 +1,40 @@
+# Локальный запуск полного стека: сервер + PostgreSQL.
+services:
+  server:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      LISTEN_ADDR: ":8080"
+      STORE: postgres
+      DATABASE_URL: "postgres://${POSTGRES_USER:-umbra}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-umbra}?sslmode=disable"
+      TOKEN_TTL_SECONDS: "${TOKEN_TTL_SECONDS:-86400}"
+      MAX_MESSAGE_BYTES: "${MAX_MESSAGE_BYTES:-2097152}"
+      BLOB_DIR: /data/blobs
+      MAX_MEDIA_BYTES: "${MAX_MEDIA_BYTES:-52428800}"
+    volumes:
+      - blobdata:/data/blobs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-umbra}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${POSTGRES_DB:-umbra}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  blobdata:
