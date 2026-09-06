@@ -1,0 +1,35 @@
+# systemd-юнит для запуска Umbra напрямую (без Docker).
+# Кладётся в /etc/systemd/system/umbra.service
+[Unit]
+Description=Umbra — приватный мессенджер (сервер)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+# Пользователь, под которым запускается (НЕ root)
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/umbra
+ExecStart=/usr/local/bin/umbra-server
+
+# Переменные окружения — секреты задаются здесь или через EnvironmentFile
+Environment=LISTEN_ADDR=:8080
+Environment=STORE=postgres
+Environment=DATABASE_URL=postgres://umbra:CHANGE_ME@localhost:5432/umbra?sslmode=disable
+Environment=BLOB_DIR=/opt/umbra/data/blobs
+Environment=TOKEN_TTL_SECONDS=86400
+Environment=MAX_MEDIA_BYTES=52428800
+# EnvironmentFile=/opt/umbra/.env   # альтернатива: все секреты из файла
+
+# Перезапуск при сбое
+Restart=on-failure
+RestartSec=5
+
+# Ограничения безопасности
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/umbra/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+# Caddyfile — reverse-proxy с TLS для Umbra
+# Замените ДОМЕН на свой. Caddy сам выпускает и обновляет Let's Encrypt сертификат.
+
+ДОМЕН {
+	encode zstd gzip
+
+	# Проксируем на сервер Umbra (внутренний порт 8080)
+	handle /v1/ws {
+		reverse_proxy 127.0.0.1:8080 {
+			# WebSocket + long-poll: держим соединение открытым
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Безопасные заголовки
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+}
