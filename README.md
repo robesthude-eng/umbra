@@ -26,6 +26,8 @@
 - Файловое BlobStore с атомарной записью, проверкой id и лимитом 50 MiB по умолчанию.
 - In-memory хранилище (разработка/тесты) и PostgreSQL (продакшн).
 - Метаданные медиа: id, владелец, MIME, размер ciphertext и время создания; ключи и имена файлов не сохраняются.
+- Групповые чаты и каналы с ролями (owner/admin/member), рассылка зашифрованных сообщений участникам через WebSocket.
+- Контакты и эфемерный индикатор «печатает» (TTL 5 с, не логируется).
 
 ## Стек
 
@@ -115,6 +117,17 @@ docker compose up -d --build server
 | GET | `/v1/messages?since=...` | получить сообщения |
 | POST | `/v1/media` | загрузить ciphertext, multipart-поле `file` (Bearer токен) |
 | GET | `/v1/media/{id}` | скачать сырые байты ciphertext (Bearer токен) |
+| POST | `/v1/groups` | создать группу `{title}` |
+| POST | `/v1/channels` | создать канал `{title}` |
+| GET | `/v1/chats` | список чатов текущего пользователя |
+| POST | `/v1/chats/{id}/members` | добавить участника `{user_id}` (в канал — самоподписка) |
+| DELETE | `/v1/chats/{id}/members/{user_id}` | удалить участника (owner/admin) |
+| GET | `/v1/chats/{id}/members` | список участников |
+| POST | `/v1/chats/{id}/messages` | отправить зашифрованное сообщение в чат |
+| POST | `/v1/contacts` | добавить контакт `{contact_id}` |
+| GET | `/v1/contacts` | список контактов |
+| POST | `/v1/chats/{id}/typing` | отметить «печатает» (эфемерно) |
+| GET | `/v1/chats/{id}/typing` | кто сейчас печатает |
 | GET | `/v1/ws?token=...` | WebSocket для realtime push |
 
 Подробное описание контрактов — в `docs/api.md` (будет добавлено на следующем этапе).
@@ -226,8 +239,8 @@ Bearer-токены и query-параметры в него не записыв�
 
 - [x] Этап 1: регистрация, E2E 1-на-1, доставка (MVP)
 - [x] Этап 2, сервер: передача ciphertext медиа, файловое BlobStore, memory/PostgreSQL метаданные
+- [x] Этап 3, сервер: группы, каналы, контакты, индикатор «печатает»
 - [ ] Медиа на Android-клиенте и backend S3/MinIO
-- [ ] Этап 3: группы и каналы (MLS / Sender Keys)
 - [ ] Этап 4: голосовые и видеозвонки (WebRTC)
 - [ ] Этап 5: секретные чаты, самоуничтожение
 - [ ] Android-клиент (Kotlin + Compose, libsignal)

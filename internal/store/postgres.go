@@ -111,16 +111,26 @@ func (p *PostgresStore) DeleteToken(ctx context.Context, tokenHash string) error
 }
 
 func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error {
+	var recipient, chatID any
+	if m.RecipientID != "" {
+		recipient = m.RecipientID
+	}
+	if m.ChatID != "" {
+		chatID = m.ChatID
+	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO messages (id, sender_id, recipient_id, ciphertext) VALUES ($1,$2,$3,$4)`,
-		m.ID, m.SenderID, m.RecipientID, m.Ciphertext)
+		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext) VALUES ($1,$2,$3,$4,$5)`,
+		m.ID, m.SenderID, recipient, chatID, m.Ciphertext)
 	return mapErr(err)
 }
 
 func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since time.Time) ([]*model.Message, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, sender_id, recipient_id, ciphertext, created_at
-		 FROM messages WHERE recipient_id = $1 AND created_at > $2 ORDER BY created_at ASC`,
+		`SELECT id, sender_id, recipient_id, chat_id, ciphertext, created_at
+		 FROM messages
+		 WHERE created_at > $2
+		   AND (recipient_id = $1 OR chat_id IN (SELECT chat_id FROM chat_members WHERE user_id = $1))
+		 ORDER BY created_at ASC`,
 		userID, since)
 	if err != nil {
 		return nil, mapErr(err)
@@ -130,8 +140,15 @@ func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since t
 	out := make([]*model.Message, 0)
 	for rows.Next() {
 		var m model.Message
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.RecipientID, &m.Ciphertext, &m.CreatedAt); err != nil {
+		var recipient, chatID *string
+		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chatID, &m.Ciphertext, &m.CreatedAt); err != nil {
 			return nil, err
+		}
+		if recipient != nil {
+			m.RecipientID = *recipient
+		}
+		if chatID != nil {
+			m.ChatID = *chatID
 		}
 		out = append(out, &m)
 	}
@@ -158,6 +175,172 @@ func (p *PostgresStore) GetMedia(ctx context.Context, id string) (*model.Media, 
 		return nil, mapErr(err)
 	}
 	return &m, nil
+}
+
+// ---------- чаты ----------
+
+func (p *PostgresStore) CreateChat(ctx context.Context, c *model.Chat) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO chats (id, type, title, created_by) VALUES ($1,$2,$3,$4)`,
+		c.ID, string(c.Type), c.Title, c.CreatedBy); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1,$2,$3)`,
+		c.ID, c.CreatedBy, string(model.RoleOwner)); err != nil {
+		return mapErr(err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *PostgresStore) GetChat(ctx context.Context, chatID string) (*model.Chat, error) {
+	var c model.Chat
+	var typ string
+	err := p.pool.QueryRow(ctx,
+		`SELECT id, type, title, created_by, created_at FROM chats WHERE id = $1`, chatID).
+		Scan(&c.ID, &typ, &c.Title, &c.CreatedBy, &c.CreatedAt)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	c.Type = model.ChatType(typ)
+	return &c, nil
+}
+
+func (p *PostgresStore) AddMember(ctx context.Context, chatID, userID string, role model.MemberRole) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO chat_members (chat_id, user_id, role) VALUES ($1,$2,$3)`,
+		chatID, userID, string(role))
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23503" { // нет чата или пользователя
+			return ErrNotFound
+		}
+	}
+	return mapErr(err)
+}
+
+func (p *PostgresStore) RemoveMember(ctx context.Context, chatID, userID string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var role string
+	err = tx.QueryRow(ctx,
+		`SELECT role FROM chat_members WHERE chat_id = $1 AND user_id = $2`,
+		chatID, userID).Scan(&role)
+	if err != nil {
+		return mapErr(err)
+	}
+	if model.MemberRole(role) == model.RoleOwner {
+		return ErrForbidden
+	}
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2`, chatID, userID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+func (p *PostgresStore) GetMember(ctx context.Context, chatID, userID string) (*model.ChatMember, error) {
+	var m model.ChatMember
+	var role string
+	err := p.pool.QueryRow(ctx,
+		`SELECT chat_id, user_id, role, joined_at FROM chat_members WHERE chat_id = $1 AND user_id = $2`,
+		chatID, userID).Scan(&m.ChatID, &m.UserID, &role, &m.JoinedAt)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	m.Role = model.MemberRole(role)
+	return &m, nil
+}
+
+func (p *PostgresStore) ListMembers(ctx context.Context, chatID string) ([]*model.ChatMember, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT chat_id, user_id, role, joined_at FROM chat_members WHERE chat_id = $1 ORDER BY user_id ASC`,
+		chatID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make([]*model.ChatMember, 0)
+	for rows.Next() {
+		var m model.ChatMember
+		var role string
+		if err := rows.Scan(&m.ChatID, &m.UserID, &role, &m.JoinedAt); err != nil {
+			return nil, err
+		}
+		m.Role = model.MemberRole(role)
+		out = append(out, &m)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresStore) ListChatsForUser(ctx context.Context, userID string) ([]*model.Chat, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT c.id, c.type, c.title, c.created_by, c.created_at
+		 FROM chats c JOIN chat_members m ON c.id = m.chat_id
+		 WHERE m.user_id = $1 ORDER BY c.created_at ASC`, userID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make([]*model.Chat, 0)
+	for rows.Next() {
+		var c model.Chat
+		var typ string
+		if err := rows.Scan(&c.ID, &typ, &c.Title, &c.CreatedBy, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		c.Type = model.ChatType(typ)
+		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
+// ---------- контакты ----------
+
+func (p *PostgresStore) AddContact(ctx context.Context, userID, contactID string) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO contacts (user_id, contact_id) VALUES ($1,$2)
+		 ON CONFLICT (user_id, contact_id) DO NOTHING`, userID, contactID)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // нет пользователя-контакта
+		return ErrNotFound
+	}
+	return mapErr(err)
+}
+
+func (p *PostgresStore) ListContacts(ctx context.Context, userID string) ([]string, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT contact_id FROM contacts WHERE user_id = $1 ORDER BY contact_id ASC`, userID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0)
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			return nil, err
+		}
+		out = append(out, cid)
+	}
+	return out, rows.Err()
 }
 
 func (p *PostgresStore) Close() error { p.pool.Close(); return nil }

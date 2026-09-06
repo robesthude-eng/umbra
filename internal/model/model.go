@@ -20,10 +20,15 @@ type User struct {
 
 // Message — сообщение. Ciphertext — уже зашифрованный на клиенте блоб.
 // Сервер не может его прочитать и не знает тип/размер содержимого.
+//
+// Адресация: для личного сообщения заполнен RecipientID; для группового/канального —
+// заполнен ChatID (RecipientID при этом пуст). Сервер не различает содержимое,
+// только маршрутизирует шифротекст.
 type Message struct {
 	ID          string    `json:"id"`
 	SenderID    string    `json:"sender_id"`
-	RecipientID string    `json:"recipient_id"`
+	RecipientID string    `json:"recipient_id"` // личное сообщение
+	ChatID      string    `json:"chat_id"`      // групповое/канальное сообщение
 	Ciphertext  []byte    `json:"ciphertext"`
 	CreatedAt   time.Time `json:"created_at"`
 }
@@ -35,4 +40,45 @@ type Media struct {
 	ContentType string    `json:"content_type"`
 	Size        int64     `json:"size"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+// ChatType — тип чата: группа или канал.
+type ChatType string
+
+const (
+	ChatGroup   ChatType = "group"
+	ChatChannel ChatType = "channel"
+)
+
+// MemberRole — роль участника чата.
+type MemberRole string
+
+const (
+	RoleOwner  MemberRole = "owner"
+	RoleAdmin  MemberRole = "admin"
+	RoleMember MemberRole = "member"
+)
+
+// Chat — групповой чат или канал. Содержимое сообщений сервер не видит.
+type Chat struct {
+	ID        string    `json:"id"`
+	Type      ChatType  `json:"type"`
+	Title     string    `json:"title"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ChatMember — участник чата.
+type ChatMember struct {
+	ChatID   string     `json:"chat_id"`
+	UserID   string     `json:"user_id"`
+	Role     MemberRole `json:"role"`
+	JoinedAt time.Time  `json:"joined_at"`
+}
+
+// Contact — контакт пользователя (односторонняя ссылка на другого пользователя).
+type Contact struct {
+	UserID    string    `json:"user_id"`
+	ContactID string    `json:"contact_id"`
+	CreatedAt time.Time `json:"created_at"`
 }

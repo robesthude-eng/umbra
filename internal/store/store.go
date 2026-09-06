@@ -15,6 +15,8 @@ var (
 	ErrNotFound = errors.New("store: not found")
 	// ErrConflict — конфликт (например, username уже занят).
 	ErrConflict = errors.New("store: conflict")
+	// ErrForbidden — операция запрещена правилами (например, удаление владельца).
+	ErrForbidden = errors.New("store: forbidden")
 )
 
 // Store — единый интерфейс персистентности.
@@ -33,11 +35,26 @@ type Store interface {
 
 	// Сообщения (хранится только ciphertext).
 	SaveMessage(ctx context.Context, m *model.Message) error
+	// ListMessages возвращает личные (recipient_id = userID) и групповые
+	// (userID — участник чата) сообщения, созданные после since.
 	ListMessages(ctx context.Context, userID string, since time.Time) ([]*model.Message, error)
 
 	// Метаданные медиа; зашифрованные байты хранятся отдельно в BlobStore.
 	SaveMedia(ctx context.Context, m *model.Media) error
 	GetMedia(ctx context.Context, id string) (*model.Media, error)
+
+	// Чаты, участники и роли.
+	CreateChat(ctx context.Context, c *model.Chat) error // создаёт чат и добавляет создателя как owner
+	GetChat(ctx context.Context, chatID string) (*model.Chat, error)
+	AddMember(ctx context.Context, chatID, userID string, role model.MemberRole) error
+	RemoveMember(ctx context.Context, chatID, userID string) error
+	GetMember(ctx context.Context, chatID, userID string) (*model.ChatMember, error)
+	ListMembers(ctx context.Context, chatID string) ([]*model.ChatMember, error)
+	ListChatsForUser(ctx context.Context, userID string) ([]*model.Chat, error)
+
+	// Контакты.
+	AddContact(ctx context.Context, userID, contactID string) error
+	ListContacts(ctx context.Context, userID string) ([]string, error)
 
 	Close() error
 }

@@ -10,6 +10,7 @@ import (
 	"umbra/server/internal/blobstore"
 	"umbra/server/internal/config"
 	"umbra/server/internal/crypto"
+	"umbra/server/internal/model"
 	"umbra/server/internal/store"
 	"umbra/server/internal/ws"
 )
@@ -25,6 +26,7 @@ type Server struct {
 	blobs      blobstore.BlobStore
 	hub        *ws.Hub
 	challenges *challengeStore
+	typing     *typingStore
 }
 
 // NewServer сохраняет прежний контракт; без BlobStore медиа возвращает 503.
@@ -34,7 +36,7 @@ func NewServer(cfg *config.Config, st store.Store, hub *ws.Hub) *http.Server {
 
 // NewServerWithBlobStore включает медиа; вызывающий код закрывает оба хранилища.
 func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore) *http.Server {
-	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore()}
+	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore()}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -46,6 +48,18 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 	mux.Handle("GET /v1/messages", s.requireAuth(http.HandlerFunc(s.handleListMessages)))
 	mux.Handle("POST /v1/media", s.requireAuth(http.HandlerFunc(s.handleUploadMedia)))
 	mux.Handle("GET /v1/media/{id}", s.requireAuth(http.HandlerFunc(s.handleDownloadMedia)))
+	// Группы, каналы, контакты.
+	mux.Handle("POST /v1/groups", s.requireAuth(s.handleCreateChat(model.ChatGroup)))
+	mux.Handle("POST /v1/channels", s.requireAuth(s.handleCreateChat(model.ChatChannel)))
+	mux.Handle("GET /v1/chats", s.requireAuth(http.HandlerFunc(s.handleListChats)))
+	mux.Handle("POST /v1/chats/{id}/members", s.requireAuth(http.HandlerFunc(s.handleAddMember)))
+	mux.Handle("DELETE /v1/chats/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleRemoveMember)))
+	mux.Handle("GET /v1/chats/{id}/members", s.requireAuth(http.HandlerFunc(s.handleListMembers)))
+	mux.Handle("POST /v1/chats/{id}/messages", s.requireAuth(http.HandlerFunc(s.handleSendChatMessage)))
+	mux.Handle("POST /v1/contacts", s.requireAuth(http.HandlerFunc(s.handleAddContact)))
+	mux.Handle("GET /v1/contacts", s.requireAuth(http.HandlerFunc(s.handleListContacts)))
+	mux.Handle("POST /v1/chats/{id}/typing", s.requireAuth(http.HandlerFunc(s.handleMarkTyping)))
+	mux.Handle("GET /v1/chats/{id}/typing", s.requireAuth(http.HandlerFunc(s.handleListTyping)))
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
 	return &http.Server{

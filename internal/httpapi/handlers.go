@@ -66,6 +66,7 @@ type messageResponse struct {
 	ID          string `json:"id"`
 	SenderID    string `json:"sender_id"`
 	RecipientID string `json:"recipient_id"`
+	ChatID      string `json:"chat_id"`
 	Ciphertext  string `json:"ciphertext"`
 	CreatedAt   string `json:"created_at"`
 }
@@ -334,6 +335,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			ID:          m.ID,
 			SenderID:    m.SenderID,
 			RecipientID: m.RecipientID,
+			ChatID:      m.ChatID,
 			Ciphertext:  b64e(m.Ciphertext),
 			CreatedAt:   m.CreatedAt.Format(time.RFC3339),
 		})

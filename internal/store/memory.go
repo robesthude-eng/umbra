@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -11,13 +12,16 @@ import (
 // MemoryStore — in-memory реализация Store для разработки и тестов.
 // Не предназначен для продакшна (данные теряются при рестарте).
 type MemoryStore struct {
-	mu       sync.Mutex
-	users    map[string]*model.User // id -> user
-	byName   map[string]string      // username -> id
-	prekeys  map[string][][]byte    // userID -> очередь одноразовых pre-keys
-	tokens   map[string]tokenEntry  // tokenHash -> запись
-	messages []*model.Message
-	media    map[string]*model.Media
+	mu          sync.Mutex
+	users       map[string]*model.User           // id -> user
+	byName      map[string]string                // username -> id
+	prekeys     map[string][][]byte              // userID -> очередь одноразовых pre-keys
+	tokens      map[string]tokenEntry            // tokenHash -> запись
+	messages    []*model.Message                 // все сообщения (личные + групповые)
+	media       map[string]*model.Media          // id -> метаданные
+	chats       map[string]*model.Chat           // chatID -> чат
+	chatMembers map[string]map[string]model.MemberRole // chatID -> (userID -> роль)
+	contacts    map[string]map[string]bool       // userID -> (contactID -> true)
 }
 
 type tokenEntry struct {
@@ -27,11 +31,14 @@ type tokenEntry struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		users:   make(map[string]*model.User),
-		byName:  make(map[string]string),
-		prekeys: make(map[string][][]byte),
-		tokens:  make(map[string]tokenEntry),
-		media:   make(map[string]*model.Media),
+		users:       make(map[string]*model.User),
+		byName:      make(map[string]string),
+		prekeys:     make(map[string][][]byte),
+		tokens:      make(map[string]tokenEntry),
+		media:       make(map[string]*model.Media),
+		chats:       make(map[string]*model.Chat),
+		chatMembers: make(map[string]map[string]model.MemberRole),
+		contacts:    make(map[string]map[string]bool),
 	}
 }
 
@@ -122,11 +129,20 @@ func (m *MemoryStore) ListMessages(_ context.Context, userID string, since time.
 	defer m.mu.Unlock()
 	out := make([]*model.Message, 0)
 	for _, msg := range m.messages {
-		if msg.RecipientID == userID && msg.CreatedAt.After(since) {
+		if !msg.CreatedAt.After(since) {
+			continue
+		}
+		if msg.RecipientID == userID {
+			cp := *msg
+			out = append(out, &cp)
+			continue
+		}
+		if msg.ChatID != "" && m.isMember(msg.ChatID, userID) {
 			cp := *msg
 			out = append(out, &cp)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
 }
 
@@ -155,7 +171,148 @@ func (m *MemoryStore) GetMedia(_ context.Context, id string) (*model.Media, erro
 	return &cp, nil
 }
 
+// ---------- чаты ----------
+
+func (m *MemoryStore) CreateChat(_ context.Context, c *model.Chat) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.chats[c.ID]; ok {
+		return ErrConflict
+	}
+	cp := *c
+	m.chats[c.ID] = &cp
+	m.chatMembers[c.ID] = map[string]model.MemberRole{c.CreatedBy: model.RoleOwner}
+	return nil
+}
+
+func (m *MemoryStore) GetChat(_ context.Context, chatID string) (*model.Chat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.chats[chatID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := *c
+	return &cp, nil
+}
+
+func (m *MemoryStore) AddMember(_ context.Context, chatID, userID string, role model.MemberRole) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	members, ok := m.chatMembers[chatID]
+	if !ok {
+		return ErrNotFound
+	}
+	if _, exists := members[userID]; exists {
+		return ErrConflict
+	}
+	members[userID] = role
+	return nil
+}
+
+func (m *MemoryStore) RemoveMember(_ context.Context, chatID, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	members, ok := m.chatMembers[chatID]
+	if !ok {
+		return ErrNotFound
+	}
+	if members[userID] == model.RoleOwner {
+		return ErrForbidden
+	}
+	if _, exists := members[userID]; !exists {
+		return ErrNotFound
+	}
+	delete(members, userID)
+	return nil
+}
+
+func (m *MemoryStore) GetMember(_ context.Context, chatID, userID string) (*model.ChatMember, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	members, ok := m.chatMembers[chatID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	role, exists := members[userID]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	return &model.ChatMember{ChatID: chatID, UserID: userID, Role: role}, nil
+}
+
+func (m *MemoryStore) ListMembers(_ context.Context, chatID string) ([]*model.ChatMember, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	members, ok := m.chatMembers[chatID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]*model.ChatMember, 0, len(members))
+	for uid, role := range members {
+		out = append(out, &model.ChatMember{ChatID: chatID, UserID: uid, Role: role})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out, nil
+}
+
+func (m *MemoryStore) ListChatsForUser(_ context.Context, userID string) ([]*model.Chat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*model.Chat, 0)
+	for chatID, members := range m.chatMembers {
+		if _, ok := members[userID]; !ok {
+			continue
+		}
+		if c, ok := m.chats[chatID]; ok {
+			cp := *c
+			out = append(out, &cp)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+// ---------- контакты ----------
+
+func (m *MemoryStore) AddContact(_ context.Context, userID, contactID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[contactID]; !ok {
+		return ErrNotFound
+	}
+	set, ok := m.contacts[userID]
+	if !ok {
+		set = make(map[string]bool)
+		m.contacts[userID] = set
+	}
+	set[contactID] = true
+	return nil
+}
+
+func (m *MemoryStore) ListContacts(_ context.Context, userID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	set := m.contacts[userID]
+	out := make([]string, 0, len(set))
+	for cid := range set {
+		out = append(out, cid)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func (m *MemoryStore) Close() error { return nil }
+
+// isMember — вызывается только под m.mu.
+func (m *MemoryStore) isMember(chatID, userID string) bool {
+	members, ok := m.chatMembers[chatID]
+	if !ok {
+		return false
+	}
+	_, ok = members[userID]
+	return ok
+}
 
 func (m *MemoryStore) copyUser(u *model.User) *model.User {
 	if u == nil {
