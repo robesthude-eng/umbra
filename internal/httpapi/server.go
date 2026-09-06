@@ -65,6 +65,9 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 	mux.Handle("POST /v1/calls/{id}/signal", s.requireAuth(http.HandlerFunc(s.handleCallSignal)))
 	mux.Handle("POST /v1/calls/{id}/status", s.requireAuth(http.HandlerFunc(s.handleUpdateCallStatus)))
 	mux.Handle("GET /v1/calls", s.requireAuth(http.HandlerFunc(s.handleListCalls)))
+	// Аккаунт: получение и полное удаление («сжечь»).
+	mux.Handle("GET /v1/account", s.requireAuth(http.HandlerFunc(s.handleGetAccount)))
+	mux.Handle("POST /v1/account/burn", s.requireAuth(http.HandlerFunc(s.handleBurnAccount)))
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
 	return &http.Server{

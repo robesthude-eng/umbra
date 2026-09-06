@@ -129,9 +129,14 @@ func (m *MemoryStore) SaveMessage(_ context.Context, msg *model.Message) error {
 func (m *MemoryStore) ListMessages(_ context.Context, userID string, since time.Time) ([]*model.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now()
 	out := make([]*model.Message, 0)
 	for _, msg := range m.messages {
 		if !msg.CreatedAt.After(since) {
+			continue
+		}
+		// Самоуничтожение: просроченные сообщения не отдаются.
+		if msg.ExpiresAt != nil && !msg.ExpiresAt.After(now) {
 			continue
 		}
 		if msg.RecipientID == userID {
@@ -305,6 +310,73 @@ func (m *MemoryStore) ListContacts(_ context.Context, userID string) ([]string, 
 }
 
 func (m *MemoryStore) Close() error { return nil }
+
+// DeleteUser полностью удаляет пользователя и все связанные данные.
+func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	u, ok := m.users[userID]
+	if !ok {
+		return ErrNotFound
+	}
+	username := u.Username
+
+	delete(m.users, userID)
+	delete(m.byName, username)
+	delete(m.prekeys, userID)
+
+	// токены
+	for h, e := range m.tokens {
+		if e.userID == userID {
+			delete(m.tokens, h)
+		}
+	}
+	// сообщения (личные и групповые, где он участник)
+	kept := m.messages[:0]
+	for _, msg := range m.messages {
+		if msg.SenderID == userID || msg.RecipientID == userID {
+			continue
+		}
+		if msg.ChatID != "" && m.isMember(msg.ChatID, userID) {
+			continue
+		}
+		kept = append(kept, msg)
+	}
+	m.messages = kept
+	// медиа
+	for mid, media := range m.media {
+		if media.OwnerID == userID {
+			delete(m.media, mid)
+		}
+	}
+	// чаты: удаляем членство; чат без owner удаляем
+	for chatID, members := range m.chatMembers {
+		if _, ok := members[userID]; ok {
+			delete(members, userID)
+		}
+		chat := m.chats[chatID]
+		if chat != nil && chat.CreatedBy == userID {
+			delete(m.chats, chatID)
+			delete(m.chatMembers, chatID)
+		}
+	}
+	// контакты (в обе стороны)
+	for uid, set := range m.contacts {
+		if uid == userID {
+			delete(m.contacts, uid)
+			continue
+		}
+		delete(set, userID)
+	}
+	// звонки
+	for cid, call := range m.calls {
+		if call.CallerID == userID || call.CalleeID == userID {
+			delete(m.calls, cid)
+		}
+	}
+	return nil
+}
 
 // ---------- звонки ----------
 

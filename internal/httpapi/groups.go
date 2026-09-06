@@ -40,6 +40,8 @@ type addMemberRequest struct {
 
 type chatMessageRequest struct {
 	Ciphertext string `json:"ciphertext"` // base64
+	// ExpiresIn — секунды до самоуничтожения (секретные сообщения в группе). 0 = без таймера.
+	ExpiresIn int64 `json:"expires_in"`
 }
 
 type contactRequest struct {
@@ -302,6 +304,10 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		Ciphertext: ct,
 		CreatedAt:  time.Now().UTC(),
 	}
+	if req.ExpiresIn > 0 {
+		exp := msg.CreatedAt.Add(time.Duration(req.ExpiresIn) * time.Second)
+		msg.ExpiresAt = &exp
+	}
 	if err := s.store.SaveMessage(r.Context(), msg); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -313,6 +319,7 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		ChatID:     msg.ChatID,
 		Ciphertext: req.Ciphertext,
 		CreatedAt:  msg.CreatedAt.Format(time.RFC3339),
+		ExpiresAt:  formatTime(msg.ExpiresAt),
 	}
 
 	// Рассылка всем участникам (включая отправителя — для multi-device).

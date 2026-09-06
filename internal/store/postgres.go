@@ -119,16 +119,18 @@ func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error
 		chatID = m.ChatID
 	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext) VALUES ($1,$2,$3,$4,$5)`,
-		m.ID, m.SenderID, recipient, chatID, m.Ciphertext)
+		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext, expires_at)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		m.ID, m.SenderID, recipient, chatID, m.Ciphertext, m.ExpiresAt)
 	return mapErr(err)
 }
 
 func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since time.Time) ([]*model.Message, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, sender_id, recipient_id, chat_id, ciphertext, created_at
+		`SELECT id, sender_id, recipient_id, chat_id, ciphertext, created_at, expires_at
 		 FROM messages
 		 WHERE created_at > $2
+		   AND (expires_at IS NULL OR expires_at > now())
 		   AND (recipient_id = $1 OR chat_id IN (SELECT chat_id FROM chat_members WHERE user_id = $1))
 		 ORDER BY created_at ASC`,
 		userID, since)
@@ -141,7 +143,7 @@ func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since t
 	for rows.Next() {
 		var m model.Message
 		var recipient, chatID *string
-		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chatID, &m.Ciphertext, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chatID, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt); err != nil {
 			return nil, err
 		}
 		if recipient != nil {
@@ -394,6 +396,36 @@ func (p *PostgresStore) ListCallsForUser(ctx context.Context, userID string) ([]
 		out = append(out, &c)
 	}
 	return out, rows.Err()
+}
+
+// DeleteUser удаляет пользователя. Каскадные удаления (ON DELETE CASCADE в
+// миграциях) убирают связанные строки: one_time_prekeys, auth_tokens, messages,
+// media, chat_members, contacts, calls.
+func (p *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Чаты, где пользователь — создатель, удаляем целиком (вместе с участниками).
+	if _, err := tx.Exec(ctx, `DELETE FROM chats WHERE created_by = $1`, userID); err != nil {
+		return mapErr(err)
+	}
+	// Сообщения, отправленные пользователем, удаляем (адресованные — через cascade
+	// при удалении users? нет: recipient_id ссылается на users). Явно чистим личные.
+	if _, err := tx.Exec(ctx, `DELETE FROM messages WHERE sender_id = $1`, userID); err != nil {
+		return mapErr(err)
+	}
+	// Удаляем сам аккаунт — каскад уберёт остальное.
+	tag, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *PostgresStore) Close() error { p.pool.Close(); return nil }

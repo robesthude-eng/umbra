@@ -24,13 +24,17 @@ type User struct {
 // Адресация: для личного сообщения заполнен RecipientID; для группового/канального —
 // заполнен ChatID (RecipientID при этом пуст). Сервер не различает содержимое,
 // только маршрутизирует шифротекст.
+//
+// ExpiresAt — для секретных чатов: если задано, сообщение самоуничтожается после
+// этого момента. Сервер не отдаёт просроченные сообщения и удаляет их.
 type Message struct {
-	ID          string    `json:"id"`
-	SenderID    string    `json:"sender_id"`
-	RecipientID string    `json:"recipient_id"` // личное сообщение
-	ChatID      string    `json:"chat_id"`      // групповое/канальное сообщение
-	Ciphertext  []byte    `json:"ciphertext"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	SenderID    string     `json:"sender_id"`
+	RecipientID string     `json:"recipient_id"` // личное сообщение
+	ChatID      string     `json:"chat_id"`      // групповое/канальное сообщение
+	Ciphertext  []byte     `json:"ciphertext"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at"` // nil = без самоуничтожения
 }
 
 // Media — метаданные ciphertext; имя файла, ключ и nonce серверу не передаются.

@@ -60,15 +60,18 @@ type verifyResponse struct {
 type sendMessageRequest struct {
 	RecipientID string `json:"recipient_id"`
 	Ciphertext  string `json:"ciphertext"` // base64
+	// ExpiresIn — секунды до самоуничтожения (секретный чат). 0 = без таймера.
+	ExpiresIn int64 `json:"expires_in"`
 }
 
 type messageResponse struct {
-	ID          string `json:"id"`
-	SenderID    string `json:"sender_id"`
-	RecipientID string `json:"recipient_id"`
-	ChatID      string `json:"chat_id"`
-	Ciphertext  string `json:"ciphertext"`
-	CreatedAt   string `json:"created_at"`
+	ID          string  `json:"id"`
+	SenderID    string  `json:"sender_id"`
+	RecipientID string  `json:"recipient_id"`
+	ChatID      string  `json:"chat_id"`
+	Ciphertext  string  `json:"ciphertext"`
+	CreatedAt   string  `json:"created_at"`
+	ExpiresAt   *string `json:"expires_at"`
 }
 
 // challengeStore — in-memory хранилище одноразовых challenge (nonce) с TTL.
@@ -289,30 +292,28 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Ciphertext:  ct,
 		CreatedAt:   time.Now().UTC(),
 	}
+	if req.ExpiresIn > 0 {
+		exp := msg.CreatedAt.Add(time.Duration(req.ExpiresIn) * time.Second)
+		msg.ExpiresAt = &exp
+	}
 	if err := s.store.SaveMessage(r.Context(), msg); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	// Realtime-доставка, если получатель онлайн.
-	s.hub.Push(req.RecipientID, ws.Event{
-		Type: "message",
-		Data: messageResponse{
-			ID:          msg.ID,
-			SenderID:    msg.SenderID,
-			RecipientID: msg.RecipientID,
-			Ciphertext:  req.Ciphertext,
-			CreatedAt:   msg.CreatedAt.Format(time.RFC3339),
-		},
-	})
-
-	writeJSON(w, http.StatusCreated, messageResponse{
+	resp := messageResponse{
 		ID:          msg.ID,
 		SenderID:    msg.SenderID,
 		RecipientID: msg.RecipientID,
 		Ciphertext:  req.Ciphertext,
 		CreatedAt:   msg.CreatedAt.Format(time.RFC3339),
-	})
+		ExpiresAt:   formatTime(msg.ExpiresAt),
+	}
+
+	// Realtime-доставка, если получатель онлайн.
+	s.hub.Push(req.RecipientID, ws.Event{Type: "message", Data: resp})
+
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleListMessages — отдаёт сообщения, адресованные текущему пользователю, начиная с since.
@@ -338,6 +339,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			ChatID:      m.ChatID,
 			Ciphertext:  b64e(m.Ciphertext),
 			CreatedAt:   m.CreatedAt.Format(time.RFC3339),
+			ExpiresAt:   formatTime(m.ExpiresAt),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": out})
@@ -385,6 +387,14 @@ func validUsername(s string) bool {
 		}
 	}
 	return true
+}
+
+func formatTime(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format(time.RFC3339)
+	return &s
 }
 
 func b64(s string) ([]byte, error) {

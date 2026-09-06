@@ -62,5 +62,9 @@ type Store interface {
 	UpdateCallStatus(ctx context.Context, id string, status model.CallStatus) error
 	ListCallsForUser(ctx context.Context, userID string) ([]*model.Call, error)
 
+	// DeleteUser полностью удаляет пользователя и все его данные (аккаунт,
+	// ключи, сообщения, медиа, членства в чатах, контакты, звонки) — «сжечь аккаунт».
+	DeleteUser(ctx context.Context, userID string) error
+
 	Close() error
 }
