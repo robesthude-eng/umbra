@@ -22,6 +22,7 @@ type MemoryStore struct {
 	chats       map[string]*model.Chat           // chatID -> чат
 	chatMembers map[string]map[string]model.MemberRole // chatID -> (userID -> роль)
 	contacts    map[string]map[string]bool       // userID -> (contactID -> true)
+	calls       map[string]*model.Call           // callID -> звонок
 }
 
 type tokenEntry struct {
@@ -39,6 +40,7 @@ func NewMemoryStore() *MemoryStore {
 		chats:       make(map[string]*model.Chat),
 		chatMembers: make(map[string]map[string]model.MemberRole),
 		contacts:    make(map[string]map[string]bool),
+		calls:       make(map[string]*model.Call),
 	}
 }
 
@@ -303,6 +305,71 @@ func (m *MemoryStore) ListContacts(_ context.Context, userID string) ([]string, 
 }
 
 func (m *MemoryStore) Close() error { return nil }
+
+// ---------- звонки ----------
+
+func (m *MemoryStore) SaveCall(_ context.Context, c *model.Call) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.calls[c.ID]; ok {
+		return ErrConflict
+	}
+	cp := *c
+	if c.EndedAt != nil {
+		t := *c.EndedAt
+		cp.EndedAt = &t
+	}
+	m.calls[c.ID] = &cp
+	return nil
+}
+
+func (m *MemoryStore) GetCall(_ context.Context, id string) (*model.Call, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.calls[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := *c
+	if c.EndedAt != nil {
+		t := *c.EndedAt
+		cp.EndedAt = &t
+	}
+	return &cp, nil
+}
+
+func (m *MemoryStore) UpdateCallStatus(_ context.Context, id string, status model.CallStatus) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.calls[id]
+	if !ok {
+		return ErrNotFound
+	}
+	c.Status = status
+	if status == model.CallEnded || status == model.CallDeclined || status == model.CallMissed {
+		now := time.Now().UTC()
+		c.EndedAt = &now
+	}
+	return nil
+}
+
+func (m *MemoryStore) ListCallsForUser(_ context.Context, userID string) ([]*model.Call, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*model.Call, 0)
+	for _, c := range m.calls {
+		if c.CallerID == userID || c.CalleeID == userID {
+			cp := *c
+			if c.EndedAt != nil {
+				t := *c.EndedAt
+				cp.EndedAt = &t
+			}
+			out = append(out, &cp)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
 
 // isMember — вызывается только под m.mu.
 func (m *MemoryStore) isMember(chatID, userID string) bool {

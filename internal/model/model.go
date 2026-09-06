@@ -82,3 +82,26 @@ type Contact struct {
 	ContactID string    `json:"contact_id"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// CallStatus — статус звонка.
+type CallStatus string
+
+const (
+	CallRinging  CallStatus = "ringing"
+	CallActive   CallStatus = "active"
+	CallEnded    CallStatus = "ended"
+	CallMissed   CallStatus = "missed"
+	CallDeclined CallStatus = "declined"
+)
+
+// Call — запись о звонке (голосовом или видео). Сервер хранит только метаданные
+// звонка: медиа-поток идёт peer-to-peer (WebRTC) и через сервер не проходит.
+type Call struct {
+	ID        string     `json:"id"`
+	CallerID  string     `json:"caller_id"`
+	CalleeID  string     `json:"callee_id"`
+	Video     bool       `json:"video"`
+	Status    CallStatus `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	EndedAt   *time.Time `json:"ended_at"`
+}

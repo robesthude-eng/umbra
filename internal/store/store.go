@@ -56,5 +56,11 @@ type Store interface {
 	AddContact(ctx context.Context, userID, contactID string) error
 	ListContacts(ctx context.Context, userID string) ([]string, error)
 
+	// Звонки (метаданные; медиа идёт peer-to-peer).
+	SaveCall(ctx context.Context, c *model.Call) error
+	GetCall(ctx context.Context, id string) (*model.Call, error)
+	UpdateCallStatus(ctx context.Context, id string, status model.CallStatus) error
+	ListCallsForUser(ctx context.Context, userID string) ([]*model.Call, error)
+
 	Close() error
 }

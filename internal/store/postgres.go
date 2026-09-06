@@ -343,6 +343,59 @@ func (p *PostgresStore) ListContacts(ctx context.Context, userID string) ([]stri
 	return out, rows.Err()
 }
 
+// ---------- звонки ----------
+
+func (p *PostgresStore) SaveCall(ctx context.Context, c *model.Call) error {
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO calls (id, caller_id, callee_id, video, status, created_at, ended_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		c.ID, c.CallerID, c.CalleeID, c.Video, string(c.Status), c.CreatedAt, c.EndedAt)
+	return mapErr(err)
+}
+
+func (p *PostgresStore) GetCall(ctx context.Context, id string) (*model.Call, error) {
+	var c model.Call
+	var status string
+	err := p.pool.QueryRow(ctx,
+		`SELECT id, caller_id, callee_id, video, status, created_at, ended_at FROM calls WHERE id = $1`, id).
+		Scan(&c.ID, &c.CallerID, &c.CalleeID, &c.Video, &status, &c.CreatedAt, &c.EndedAt)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	c.Status = model.CallStatus(status)
+	return &c, nil
+}
+
+func (p *PostgresStore) UpdateCallStatus(ctx context.Context, id string, status model.CallStatus) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE calls SET status = $2,
+		     ended_at = CASE WHEN $2 IN ('ended','declined','missed') THEN now() ELSE ended_at END
+		 WHERE id = $1`, id, string(status))
+	return mapErr(err)
+}
+
+func (p *PostgresStore) ListCallsForUser(ctx context.Context, userID string) ([]*model.Call, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, caller_id, callee_id, video, status, created_at, ended_at
+		 FROM calls WHERE caller_id = $1 OR callee_id = $1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make([]*model.Call, 0)
+	for rows.Next() {
+		var c model.Call
+		var status string
+		if err := rows.Scan(&c.ID, &c.CallerID, &c.CalleeID, &c.Video, &status, &c.CreatedAt, &c.EndedAt); err != nil {
+			return nil, err
+		}
+		c.Status = model.CallStatus(status)
+		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
 func (p *PostgresStore) Close() error { p.pool.Close(); return nil }
 
 // mapErr приводит ошибки драйвера к каноничным ErrNotFound / ErrConflict.
