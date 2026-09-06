@@ -34,7 +34,14 @@ func main() {
 	}
 	defer st.Close()
 
-	blobs, err := blobstore.NewFileBlobStore(cfg.BlobDir)
+	var blobs blobstore.BlobStore
+	if cfg.BlobStoreType == "s3" {
+		blobs, err = blobstore.NewS3BlobStore(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket, cfg.S3Region, cfg.S3UseSSL)
+		log.Printf("используется S3-хранилище блобов (бакет %q)", cfg.S3Bucket)
+	} else {
+		blobs, err = blobstore.NewFileBlobStore(cfg.BlobDir)
+		log.Printf("используется файловое хранилище блобов (%s)", cfg.BlobDir)
+	}
 	if err != nil {
 		log.Fatalf("не удалось открыть хранилище медиа: %v", err)
 	}

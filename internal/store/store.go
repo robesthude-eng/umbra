@@ -42,6 +42,8 @@ type Store interface {
 	// Метаданные медиа; зашифрованные байты хранятся отдельно в BlobStore.
 	SaveMedia(ctx context.Context, m *model.Media) error
 	GetMedia(ctx context.Context, id string) (*model.Media, error)
+	// MediaBytesForUser — суммарный объём медиа пользователя (для квоты).
+	MediaBytesForUser(ctx context.Context, userID string) (int64, error)
 
 	// Чаты, участники и роли.
 	CreateChat(ctx context.Context, c *model.Chat) error // создаёт чат и добавляет создателя как owner

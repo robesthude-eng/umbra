@@ -16,6 +16,7 @@ type FileBlobStore struct {
 }
 
 var _ BlobStore = (*FileBlobStore)(nil)
+var _ Lister = (*FileBlobStore)(nil)
 
 func NewFileBlobStore(dir string) (*FileBlobStore, error) {
 	abs, err := filepath.Abs(dir)
@@ -95,6 +96,27 @@ func (f *FileBlobStore) Delete(id string) error {
 		return fmt.Errorf("delete blob: %w", err)
 	}
 	return nil
+}
+
+// List перечисляет id всех блобов в директории (только обычные файлы,
+// временные ".upload-*" пропускаются).
+func (f *FileBlobStore) List() ([]string, error) {
+	entries, err := os.ReadDir(f.dir)
+	if err != nil {
+		return nil, fmt.Errorf("list blobs: %w", err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if len(name) > 0 && name[0] == '.' {
+			continue // .upload-* временные файлы
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 func (f *FileBlobStore) Close() error { return nil }

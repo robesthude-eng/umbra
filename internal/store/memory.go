@@ -178,6 +178,18 @@ func (m *MemoryStore) GetMedia(_ context.Context, id string) (*model.Media, erro
 	return &cp, nil
 }
 
+func (m *MemoryStore) MediaBytesForUser(_ context.Context, userID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var total int64
+	for _, media := range m.media {
+		if media.OwnerID == userID {
+			total += media.Size
+		}
+	}
+	return total, nil
+}
+
 // ---------- чаты ----------
 
 func (m *MemoryStore) CreateChat(_ context.Context, c *model.Chat) error {

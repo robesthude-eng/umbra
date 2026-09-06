@@ -16,6 +16,12 @@ type BlobStore interface {
 	Close() error
 }
 
+// Lister — опциональная возможность перечислить id всех блобов (для GC).
+// Реализуется FileBlobStore и S3BlobStore; GC делает type-assert.
+type Lister interface {
+	List() ([]string, error)
+}
+
 // validID запрещает разделители пути, точки и слишком длинные имена файлов.
 func validID(id string) bool {
 	if len(id) == 0 || len(id) > 255 {

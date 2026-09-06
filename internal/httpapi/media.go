@@ -164,8 +164,23 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "file is required")
 		return
 	}
+	ownerID := r.Context().Value(ctxUserID).(string)
+
+	// Проверка квоты пользователя (если задана).
+	if s.cfg.MaxUserMediaBytes > 0 {
+		used, err := s.store.MediaBytesForUser(r.Context(), ownerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if used+size > s.cfg.MaxUserMediaBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "user media quota exceeded")
+			return
+		}
+	}
+
 	m := &model.Media{
-		ID: id, OwnerID: r.Context().Value(ctxUserID).(string),
+		ID: id, OwnerID: ownerID,
 		ContentType: contentType, Size: size, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.store.SaveMedia(r.Context(), m); err != nil {

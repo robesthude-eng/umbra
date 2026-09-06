@@ -179,6 +179,16 @@ func (p *PostgresStore) GetMedia(ctx context.Context, id string) (*model.Media, 
 	return &m, nil
 }
 
+func (p *PostgresStore) MediaBytesForUser(ctx context.Context, userID string) (int64, error) {
+	var total int64
+	err := p.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(size), 0) FROM media WHERE owner_id = $1`, userID).Scan(&total)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return total, nil
+}
+
 // ---------- чаты ----------
 
 func (p *PostgresStore) CreateChat(ctx context.Context, c *model.Chat) error {
