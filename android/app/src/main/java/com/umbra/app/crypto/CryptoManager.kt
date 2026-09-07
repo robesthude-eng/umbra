@@ -16,7 +16,11 @@ import org.signal.libsignal.protocol.message.SignalMessage
 import org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.SecureRandom
 import java.security.Signature
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Криптографический слой клиента Umbra.
@@ -148,7 +152,34 @@ class CryptoManager(context: Context) {
         return String(plaintext, Charsets.UTF_8)
     }
 
+    // ---------- шифрование медиа (AES-256-GCM на файл) ----------
+    //
+    // Каждый файл шифруется одноразовым ключом; ключ и nonce вкладываются
+    // в E2E-конверт сообщения (Signal-сессия), на сервер уходит только ciphertext.
+
+    /** Новый AES-256 ключ файла (32 байта, SecureRandom). */
+    fun newFileKey(): ByteArray = ByteArray(FILE_KEY_BYTES).also { secureRandom.nextBytes(it) }
+
+    /** Новый GCM-nonce (12 байт); НИКОГДА не переиспользовать с тем же ключом. */
+    fun newFileNonce(): ByteArray = ByteArray(GCM_NONCE_BYTES).also { secureRandom.nextBytes(it) }
+
+    /** Шифрует байты файла: ciphertext = plaintext || GCM-тег (16 байт). */
+    fun encryptFileBytes(key: ByteArray, nonce: ByteArray, plaintext: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(AES_GCM)
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+        return cipher.doFinal(plaintext)
+    }
+
+    /** Расшифровывает байты файла; при подмене ciphertext бросает AEADBadTagException. */
+    fun decryptFileBytes(key: ByteArray, nonce: ByteArray, ciphertext: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(AES_GCM)
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+        return cipher.doFinal(ciphertext)
+    }
+
     // ---------- вспомогательное ----------
+
+    private val secureRandom = SecureRandom()
 
     private fun signEd25519(pair: KeyPair, data: ByteArray): ByteArray {
         val sig = Signature.getInstance("Ed25519")
@@ -164,5 +195,9 @@ class CryptoManager(context: Context) {
         const val REGISTRATION_ID = 1
         const val DEVICE_ID = 1
         const val ONE_TIME_PREKEY_COUNT = 100
+        private const val AES_GCM = "AES/GCM/NoPadding"
+        private const val GCM_TAG_BITS = 128
+        private const val FILE_KEY_BYTES = 32
+        private const val GCM_NONCE_BYTES = 12
     }
 }
