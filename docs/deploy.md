@@ -94,7 +94,7 @@ apt install fail2ban -y
 systemctl enable --now fail2ban
 ```
 
-## 6. Бэкапы
+## 6. Бэкапы и обслуживание (GC)
 
 Критично бэкапить **и БД, и blob-директорию** вместе (иначе медиа осиротеют):
 
@@ -106,6 +106,51 @@ docker compose exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sq
 tar czf blobs.tgz data/blobs
 ```
 
+### 6.1 Автоматизация на systemd-хосте (без Docker)
+
+В `deploy/` лежат готовые юниты и таймеры:
+
+| Файл | Назначение |
+|---|---|
+| `umbra-backup.sh` | `pg_dump -Fc umbra` в `/var/backups/umbra`, ротация 7 дней |
+| `umbra-backup.service` + `umbra-backup.timer` | ежедневный бэкап БД (~03:00, от `postgres`) |
+| `umbra-gc.service` + `umbra-gc.timer` | ежедневный GC осиротевших блобов (~04:30) |
+
+Установка:
+
+```bash
+cp deploy/umbra-backup.sh /usr/local/bin/
+chown root:postgres /usr/local/bin/umbra-backup.sh
+chmod 750 /usr/local/bin/umbra-backup.sh
+mkdir -p /var/backups/umbra && chown postgres:postgres /var/backups/umbra
+
+cp deploy/umbra-backup.service deploy/umbra-backup.timer \
+   deploy/umbra-gc.service deploy/umbra-gc.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now umbra-backup.timer umbra-gc.timer
+
+# Проверка: прогнать вручную и посмотреть таймеры
+systemctl start umbra-backup.service umbra-gc.service
+systemctl list-timers 'umbra*'
+journalctl -u umbra-gc.service -n 20 --no-pager
+```
+
+### 6.2 GC и льготный период
+
+Загрузка публикует blob в хранилище **раньше**, чем фиксирует строку метаданных,
+поэтому GC по умолчанию не трогает сирот младше 24 часов (`-min-age=24h` в
+`umbra-gc.service`) — иначе параллельный запуск мог бы удалить файл идущей
+загрузки. Настоящие сироты (после сбоя или «сжигания» аккаунта) удаляются
+следующим запуском. `-min-age=0` отключает льготный период.
+
+GC требует `STORE=postgres` (тот же `EnvironmentFile`, что у `umbra.service`):
+с in-memory хранилищем метаданных нет и все блобы выглядели бы сиротами —
+запуск аварийно прекращается.
+
+Бэкап blob-директории таймером не закрыт намеренно: блобы — шифротекст, их
+копия на том же хосте не добавляет приватности. Для офсайт-копии синхронизируйте
+`BLOB_DIR` (или S3-бакет) отдельно, например `restic`/`rclone` в cron.
+
 ## 7. Чек-лист релиза
 
 - [ ] Хостинг вне РФ, без принудительного доступа
@@ -114,5 +159,6 @@ tar czf blobs.tgz data/blobs
 - [ ] ufw: только 22/80/443
 - [ ] fail2ban активен
 - [ ] Пароль БД из .env, не дефолтный
-- [ ] Бэкапы настроены
+- [ ] Бэкапы настроены (`umbra-backup.timer` активен, дампы появляются)
+- [ ] GC настроен (`umbra-gc.timer` активен, `-min-age` ≥ 1h)
 - [ ] `curl https://ДОМЕН/healthz` → `{"status":"ok"}`

@@ -88,13 +88,13 @@ func (s *S3BlobStore) Delete(id string) error {
 }
 
 // List перечисляет id всех объектов в бакете (для GC).
-func (s *S3BlobStore) List() ([]string, error) {
-	out := make([]string, 0)
+func (s *S3BlobStore) List() ([]BlobInfo, error) {
+	out := make([]BlobInfo, 0)
 	for obj := range s.client.ListObjects(context.Background(), s.bucket, minio.ListObjectsOptions{}) {
 		if obj.Err != nil {
 			return nil, fmt.Errorf("s3 list: %w", obj.Err)
 		}
-		out = append(out, obj.Key)
+		out = append(out, BlobInfo{ID: obj.Key, ModTime: obj.LastModified})
 	}
 	return out, nil
 }

@@ -98,14 +98,17 @@ func (f *FileBlobStore) Delete(id string) error {
 	return nil
 }
 
-// List перечисляет id всех блобов в директории (только обычные файлы,
-// временные ".upload-*" пропускаются).
-func (f *FileBlobStore) List() ([]string, error) {
+// List перечисляет все блобы в директории (только обычные файлы,
+// временные ".upload-*" пропускаются). ModTime берётся из stat: для файла,
+// опубликованного через os.Link, это момент записи данных загрузки.
+// Если stat не удался (файл исчез между ReadDir и Info), ModTime нулевое —
+// GC трактует неизвестный возраст как «достаточно старый».
+func (f *FileBlobStore) List() ([]BlobInfo, error) {
 	entries, err := os.ReadDir(f.dir)
 	if err != nil {
 		return nil, fmt.Errorf("list blobs: %w", err)
 	}
-	out := make([]string, 0, len(entries))
+	out := make([]BlobInfo, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -114,7 +117,11 @@ func (f *FileBlobStore) List() ([]string, error) {
 		if len(name) > 0 && name[0] == '.' {
 			continue // .upload-* временные файлы
 		}
-		out = append(out, name)
+		info := BlobInfo{ID: name}
+		if fi, err := e.Info(); err == nil {
+			info.ModTime = fi.ModTime()
+		}
+		out = append(out, info)
 	}
 	return out, nil
 }

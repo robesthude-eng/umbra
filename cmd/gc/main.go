@@ -1,36 +1,45 @@
 // GC — удаляет осиротевшие блобы (файлы/объекты без метаданных в БД).
 // Такая ситуация возможна после аварийного завершения между записью blob
-// и сохранением метаданных, либо после ручного удаления метаданных.
+// и сохранением метаданных, либо после удаления метаданных («сжигание» аккаунта).
 //
 // Запуск (примеры):
 //
-//	BLOB_DIR=./data/blobs go run ./cmd/gc        # файловое хранилище
+//	STORE=postgres DATABASE_URL=... BLOB_DIR=./data/blobs go run ./cmd/gc
+//	STORE=postgres DATABASE_URL=... BLOB_DIR=./data/blobs go run ./cmd/gc -min-age=1h
 //	STORE=postgres DATABASE_URL=... BLOB_STORE_TYPE=s3 S3_ENDPOINT=... S3_BUCKET=... \
-//	    go run ./cmd/gc                          # S3 + PostgreSQL
+//	    go run ./cmd/gc
+//
+// По умолчанию сироты младше 24 часов не удаляются (льготный период -min-age):
+// blob публикуется раньше, чем фиксируются метаданные, и параллельный запуск GC
+// не должен удалить файл незавершённой загрузки.
+//
+// GC требует STORE=postgres: с in-memory хранилищем метаданных нет, и все блобы
+// выглядели бы сиротами — запуск с STORE=memory аварийно прекращается.
 package main
 
 import (
 	"context"
-	"errors"
+	"flag"
 	"log"
-	"os"
+	"time"
 
 	"umbra/server/internal/blobstore"
 	"umbra/server/internal/config"
+	"umbra/server/internal/gc"
 	"umbra/server/internal/store"
 )
 
 func main() {
+	minAge := flag.Duration("min-age", gc.DefaultMinAge,
+		"не удалять осиротевшие блобы младше этого возраста (0 — отключить льготный период)")
+	flag.Parse()
+
 	cfg := config.Load()
 
-	var st store.Store
-	var err error
-	if cfg.Store == "postgres" {
-		st, err = store.NewPostgresStore(context.Background(), cfg.DatabaseURL)
-	} else {
-		st = store.NewMemoryStore()
-		log.Printf("внимание: STORE=memory — метаданных нет, GC не сможет определить сирот")
+	if cfg.Store != "postgres" {
+		log.Fatalf("GC требует STORE=postgres и DATABASE_URL: с %q метаданных нет и все блобы выглядят сиротами", cfg.Store)
 	}
+	st, err := store.NewPostgresStore(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("не удалось открыть хранилище: %v", err)
 	}
@@ -47,34 +56,10 @@ func main() {
 	}
 	defer blobs.Close()
 
-	lister, ok := blobs.(blobstore.Lister)
-	if !ok {
-		log.Fatalf("blobstore не поддерживает перечисление")
-	}
-
-	ids, err := lister.List()
+	stats, err := gc.RemoveOrphans(context.Background(), st, blobs, *minAge, time.Now())
 	if err != nil {
-		log.Fatalf("перечисление блобов: %v", err)
+		log.Fatalf("GC: %v", err)
 	}
-	log.Printf("блобов найдено: %d", len(ids))
-
-	ctx := context.Background()
-	removed := 0
-	for _, id := range ids {
-		if _, err := st.GetMedia(ctx, id); err == nil {
-			continue // есть метаданные — не сирота
-		} else if !errors.Is(err, store.ErrNotFound) {
-			log.Printf("пропуск %s: %v", id, err)
-			continue
-		}
-		// Сирота: метаданных нет, удаляем blob.
-		if err := blobs.Delete(id); err != nil {
-			log.Printf("не удалось удалить %s: %v", id, err)
-			continue
-		}
-		removed++
-		log.Printf("удалён осиротевший blob: %s", id)
-	}
-	log.Printf("готово: удалено %d осиротевших блобов", removed)
-	_ = os.Stdout
+	log.Printf("готово: перечислено %d, удалено %d, пропущено свежих %d, ошибок %d",
+		stats.Listed, stats.Removed, stats.Skipped, stats.Errors)
 }

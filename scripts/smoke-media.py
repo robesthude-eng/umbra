@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--limit", type=int, default=1024,
                         help="должен совпадать с MAX_MEDIA_BYTES запущенного сервера")
+    parser.add_argument("--timeout", type=int, default=20,
+                        help="curl --max-time, секунд; увеличьте для больших --limit и медленной сети (например --timeout 120 для прода с 50 MiB)")
     parser.add_argument("--trace", type=Path, help="записать выполненные curl-команды без токенов")
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
@@ -30,7 +32,7 @@ def main():
                      file=None, mime=None, output=None, chunked=False):
                 response = data / (output or label + ".json")
                 headers = data / (label + ".headers")
-                cmd = ["curl", "--silent", "--show-error", "--max-time", "20",
+                cmd = ["curl", "--silent", "--show-error", "--max-time", str(args.timeout),
                        "--dump-header", str(headers), "--output", str(response),
                        "--write-out", "%{http_code}", "--request", method]
                 if role:
