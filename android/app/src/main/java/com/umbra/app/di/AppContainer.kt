@@ -13,9 +13,11 @@ import com.umbra.app.data.ws.WebSocketClient
  * криптографию и репозиторий. Заменяем на Hilt/Koin при росте проекта.
  */
 class AppContainer(context: Context) {
-    // Базовый URL сервера Umbra. Для локальной разработки: http://10.0.2.2:8080
-    // (эмулятор видит хост как 10.0.2.2). В проде — https://ваш-домен.
-    private val baseUrl = "http://10.0.2.2:8080"
+    // Базовый URL сервера Umbra.
+    // Сейчас — тестовый стенд (прод-VPS, HTTP на :8081; cleartext для него
+    // разрешён в res/xml/network_security_config.xml — убрать при переезде
+    // на HTTPS-домен). Для эмулятора с сервером на хост-машине: http://10.0.2.2:8080
+    private val baseUrl = "http://194.226.126.253:8081"
 
     val cryptoManager = CryptoManager(context)
 
