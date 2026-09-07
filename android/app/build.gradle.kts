@@ -16,6 +16,11 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        // Реальные устройства: arm64-v8a (современные) и armeabi-v7a (старые).
+        // x86_64 — для эмулятора на x86-хостах. x86 (32-бит) не нужен.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -34,6 +39,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Требуется libsignal-android (использует Java 8+ API на старых версиях Android).
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -45,6 +52,20 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Нативные либы desktop-платформ из libsignal-client не нужны на Android —
+            // они лишь раздувают APK. Нативные .so для Android даёт libsignal-android.
+            excludes += setOf(
+                "libsignal_jni*.dylib",
+                "signal_jni*.dll",
+                "libsignal_jni.so",
+                "libsignal_jni_amd64.so",
+                "libsignal_jni_arm64.so",
+                "libsignal_jni_testing.so",
+            )
+        }
+        jniLibs {
+            // Тестовая нативная либа libsignal (~13 МБ на ABI) не нужна в боевом APK.
+            excludes += setOf("**/libsignal_jni_testing.so")
         }
     }
 }
@@ -76,6 +97,11 @@ dependencies {
 
     implementation(libs.androidx.security.crypto)
     implementation(libs.libsignal.client)
+    // libsignal-android — нативные .so (arm64-v8a, armeabi-v7a, x86, x86_64).
+    // Без него libsignal-client не найдёт libsignal_jni.so на устройстве.
+    implementation(libs.libsignal.android)
+
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     debugImplementation(libs.androidx.ui.tooling)
 }
