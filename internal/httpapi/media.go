@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -50,6 +51,17 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "media storage unavailable")
 		return
 	}
+	select {
+	case s.uploads <- struct{}{}:
+		defer func() { <-s.uploads }()
+	case <-r.Context().Done():
+		return
+	default:
+		writeError(w, http.StatusServiceUnavailable, "too many active uploads"); return
+	}
+	unlock, err := s.store.LockBlobs(r.Context(), false)
+	if err != nil { writeError(w, 503, "storage busy"); return }
+	defer unlock()
 	limit := int64(s.cfg.MaxMediaBytes)
 	if limit <= 0 {
 		limit = config.DefaultMaxMediaBytes
@@ -84,7 +96,9 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	var fileSeen, contentTypeSeen, blobSaved, committed bool
 	defer func() {
 		if blobSaved && !committed {
-			if err := s.blobs.Delete(id); err != nil && !errors.Is(err, store.ErrNotFound) {
+            cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+            defer cancel()
+			if err := blobstore.Delete(cleanup, s.blobs, id); err != nil && !errors.Is(err, store.ErrNotFound) {
 				log.Printf("не удалось удалить незавершённый blob: %v", err)
 			}
 		}
@@ -108,7 +122,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 			fileSeen = true
 			source := &observedReader{Reader: part}
 			limited := &io.LimitedReader{R: source, N: limit}
-			if err := s.blobs.Put(id, limited); err != nil {
+			if err := blobstore.Put(r.Context(), s.blobs, id, limited); err != nil {
 				if source.err != nil {
 					writeMediaReadError(w, source.err)
 				} else if errors.Is(err, store.ErrConflict) {
@@ -166,24 +180,17 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	ownerID := r.Context().Value(ctxUserID).(string)
 
-	// Проверка квоты пользователя (если задана).
-	if s.cfg.MaxUserMediaBytes > 0 {
-		used, err := s.store.MediaBytesForUser(r.Context(), ownerID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		if used+size > s.cfg.MaxUserMediaBytes {
-			writeError(w, http.StatusRequestEntityTooLarge, "user media quota exceeded")
-			return
-		}
-	}
-
 	m := &model.Media{
 		ID: id, OwnerID: ownerID,
 		ContentType: contentType, Size: size, CreatedAt: time.Now().UTC(),
 	}
-	if err := s.store.SaveMedia(r.Context(), m); err != nil {
+	if s.cfg.MaxUserMediaBytes > 0 {
+		err = s.store.SaveMediaWithQuota(r.Context(), m, s.cfg.MaxUserMediaBytes)
+	} else {
+		err = s.store.SaveMedia(r.Context(), m)
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrQuota) { writeError(w, 413, "user media quota exceeded"); return }
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "media id conflict")
 		} else {
@@ -210,7 +217,7 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// По контракту MVP любой авторизованный получатель с id может получить ciphertext.
-	blob, err := s.blobs.Get(m.ID)
+	blob, err := blobstore.Get(r.Context(), s.blobs, m.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, blobstore.ErrInvalidID) {
 			writeError(w, http.StatusNotFound, "media not found")

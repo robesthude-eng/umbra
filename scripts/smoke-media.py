@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--limit", type=int, default=1024,
                         help="должен совпадать с MAX_MEDIA_BYTES запущенного сервера")
     parser.add_argument("--timeout", type=int, default=20,
-                        help="curl --max-time, секунд; увеличьте для больших --limit и медленной сети (например --timeout 120 для прода с 50 MiB)")
+                        help="curl --max-time, секунд; увеличьте для больших --limit и медленной сети")
     parser.add_argument("--trace", type=Path, help="записать выполненные curl-команды без токенов")
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]

@@ -17,6 +17,7 @@ var (
 	ErrConflict = errors.New("store: conflict")
 	// ErrForbidden — операция запрещена правилами (например, удаление владельца).
 	ErrForbidden = errors.New("store: forbidden")
+	ErrQuota = errors.New("store: media quota exceeded")
 )
 
 // Store — единый интерфейс персистентности.
@@ -27,6 +28,9 @@ type Store interface {
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
 	// TakeOneTimePrekey извлекает и УДАЛЯЕТ один одноразовый pre-key (однократное использование).
 	TakeOneTimePrekey(ctx context.Context, userID string) ([]byte, error)
+	TakePrekeyBundle(ctx context.Context, username string) (*model.User, []byte, error)
+	UpdateKeys(ctx context.Context, userID string, keys *model.User) error
+    OneTimePrekeyCount(ctx context.Context, userID string) (int, error)
 
 	// Сессионные токены.
 	PutToken(ctx context.Context, tokenHash, userID string, expires time.Time) error
@@ -38,12 +42,19 @@ type Store interface {
 	// ListMessages возвращает личные (recipient_id = userID) и групповые
 	// (userID — участник чата) сообщения, созданные после since.
 	ListMessages(ctx context.Context, userID string, since time.Time) ([]*model.Message, error)
+	ListMessagesPage(ctx context.Context, userID string, since time.Time, afterID string, limit int) ([]*model.Message, error)
 
 	// Метаданные медиа; зашифрованные байты хранятся отдельно в BlobStore.
 	SaveMedia(ctx context.Context, m *model.Media) error
 	GetMedia(ctx context.Context, id string) (*model.Media, error)
 	// MediaBytesForUser — суммарный объём медиа пользователя (для квоты).
 	MediaBytesForUser(ctx context.Context, userID string) (int64, error)
+	SaveMediaWithQuota(ctx context.Context, m *model.Media, limit int64) error
+	// Upload держит shared lock до записи метаданных; GC — exclusive lock.
+	LockBlobs(ctx context.Context, exclusive bool) (func(), error)
+	PendingBlobDeletes(ctx context.Context) ([]string, error)
+	CompleteBlobDelete(ctx context.Context, id string) error
+	PurgeExpired(ctx context.Context, now time.Time) error
 
 	// Чаты, участники и роли.
 	CreateChat(ctx context.Context, c *model.Chat) error // создаёт чат и добавляет создателя как owner

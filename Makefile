@@ -1,4 +1,4 @@
-.PHONY: run build test lint docker-up docker-down
+.PHONY: run build test lint test-race gc-dry-run docker-up docker-down
 
 run:          ## запустить сервер локально (in-memory)
 	go run ./cmd/server
@@ -11,6 +11,12 @@ test:         ## прогнать тесты
 
 lint:         ## статический анализ
 	go vet ./...
+
+test-race:    ## регрессионные проверки с детектором гонок
+	go test -race -count=1 ./...
+
+gc-dry-run:   ## показать сироты старше суток; нужны STORE=postgres и DATABASE_URL
+	go run ./cmd/gc
 
 docker-up:    ## поднять сервер + PostgreSQL
 	docker compose up --build

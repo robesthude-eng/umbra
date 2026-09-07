@@ -15,8 +15,10 @@ coroutines = "1.9.0"
 securityCrypto = "1.1.0-alpha06"
 libsignal = "0.60.1"
 desugarJdkLibs = "2.1.4"
+bouncycastle = "1.80"
 
 [libraries]
+bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }

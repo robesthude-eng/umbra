@@ -1,0 +1,64 @@
+name: Project checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: umbra_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: umbra_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U umbra_test -d umbra_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://umbra_test:test_password@127.0.0.1:5432/umbra_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  android:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 35]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install compile SDK
+        run: sdkmanager "platforms;android-35" "build-tools;34.0.0"
+      - name: Build and lint
+        working-directory: android
+        run: ./gradlew assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
+      - name: Enable KVM in CI
+        run: sudo chmod a+rw /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          working-directory: android
+          script: ./gradlew connectedDebugAndroidTest --stacktrace

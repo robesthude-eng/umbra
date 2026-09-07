@@ -2,9 +2,10 @@
 package blobstore
 
 import (
+    "context"
 	"errors"
 	"io"
-	"time"
+    "time"
 )
 
 var ErrInvalidID = errors.New("blobstore: invalid id")
@@ -17,19 +18,48 @@ type BlobStore interface {
 	Close() error
 }
 
-// BlobInfo — id блоба и время его последней модификации.
-// ModTime нужна GC для льготного периода: свежий блоб может быть частью
-// незавершённой загрузки (blob публикуется раньше, чем фиксируются метаданные),
-// поэтому удалять его нельзя. Нулевое ModTime означает «время неизвестно».
-type BlobInfo struct {
-	ID      string
-	ModTime time.Time
-}
-
-// Lister — опциональная возможность перечислить все блобы (для GC).
+// Lister — опциональная возможность перечислить id всех блобов (для GC).
 // Реализуется FileBlobStore и S3BlobStore; GC делает type-assert.
 type Lister interface {
-	List() ([]BlobInfo, error)
+	List() ([]string, error)
+}
+
+type TimestampReader interface {
+    ModifiedAt(ctx context.Context, id string) (time.Time, error)
+}
+
+// Context variants allow HTTP cancellation and bounded maintenance sweeps.
+func Put(ctx context.Context, blobs BlobStore, id string, r io.Reader) error {
+    if b, ok := blobs.(interface { PutContext(context.Context, string, io.Reader) error }); ok {
+        return b.PutContext(ctx, id, r)
+    }
+    if err := ctx.Err(); err != nil { return err }
+    return blobs.Put(id, r)
+}
+
+func Get(ctx context.Context, blobs BlobStore, id string) (io.ReadCloser, error) {
+    if b, ok := blobs.(interface { GetContext(context.Context, string) (io.ReadCloser, error) }); ok {
+        return b.GetContext(ctx, id)
+    }
+    if err := ctx.Err(); err != nil { return nil, err }
+    return blobs.Get(id)
+}
+
+func Delete(ctx context.Context, blobs BlobStore, id string) error {
+    if b, ok := blobs.(interface { DeleteContext(context.Context, string) error }); ok {
+        return b.DeleteContext(ctx, id)
+    }
+    if err := ctx.Err(); err != nil { return err }
+    return blobs.Delete(id)
+}
+
+func List(ctx context.Context, blobs BlobStore) ([]string, error) {
+    if b, ok := blobs.(interface { ListContext(context.Context) ([]string, error) }); ok {
+        return b.ListContext(ctx)
+    }
+    if err := ctx.Err(); err != nil { return nil, err }
+    if b, ok := blobs.(Lister); ok { return b.List() }
+    return nil, errors.New("blobstore cannot list objects")
 }
 
 // validID запрещает разделители пути, точки и слишком длинные имена файлов.

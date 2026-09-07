@@ -9,16 +9,21 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"umbra/server/internal/blobstore"
 	"umbra/server/internal/config"
 	"umbra/server/internal/httpapi"
+	"umbra/server/internal/maintenance"
 	"umbra/server/internal/store"
 	"umbra/server/internal/ws"
 )
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
 
 	var st store.Store
 	var err error
@@ -49,6 +54,12 @@ func main() {
 
 	hub := ws.NewHub()
 	go hub.Run()
+	background, stopBackground := context.WithCancel(context.Background())
+	maintenanceDone := make(chan struct{})
+	go func() {
+		defer close(maintenanceDone)
+		maintenance.Run(background, st, blobs)
+	}()
 
 	srv := httpapi.NewServerWithBlobStore(cfg, st, hub, blobs)
 
@@ -64,5 +75,16 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Printf("завершение работы...")
-	_ = srv.Shutdown(context.Background())
+	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdown); err != nil {
+		_ = srv.Close()
+	}
+	stopBackground()
+	hub.Close()
+	select {
+	case <-maintenanceDone:
+	case <-time.After(35 * time.Second):
+		log.Printf("maintenance shutdown timed out")
+	}
 }

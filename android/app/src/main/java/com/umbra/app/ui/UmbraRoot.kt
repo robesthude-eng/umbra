@@ -2,21 +2,22 @@ package com.umbra.app.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.umbra.app.di.AppContainer
+import kotlinx.coroutines.launch
 
 /** Корневой экран: навигация auth → chats → chat/{id}. */
 @Composable
 fun UmbraRoot(container: AppContainer) {
     val repo = container.chatRepository
     val nav = rememberNavController()
-    var loggedIn by remember { mutableStateOf(repo.isLoggedIn()) }
+    val loggedIn by repo.loggedIn.collectAsState()
+    val scope = rememberCoroutineScope()
 
     // Подключаем realtime (WebSocket) только в авторизованном состоянии.
     LaunchedEffect(loggedIn) {
@@ -34,13 +35,13 @@ fun UmbraRoot(container: AppContainer) {
 
     NavHost(navController = nav, startDestination = "auth") {
         composable("auth") {
-            AuthScreen(container, onAuthed = { loggedIn = true })
+            AuthScreen(container, onAuthed = { })
         }
         composable("chats") {
             ChatsScreen(
                 container = container,
                 onOpenChat = { chatId -> nav.navigate("chat/$chatId") },
-                onLogout = { loggedIn = false },
+                onLogout = { scope.launch { repo.logout() } },
             )
         }
         composable("chat/{chatId}") { entry ->

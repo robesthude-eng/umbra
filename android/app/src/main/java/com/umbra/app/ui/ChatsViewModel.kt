@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 class ChatsViewModel(private val container: AppContainer) : ViewModel() {
     private val repo = container.chatRepository
@@ -27,21 +28,17 @@ class ChatsViewModel(private val container: AppContainer) : ViewModel() {
         data class Started(val chat: ChatEntity) : NewChatState
     }
 
-    init {
-        viewModelScope.launch { runCatching { repo.refreshChats() } }
-    }
-
     fun showNewChatDialog() = newChatState.tryEmit(NewChatState.Dialog)
     fun hideNewChatDialog() = newChatState.tryEmit(NewChatState.Hidden)
 
     /** Создаёт диалог по имени пользователя и уведомляет об успехе через [newChatState]. */
     fun startChat(username: String) {
-        if (username.isBlank()) return
+        if (username.isBlank() || newChatState.value == NewChatState.Loading) return
         viewModelScope.launch {
             newChatState.value = NewChatState.Loading
-            runCatching { repo.startChat(username.trim()) }
-                .onSuccess { newChatState.value = NewChatState.Started(it) }
-                .onFailure { newChatState.value = NewChatState.Error(it.message ?: "Ошибка") }
+            try { newChatState.value = NewChatState.Started(repo.startChat(username.trim())) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { newChatState.value = NewChatState.Error(e.userMessage()) }
         }
     }
 

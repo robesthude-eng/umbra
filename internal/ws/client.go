@@ -19,7 +19,10 @@ type Client struct {
 	conn   *websocket.Conn
 	userID string
 	send   chan []byte
+	authorized func() bool
 }
+
+func (c *Client) SetAuthorization(check func() bool) { c.authorized=check }
 
 func NewClient(hub *Hub, conn *websocket.Conn, userID string) *Client {
 	return &Client{hub: hub, conn: conn, userID: userID, send: make(chan []byte, 256)}
@@ -48,13 +51,18 @@ func (c *Client) ReadPump() {
 // WritePump пишет исходящие сообщения и держит соединение живым (ping).
 func (c *Client) WritePump() {
 	ticker := time.NewTicker(pingPeriod)
+	authTicker := time.NewTicker(10*time.Second)
 	defer func() {
 		ticker.Stop()
+		authTicker.Stop()
 		_ = c.conn.Close()
 	}()
 	for {
 		select {
+		case <-authTicker.C:
+			if c.authorized != nil && !c.authorized() { return }
 		case msg, ok := <-c.send:
+			if c.authorized != nil && !c.authorized() { return }
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})

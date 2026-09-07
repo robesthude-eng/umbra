@@ -15,7 +15,7 @@ func newTestChat(id string, typ model.ChatType, createdBy string) *model.Chat {
 		Type:      typ,
 		Title:     "чат " + id,
 		CreatedBy: createdBy,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
 	}
 }
 

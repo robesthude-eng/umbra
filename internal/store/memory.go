@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,16 +14,19 @@ import (
 // Не предназначен для продакшна (данные теряются при рестарте).
 type MemoryStore struct {
 	mu          sync.Mutex
-	users       map[string]*model.User                 // id -> user
-	byName      map[string]string                      // username -> id
-	prekeys     map[string][][]byte                    // userID -> очередь одноразовых pre-keys
-	tokens      map[string]tokenEntry                  // tokenHash -> запись
-	messages    []*model.Message                       // все сообщения (личные + групповые)
-	media       map[string]*model.Media                // id -> метаданные
-	chats       map[string]*model.Chat                 // chatID -> чат
+	blobMu      sync.RWMutex
+	deletions   map[string]bool
+	receipts    map[string]messageReceipt
+	users       map[string]*model.User           // id -> user
+	byName      map[string]string                // username -> id
+	prekeys     map[string][][]byte              // userID -> очередь одноразовых pre-keys
+	tokens      map[string]tokenEntry            // tokenHash -> запись
+	messages    []*model.Message                 // все сообщения (личные + групповые)
+	media       map[string]*model.Media          // id -> метаданные
+	chats       map[string]*model.Chat           // chatID -> чат
 	chatMembers map[string]map[string]model.MemberRole // chatID -> (userID -> роль)
-	contacts    map[string]map[string]bool             // userID -> (contactID -> true)
-	calls       map[string]*model.Call                 // callID -> звонок
+	contacts    map[string]map[string]bool       // userID -> (contactID -> true)
+	calls       map[string]*model.Call           // callID -> звонок
 }
 
 type tokenEntry struct {
@@ -32,6 +36,8 @@ type tokenEntry struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
+		deletions:   make(map[string]bool),
+		receipts:    make(map[string]messageReceipt),
 		users:       make(map[string]*model.User),
 		byName:      make(map[string]string),
 		prekeys:     make(map[string][][]byte),
@@ -51,6 +57,9 @@ func (m *MemoryStore) CreateUser(_ context.Context, u *model.User) error {
 		return ErrConflict
 	}
 	cp := *u
+	if cp.KeyVersion == 0 { cp.KeyVersion = 1 }
+	if cp.RegistrationID == 0 { cp.RegistrationID = 1 }
+	if cp.SignedPrekeyID == 0 { cp.SignedPrekeyID = 1 }
 	cp.OneTimePrekeys = append([][]byte(nil), u.OneTimePrekeys...)
 	m.users[u.ID] = &cp
 	m.byName[u.Username] = u.ID
@@ -121,7 +130,18 @@ func (m *MemoryStore) DeleteToken(_ context.Context, tokenHash string) error {
 func (m *MemoryStore) SaveMessage(_ context.Context, msg *model.Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if msg.ClientID != "" {
+		key := msg.SenderID + ":" + msg.ClientID
+		hash := messageRequestHash(msg)
+		if receipt, ok := m.receipts[key]; ok {
+			if receipt.hash != hash { return ErrConflict }
+			msg.ID, msg.CreatedAt, msg.ExpiresAt = receipt.id, receipt.created, receipt.expires
+			return nil
+		}
+		m.receipts[key] = messageReceipt{hash, msg.ID, msg.CreatedAt, msg.ExpiresAt}
+	}
 	cp := *msg
+	cp.Ciphertext = append([]byte(nil), msg.Ciphertext...)
 	m.messages = append(m.messages, &cp)
 	return nil
 }
@@ -345,13 +365,13 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 		}
 	}
 	// сообщения (личные и групповые, где он участник)
-	kept := m.messages[:0]
+	kept := make([]*model.Message, 0, len(m.messages))
 	for _, msg := range m.messages {
 		if msg.SenderID == userID || msg.RecipientID == userID {
 			continue
 		}
-		if msg.ChatID != "" && m.isMember(msg.ChatID, userID) {
-			continue
+		if chat := m.chats[msg.ChatID]; chat != nil && chat.CreatedBy == userID {
+			continue // Удаляем историю только удаляемого чата, не чужих групп.
 		}
 		kept = append(kept, msg)
 	}
@@ -359,6 +379,7 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 	// медиа
 	for mid, media := range m.media {
 		if media.OwnerID == userID {
+			m.deletions[mid] = true
 			delete(m.media, mid)
 		}
 	}
@@ -382,6 +403,9 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 		delete(set, userID)
 	}
 	// звонки
+	for key := range m.receipts {
+		if strings.HasPrefix(key, userID+":") { delete(m.receipts, key) }
+	}
 	for cid, call := range m.calls {
 		if call.CallerID == userID || call.CalleeID == userID {
 			delete(m.calls, cid)

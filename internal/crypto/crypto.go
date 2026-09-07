@@ -8,7 +8,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"errors"
 )
 
 // RandomBytes возвращает n криптостойких случайных байт.
@@ -47,8 +49,24 @@ func HashToken(token string) string {
 
 // VerifyEd25519 проверяет подпись sig над сообщением msg открытым ключом pub.
 func VerifyEd25519(pub, msg, sig []byte) bool {
-	if len(pub) != ed25519.PublicKeySize {
+	key, err := NormalizeEd25519(pub)
+	if err != nil || len(sig) != ed25519.SignatureSize {
 		return false
 	}
-	return ed25519.Verify(ed25519.PublicKey(pub), msg, sig)
+	return ed25519.Verify(ed25519.PublicKey(key), msg, sig)
+}
+
+// NormalizeEd25519 сохраняет совместимость со старыми Android-аккаунтами,
+// которые публиковали SubjectPublicKeyInfo вместо raw-ключа.
+func NormalizeEd25519(pub []byte) ([]byte, error) {
+	if len(pub) == ed25519.PublicKeySize {
+		return append([]byte(nil), pub...), nil
+	}
+	parsed, err := x509.ParsePKIXPublicKey(pub)
+	if err == nil {
+		if key, ok := parsed.(ed25519.PublicKey); ok {
+			return append([]byte(nil), key...), nil
+		}
+	}
+	return nil, errors.New("invalid Ed25519 public key")
 }

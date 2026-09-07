@@ -3,24 +3,18 @@ package com.umbra.app.data.api
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
-import okhttp3.RequestBody
-import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
-import retrofit2.http.Multipart
 import retrofit2.http.POST
-import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
-import retrofit2.http.Streaming
-import java.util.concurrent.TimeUnit
+import retrofit2.http.PUT
+import com.umbra.app.BuildConfig
 
 // ---------- DTO (зеркало контракта сервера, см. docs/api.md) ----------
 
@@ -32,6 +26,11 @@ data class RegisterRequest(
     val signed_prekey: String,
     val signed_prekey_signature: String,
     val one_time_prekeys: List<String>,
+    val key_version: Int = 1,
+    val registration_id: Int = 1,
+    val signed_prekey_id: Int = 1,
+    val one_time_prekey_ids: List<Int> = emptyList(),
+    val key_bundle_id: String = "",
 )
 
 @Serializable
@@ -50,7 +49,8 @@ data class VerifyRequest(val username: String, val challenge: String, val signat
 data class VerifyResponse(val token: String, val expires_at: String)
 
 @Serializable
-data class AccountResponse(val id: String, val username: String, val created_at: String = "")
+data class AccountResponse(val id: String, val username: String, val created_at: String = "",
+    val key_version: Int = 1, val one_time_prekey_count: Int = 100)
 
 @Serializable
 data class PreKeyBundle(
@@ -61,6 +61,11 @@ data class PreKeyBundle(
     val signed_prekey: String,
     val signed_prekey_signature: String,
     val one_time_prekey: String,
+    val key_version: Int = 1,
+    val registration_id: Int = 1,
+    val signed_prekey_id: Int = 1,
+    val one_time_prekey_id: Int = 0,
+    val device_id: Int = 1,
 )
 
 @Serializable
@@ -68,6 +73,7 @@ data class SendMessageRequest(
     val recipient_id: String,
     val ciphertext: String,
     val expires_in: Long? = null,
+    val client_message_id: String? = null,
 )
 
 @Serializable
@@ -79,6 +85,7 @@ data class MessageDto(
     val ciphertext: String,
     val created_at: String,
     val expires_at: String? = null,
+    val client_message_id: String? = null,
 )
 
 @Serializable
@@ -117,16 +124,15 @@ data class ContactRequest(val contact_id: String)
 @Serializable
 data class ContactsResponse(val contacts: List<String>)
 
-@Serializable
-data class MediaUploadResponse(
-    val id: String,
-    val content_type: String = "",
-    val size: Long = 0,
-)
-
 // ---------- Retrofit-интерфейс ----------
 
 interface UmbraApi {
+    @POST("/v1/auth/logout")
+    suspend fun logout(@Header("Authorization") auth: String): Unit
+
+    @PUT("/v1/account/keys")
+    suspend fun updateKeys(@Header("Authorization") auth: String, @Body body: RegisterRequest): Unit
+
     @POST("/v1/register")
     suspend fun register(@Body body: RegisterRequest): RegisterResponse
 
@@ -146,7 +152,8 @@ interface UmbraApi {
     suspend fun sendMessage(@Header("Authorization") auth: String, @Body body: SendMessageRequest): MessageDto
 
     @GET("/v1/messages")
-    suspend fun messages(@Header("Authorization") auth: String, @Query("since") since: String? = null): MessagesResponse
+    suspend fun messages(@Header("Authorization") auth: String, @Query("since") since: String? = null,
+        @Query("after_id") afterId: String? = null, @Query("limit") limit: Int = 200): MessagesResponse
 
     @GET("/v1/chats")
     suspend fun chats(@Header("Authorization") auth: String): ChatsResponse
@@ -177,27 +184,6 @@ interface UmbraApi {
 
     @POST("/v1/account/burn")
     suspend fun burnAccount(@Header("Authorization") auth: String): Unit
-
-    /**
-     * Загружает зашифрованный медиа-блоб (multipart: file + content_type).
-     * Клиент отправляет generic content_type «application/octet-stream» —
-     * настоящий MIME остаётся внутри E2E-конверта сообщения.
-     */
-    @Multipart
-    @POST("/v1/media")
-    suspend fun uploadMedia(
-        @Header("Authorization") auth: String,
-        @Part file: MultipartBody.Part,
-        @Part("content_type") contentType: RequestBody,
-    ): Response<MediaUploadResponse>
-
-    /** Скачивает сырой ciphertext медиа по id (расшифровка — на клиенте). */
-    @Streaming
-    @GET("/v1/media/{id}")
-    suspend fun downloadMedia(
-        @Header("Authorization") auth: String,
-        @Path("id") id: String,
-    ): Response<ResponseBody>
 }
 
 @Serializable
@@ -213,17 +199,13 @@ data class CallDto(
 
 // ---------- фабрика Retrofit ----------
 
-private val json = Json { ignoreUnknownKeys = true }
+private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
 fun createUmbraApi(baseUrl: String): UmbraApi {
     val logging = HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BASIC
+        level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
     }
     val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        // Загрузка медиа: ciphertext до 50 MiB может идти минуты по мобильной сети.
-        .writeTimeout(300, TimeUnit.SECONDS)
         .addInterceptor(logging)
         .build()
     return Retrofit.Builder()

@@ -1,11 +1,13 @@
 package blobstore
 
 import (
+    "context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+    "time"
 
 	"umbra/server/internal/store"
 )
@@ -98,17 +100,14 @@ func (f *FileBlobStore) Delete(id string) error {
 	return nil
 }
 
-// List перечисляет все блобы в директории (только обычные файлы,
-// временные ".upload-*" пропускаются). ModTime берётся из stat: для файла,
-// опубликованного через os.Link, это момент записи данных загрузки.
-// Если stat не удался (файл исчез между ReadDir и Info), ModTime нулевое —
-// GC трактует неизвестный возраст как «достаточно старый».
-func (f *FileBlobStore) List() ([]BlobInfo, error) {
+// List перечисляет id всех блобов в директории (только обычные файлы,
+// временные ".upload-*" пропускаются).
+func (f *FileBlobStore) List() ([]string, error) {
 	entries, err := os.ReadDir(f.dir)
 	if err != nil {
 		return nil, fmt.Errorf("list blobs: %w", err)
 	}
-	out := make([]BlobInfo, 0, len(entries))
+	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -117,13 +116,19 @@ func (f *FileBlobStore) List() ([]BlobInfo, error) {
 		if len(name) > 0 && name[0] == '.' {
 			continue // .upload-* временные файлы
 		}
-		info := BlobInfo{ID: name}
-		if fi, err := e.Info(); err == nil {
-			info.ModTime = fi.ModTime()
-		}
-		out = append(out, info)
+		out = append(out, name)
 	}
 	return out, nil
 }
 
 func (f *FileBlobStore) Close() error { return nil }
+
+func (f *FileBlobStore) ModifiedAt(ctx context.Context, id string) (time.Time, error) {
+    if err := ctx.Err(); err != nil { return time.Time{}, err }
+    if !validID(id) { return time.Time{}, ErrInvalidID }
+    info, err := os.Lstat(filepath.Join(f.dir, id))
+    if errors.Is(err, os.ErrNotExist) { return time.Time{}, store.ErrNotFound }
+    if err != nil { return time.Time{}, err }
+    if !info.Mode().IsRegular() { return time.Time{}, store.ErrNotFound }
+    return info.ModTime(), nil
+}

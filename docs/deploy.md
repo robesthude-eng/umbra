@@ -1,164 +1,129 @@
-# Деплой Umbra: reverse-proxy, TLS, hardening
+# Запуск и обновление Umbra
 
-Инструкция по развёртыванию сервера Umbra на production VPS. Исходит из того, что у вас
-есть сервер с Docker Compose (стек из `docker-compose.yml`).
+Рассчитано на один экземпляр сервера за HTTPS-прокси. Для постоянных данных нужны
+PostgreSQL и согласованное хранилище файлов. Challenge, typing и WebSocket-хаб
+локальны процессу; несколько экземпляров без дополнительных механизмов
+координации не обеспечивают полный контракт сигналинга.
 
-> ⚠️ **Выбор хостинга.** Для цели проекта (приватность, стойкость к принудительному
-> доступу) размещайте сервер в юрисдикции **без** обязательного перехвата данных.
-> Тестовый стенд можно держать где угодно; на релиз — переезжайте за пределы РФ.
+## Новый стенд
 
-## 1. Подготовка VPS
-
-```bash
-# Обновить систему (пример для Debian/Ubuntu)
-apt update && apt upgrade -y
-
-# Установить Docker
-curl -fsSL https://get.docker.com | sh
-
-# Создать пользователя для деплоя, НЕ работать под root
-adduser deploy
-usermod -aG docker deploy
-```
-
-## 2. Развёртывание приложения
+Из корня проекта:
 
 ```bash
-# от пользователя deploy
-git clone https://github.com/robesthude-eng/umbra.git
-cd umbra/server
 cp .env.example .env
-# отредактировать .env: POSTGRES_PASSWORD, при желании BLOB_DIR, MAX_MEDIA_BYTES
-openssl rand -hex 32   # сгенерировать пароль БД
+# Укажите собственный POSTGRES_PASSWORD.
 docker compose up -d --build
+curl http://127.0.0.1:8080/healthz
 ```
 
-Проверка:
+В автоматически собираемом Compose DSN используйте пароль без специальных символов
+URL, например hex. PostgreSQL хранится в томе pgdata, файлы — blobdata. Новый
+PostgreSQL-том получает все миграции 001–006 автоматически. На существующем томе
+init-скрипты повторно не выполняются.
+
+Порт API опубликован только на 127.0.0.1. Для внешнего подключения настройте
+HTTPS-прокси; пример — deploy/Caddyfile. Параметр BIND_ADDR меняйте только при
+осознанной настройке сетевого доступа. Сами порты PostgreSQL наружу не публикуются.
+
+## Обновление существующей базы
+
+Сделайте резервную копию БД и файлов. Остановите все прежние экземпляры сервера,
+сохранив тома. Примените недостающие миграции в порядке номеров. Если установлены
+001–005, нужна только 006:
 
 ```bash
-curl http://localhost:8080/healthz   # {"status":"ok"}
+docker compose stop server
+docker compose up -d db
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/006_integrity.sql
+docker compose up -d --build server
 ```
 
-## 3. TLS-терминация: Caddy
-
-Файл `deploy/Caddyfile` уже подготовлен. Caddy автоматически выпускает Let's Encrypt
-сертификат и проксирует на внутренний порт 8080.
+Для более ранней схемы сначала примените 002, 003, 004 и 005 по необходимости.
+Не используйте `docker compose down -v`: это удаляет тома. При прямом подключении
+эквивалентная команда миграции:
 
 ```bash
-# Установить Caddy (Debian/Ubuntu)
-apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-apt update && apt install caddy -y
-
-# Положить конфиг
-cp deploy/Caddyfile /etc/caddy/Caddyfile
-# Заменить ДОМЕН в файле
-systemctl reload caddy
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_integrity.sql
 ```
 
-### Замечание по WebSocket
+Миграция 006 добавляет ключевой контракт v2, квитанции повторов, очередь удаления
+файлов и внешний ключ messages.chat_id. Исторические сообщения уже удалённых
+групп не удаляются автоматически: ограничение добавлено NOT VALID. Их можно
+посмотреть запросом:
 
-Caddy проксирует WebSocket-апгрейд автоматически (он reverse-proxy по умолчанию). Убедитесь,
-что `/v1/ws` не обрывается на таймауте — в Caddyfile задан разумный read/write timeout.
+```sql
+SELECT m.id, m.chat_id
+FROM messages m
+LEFT JOIN chats c ON c.id = m.chat_id
+WHERE m.chat_id IS NOT NULL AND c.id IS NULL;
+```
 
-## 4. Systemd-юнит (альтернатива docker compose)
+После отдельного решения по найденным данным и их обработки можно выполнить:
 
-Если запускаете бинарник напрямую (без Docker), используйте `deploy/umbra.service`:
+```sql
+ALTER TABLE messages VALIDATE CONSTRAINT messages_chat_fk;
+```
+
+Новые ссылки и каскадное удаление существующих чатов защищены сразу после миграции,
+до VALIDATE. Старые Android-аккаунты сохраняются; клиенты публикуют v2-ключи после
+входа или проверки сохранённой сессии. Обновите оба конца личного диалога.
+
+## S3 / MinIO
+
+Файловому режиму MinIO и S3-секрет не нужны. Для локального S3 задайте в .env
+BLOB_STORE_TYPE=s3, S3_ACCESS_KEY, S3_SECRET_KEY и остальные параметры из примера:
 
 ```bash
-go build -o /usr/local/bin/umbra-server ./cmd/server
-cp deploy/umbra.service /etc/systemd/system/
-# отредактировать Environment= в юните под свои значения
-systemctl daemon-reload
-systemctl enable --now umbra
+docker compose --profile s3 up -d minio
+# Дождитесь healthy у MinIO.
+docker compose --profile s3 up -d --build server
 ```
 
-## 5. Hardening
+Порты MinIO 9000/9001 доступны только локально. При внешнем S3 профиль MinIO не
+нужен; укажите endpoint своего хранилища и S3_USE_SSL=true. В production закрепите
+образы по проверенным тегам или digest; исходный образ MinIO latest оставлен
+для совместимости локального стенда.
+
+## Очистка
+
+Фоновая задача сервера примерно каждые десять секунд удаляет истёкшие сообщения,
+токены и квитанции старше 30 дней, затем обрабатывает очередь файлов удалённых
+аккаунтов. Неудачные удаления остаются в PostgreSQL и повторяются. В memory
+такая очередь, как и остальные метаданные, не переживает перезапуск.
+
+GC удаляет только файлы без метаданных старше 24 часов. По умолчанию это dry-run:
 
 ```bash
-# 1. Файрвол — открыть только 22 (SSH), 80, 443
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw enable
-
-# 2. Отключить вход root по паролю, только SSH-ключ
-#    /etc/ssh/sshd_config:
-#    PermitRootLogin prohibit-password
-#    PasswordAuthentication no
-systemctl reload ssh
-
-# 3. fail2ban против брутфорса SSH
-apt install fail2ban -y
-systemctl enable --now fail2ban
+# С теми же DATABASE_URL, BLOB_DIR или S3-параметрами, что и у сервера.
+STORE=postgres go run ./cmd/gc
+# После проверки списка:
+STORE=postgres go run ./cmd/gc -delete
 ```
 
-## 6. Бэкапы и обслуживание (GC)
+Без PostgreSQL GC отказывается работать. Он берёт эксклюзивную advisory-блокировку,
+а загрузки — общую до завершения записи метаданных. Запускайте GC только после
+обновления всех экземпляров сервера. Все участники должны использовать одну БД и
+тот же каталог/бакет. Не запускайте GC на копии БД против действующего бакета.
 
-Критично бэкапить **и БД, и blob-директорию** вместе (иначе медиа осиротеют):
+## Эксплуатация
 
-```bash
-# БД
-docker compose exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup.sql
+HTTP ограничивает время чтения/записи пятью минутами, параллельных загрузок не более
+восьми на экземпляр. Квота MAX_USER_MEDIA_BYTES проверяется атомарно в транзакции;
+0 означает отсутствие квоты. В Compose по умолчанию выставлена квота 1 GiB.
 
-# Блобы (по пути BLOB_DIR, напр. ./data/blobs)
-tar czf blobs.tgz data/blobs
-```
+Лимиты запросов в минуту на сетевой адрес: регистрация 30, auth/prekeys 120,
+прочие API 600. X-Forwarded-For автоматически не считается доверенным. За
+reverse-proxy клиенты делят лимит его адреса; для большой нагрузки потребуется
+явная настройка доверенного прокси и распределённого лимитера.
 
-### 6.1 Автоматизация на systemd-хосте (без Docker)
+Журнал приложения не включает body, токены и query-параметры; typing-запросы
+пропускаются. Проверьте отдельно настройки журнала своего прокси, особенно если
+сохраняете совместимость с query-токеном старого WebSocket-клиента.
 
-В `deploy/` лежат готовые юниты и таймеры:
+Резервные копии должны включать согласованную БД и файлы из реального Docker-тома
+blobdata либо S3. Каталог data/blobs на хосте не является копией тома Compose.
+В режиме S3 с versioning удаление объекта не удаляет автоматически прежние версии;
+для требуемого срока хранения настройте lifecycle и политику резервных копий.
 
-| Файл | Назначение |
-|---|---|
-| `umbra-backup.sh` | `pg_dump -Fc umbra` в `/var/backups/umbra`, ротация 7 дней |
-| `umbra-backup.service` + `umbra-backup.timer` | ежедневный бэкап БД (~03:00, от `postgres`) |
-| `umbra-gc.service` + `umbra-gc.timer` | ежедневный GC осиротевших блобов (~04:30) |
-
-Установка:
-
-```bash
-cp deploy/umbra-backup.sh /usr/local/bin/
-chown root:postgres /usr/local/bin/umbra-backup.sh
-chmod 750 /usr/local/bin/umbra-backup.sh
-mkdir -p /var/backups/umbra && chown postgres:postgres /var/backups/umbra
-
-cp deploy/umbra-backup.service deploy/umbra-backup.timer \
-   deploy/umbra-gc.service deploy/umbra-gc.timer /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now umbra-backup.timer umbra-gc.timer
-
-# Проверка: прогнать вручную и посмотреть таймеры
-systemctl start umbra-backup.service umbra-gc.service
-systemctl list-timers 'umbra*'
-journalctl -u umbra-gc.service -n 20 --no-pager
-```
-
-### 6.2 GC и льготный период
-
-Загрузка публикует blob в хранилище **раньше**, чем фиксирует строку метаданных,
-поэтому GC по умолчанию не трогает сирот младше 24 часов (`-min-age=24h` в
-`umbra-gc.service`) — иначе параллельный запуск мог бы удалить файл идущей
-загрузки. Настоящие сироты (после сбоя или «сжигания» аккаунта) удаляются
-следующим запуском. `-min-age=0` отключает льготный период.
-
-GC требует `STORE=postgres` (тот же `EnvironmentFile`, что у `umbra.service`):
-с in-memory хранилищем метаданных нет и все блобы выглядели бы сиротами —
-запуск аварийно прекращается.
-
-Бэкап blob-директории таймером не закрыт намеренно: блобы — шифротекст, их
-копия на том же хосте не добавляет приватности. Для офсайт-копии синхронизируйте
-`BLOB_DIR` (или S3-бакет) отдельно, например `restic`/`rclone` в cron.
-
-## 7. Чек-лист релиза
-
-- [ ] Хостинг вне РФ, без принудительного доступа
-- [ ] TLS через Caddy (HTTPS работает, сертификат валиден)
-- [ ] SSH только по ключу, root-вход по паролю отключён
-- [ ] ufw: только 22/80/443
-- [ ] fail2ban активен
-- [ ] Пароль БД из .env, не дефолтный
-- [ ] Бэкапы настроены (`umbra-backup.timer` активен, дампы появляются)
-- [ ] GC настроен (`umbra-gc.timer` активен, `-min-age` ≥ 1h)
-- [ ] `curl https://ДОМЕН/healthz` → `{"status":"ok"}`
+Systemd-пример находится в deploy/umbra.service. Укажите существующего служебного
+пользователя, каталог данных и EnvironmentFile с собственными настройками.

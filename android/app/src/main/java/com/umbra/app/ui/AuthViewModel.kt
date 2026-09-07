@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 data class AuthState(
     val username: String = "",
@@ -17,34 +18,35 @@ data class AuthState(
 )
 
 class AuthViewModel(private val container: AppContainer) : ViewModel() {
-    private val _state = MutableStateFlow(AuthState())
+    private val _state = MutableStateFlow(AuthState(username = container.cryptoManager.username().orEmpty()))
     val state: StateFlow<AuthState> = _state
 
     fun onUsernameChange(v: String) = _state.update { it.copy(username = v.trim()) }
 
-    fun register() = run("register") {
+    fun register() = run {
         val name = _state.value.username
         container.chatRepository.register(name)
-        // Регистрация не выдаёт токен — сразу входим для получения сессии.
-        container.chatRepository.login(name)
     }
 
-    fun login() = run("login") {
+    fun login() = run {
         container.chatRepository.login(_state.value.username)
     }
 
-    private fun run(tag: String, block: suspend () -> Unit) {
+    private fun run(block: suspend () -> Unit) {
+        if (_state.value.loading) return
         if (_state.value.username.isBlank()) {
             _state.update { it.copy(error = "Введите имя пользователя") }
             return
         }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            runCatching { block() }
-                .onSuccess { _state.update { it.copy(loading = false, authed = true) } }
-                .onFailure { e ->
-                    _state.update { it.copy(loading = false, error = "Ошибка $tag: ${e.message}") }
-                }
+            try {
+                block()
+                _state.update { it.copy(loading = false, authed = true) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                _state.update { it.copy(loading = false, error = e.userMessage()) }
+            }
         }
     }
 

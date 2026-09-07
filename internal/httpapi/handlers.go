@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +29,11 @@ type registerRequest struct {
 	SignedPrekey    string   `json:"signed_prekey"`    // base64
 	SignedPrekeySig string   `json:"signed_prekey_signature"`
 	OneTimePrekeys  []string `json:"one_time_prekeys"` // base64
+	KeyVersion      int      `json:"key_version"`
+	RegistrationID  int      `json:"registration_id"`
+	SignedPrekeyID  int      `json:"signed_prekey_id"`
+	OneTimePrekeyIDs []int    `json:"one_time_prekey_ids"`
+	KeyBundleID      string   `json:"key_bundle_id"`
 }
 
 type prekeysResponse struct {
@@ -36,6 +44,11 @@ type prekeysResponse struct {
 	SignedPrekey    string `json:"signed_prekey"`
 	SignedPrekeySig string `json:"signed_prekey_signature"`
 	OneTimePrekey   string `json:"one_time_prekey"`
+	KeyVersion      int    `json:"key_version"`
+	RegistrationID  int    `json:"registration_id"`
+	SignedPrekeyID  int    `json:"signed_prekey_id"`
+	OneTimePrekeyID int    `json:"one_time_prekey_id"`
+	DeviceID       int    `json:"device_id"`
 }
 
 type challengeRequest struct {
@@ -62,6 +75,7 @@ type sendMessageRequest struct {
 	Ciphertext  string `json:"ciphertext"` // base64
 	// ExpiresIn — секунды до самоуничтожения (секретный чат). 0 = без таймера.
 	ExpiresIn int64 `json:"expires_in"`
+	ClientID string `json:"client_message_id"`
 }
 
 type messageResponse struct {
@@ -72,32 +86,42 @@ type messageResponse struct {
 	Ciphertext  string  `json:"ciphertext"`
 	CreatedAt   string  `json:"created_at"`
 	ExpiresAt   *string `json:"expires_at"`
+	ClientID    string  `json:"client_message_id,omitempty"`
 }
 
 // challengeStore — in-memory хранилище одноразовых challenge (nonce) с TTL.
 // Ограничивает время жизни nonce и не даёт повторно использовать подпись.
 type challengeStore struct {
 	mu   sync.Mutex
-	data map[string]time.Time
+	data map[string]challengeEntry
 }
 
-func newChallengeStore() *challengeStore { return &challengeStore{data: make(map[string]time.Time)} }
+type challengeEntry struct { username string; expires time.Time }
 
-func (c *challengeStore) put(challenge string, ttl time.Duration) {
+func newChallengeStore() *challengeStore { return &challengeStore{data: make(map[string]challengeEntry)} }
+
+func (c *challengeStore) put(challenge string, ttl time.Duration, username ...string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.data[challenge] = time.Now().Add(ttl)
+	now := time.Now()
+	for key, value := range c.data { if !value.expires.After(now) { delete(c.data, key) } }
+	if len(c.data) >= 4096 { return false }
+	name := ""
+	if len(username) != 0 { name = username[0] }
+	c.data[challenge] = challengeEntry{name, now.Add(ttl)}
+	return true
 }
 
-func (c *challengeStore) consume(challenge string) bool {
+func (c *challengeStore) consume(challenge string, username ...string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	exp, ok := c.data[challenge]
 	if !ok {
 		return false
 	}
+	if len(username) != 0 && exp.username != username[0] { return false }
 	delete(c.data, challenge)
-	return time.Now().Before(exp)
+	return time.Now().Before(exp.expires)
 }
 
 // ---------- хэндлеры ----------
@@ -121,6 +145,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	idKey, err := b64(req.IdentityEd25519)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid identity_ed25519")
+		return
+	}
+	idKey, err = crypto.NormalizeEd25519(idKey)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid identity_ed25519")
 		return
@@ -164,6 +193,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		SignedPrekeySig: spsig,
 		OneTimePrekeys:  otks,
 		CreatedAt:       time.Now().UTC(),
+		KeyVersion: req.KeyVersion, RegistrationID: req.RegistrationID, SignedPrekeyID: req.SignedPrekeyID,
+		KeyBundleID: req.KeyBundleID,
+	}
+	if err := prepareKeyMaterial(u, req.OneTimePrekeyIDs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	if err := s.store.CreateUser(r.Context(), u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -179,15 +214,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // handlePrekeys — отдаёт публичный ключевой материал пользователя для X3DH.
 func (s *Server) handlePrekeys(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
-	u, err := s.store.GetUserByUsername(r.Context(), username)
+	u, otk, err := s.store.TakePrekeyBundle(r.Context(), username)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		if errors.Is(err, store.ErrNotFound) { writeError(w, http.StatusNotFound, "user not found") } else { writeError(w, http.StatusInternalServerError, "internal error") }
 		return
 	}
-	otk, err := s.store.TakeOneTimePrekey(r.Context(), u.ID)
-	if err != nil {
-		// Нет одноразовых pre-keys — отдаём без него (клиент использует signed pre-key).
-		otk = nil
+	otkID := 0
+	if u.KeyVersion == 2 && len(otk) != 0 {
+		if len(otk) != 37 { writeError(w, http.StatusInternalServerError, "invalid stored prekey"); return }
+		otkID = int(binary.BigEndian.Uint32(otk[:4]))
+		otk = otk[4:]
 	}
 	writeJSON(w, http.StatusOK, prekeysResponse{
 		ID:              u.ID,
@@ -197,6 +233,8 @@ func (s *Server) handlePrekeys(w http.ResponseWriter, r *http.Request) {
 		SignedPrekey:    b64e(u.SignedPrekey),
 		SignedPrekeySig: b64e(u.SignedPrekeySig),
 		OneTimePrekey:   b64e(otk),
+		KeyVersion: u.KeyVersion, RegistrationID: u.RegistrationID, SignedPrekeyID: u.SignedPrekeyID,
+		OneTimePrekeyID: otkID, DeviceID: 1,
 	})
 }
 
@@ -208,7 +246,7 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.store.GetUserByUsername(r.Context(), strings.TrimSpace(req.Username)); err != nil {
-		// Не раскрываем, существует ли пользователь — всегда отвечаем одинаково.
+		// Имена публичны: каталог prekeys также доступен по username.
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -217,7 +255,10 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.challenges.put(ch, 5*time.Minute)
+	if !s.challenges.put(ch, 5*time.Minute, strings.TrimSpace(req.Username)) {
+		writeError(w, http.StatusTooManyRequests, "too many challenges")
+		return
+	}
 	writeJSON(w, http.StatusOK, challengeResponse{Challenge: ch})
 }
 
@@ -228,7 +269,7 @@ func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !s.challenges.consume(req.Challenge) {
+	if !s.challenges.consume(req.Challenge, strings.TrimSpace(req.Username)) {
 		writeError(w, http.StatusUnauthorized, "invalid or expired challenge")
 		return
 	}
@@ -275,7 +316,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ct, err := b64(req.Ciphertext)
-	if err != nil {
+	if err != nil || len(ct) == 0 || !validMessageOptions(req.ClientID, req.ExpiresIn) {
 		writeError(w, http.StatusBadRequest, "invalid ciphertext")
 		return
 	}
@@ -291,12 +332,14 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		RecipientID: req.RecipientID,
 		Ciphertext:  ct,
 		CreatedAt:   time.Now().UTC(),
+		ClientID: req.ClientID, ExpiresIn: req.ExpiresIn,
 	}
 	if req.ExpiresIn > 0 {
 		exp := msg.CreatedAt.Add(time.Duration(req.ExpiresIn) * time.Second)
 		msg.ExpiresAt = &exp
 	}
 	if err := s.store.SaveMessage(r.Context(), msg); err != nil {
+		if errors.Is(err, store.ErrConflict) { writeError(w, http.StatusConflict, "client_message_id reused with different content"); return }
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -306,12 +349,15 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		SenderID:    msg.SenderID,
 		RecipientID: msg.RecipientID,
 		Ciphertext:  req.Ciphertext,
-		CreatedAt:   msg.CreatedAt.Format(time.RFC3339),
+		CreatedAt:   msg.CreatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:   formatTime(msg.ExpiresAt),
+		ClientID: msg.ClientID,
 	}
 
 	// Realtime-доставка, если получатель онлайн.
-	s.hub.Push(req.RecipientID, ws.Event{Type: "message", Data: resp})
+	if msg.ExpiresAt == nil || msg.ExpiresAt.After(time.Now()) {
+		s.hub.Push(req.RecipientID, ws.Event{Type: "message", Data: resp})
+	}
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -323,9 +369,17 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("since"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			since = t
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid since"); return
 		}
 	}
-	msgs, err := s.store.ListMessages(r.Context(), userID, since)
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 { writeError(w, http.StatusBadRequest, "invalid limit"); return }
+		limit = n
+	}
+	msgs, err := s.store.ListMessagesPage(r.Context(), userID, since, r.URL.Query().Get("after_id"), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -338,7 +392,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			RecipientID: m.RecipientID,
 			ChatID:      m.ChatID,
 			Ciphertext:  b64e(m.Ciphertext),
-			CreatedAt:   m.CreatedAt.Format(time.RFC3339),
+			CreatedAt:   m.CreatedAt.Format(time.RFC3339Nano),
 			ExpiresAt:   formatTime(m.ExpiresAt),
 		})
 	}
@@ -346,9 +400,10 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWS — устанавливает WebSocket-соединение для realtime push.
-// Аутентификация через ?token=... (токен не логируется в метаданных).
+// Bearer-заголовок; query token поддерживается для старых клиентов.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	token, _ := bearerToken(r)
+	if token == "" { token = r.URL.Query().Get("token") } // Совместимость со старым клиентом.
 	if token == "" {
 		writeError(w, http.StatusUnauthorized, "missing token")
 		return
@@ -363,13 +418,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		ReadBufferSize:  1024,
 		WriteBufferSize: 4096,
 		// Продакшн: ограничить Origin списком доверенных доменов.
-		CheckOrigin: func(*http.Request) bool { return true },
+		CheckOrigin: func(req *http.Request) bool {
+			return req.Header.Get("Origin") == "" || req.Header.Get("Origin") == "https://"+req.Host
+		},
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	client := ws.NewClient(s.hub, conn, userID)
+	client.SetAuthorization(func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		id, err := s.store.GetUserIDByTokenHash(ctx, crypto.HashToken(token))
+		return err == nil && id == userID
+	})
 	s.hub.Register(client)
 	go client.WritePump()
 	go client.ReadPump()
@@ -393,7 +456,7 @@ func formatTime(t *time.Time) *string {
 	if t == nil {
 		return nil
 	}
-	s := t.Format(time.RFC3339)
+	s := t.Format(time.RFC3339Nano)
 	return &s
 }
 

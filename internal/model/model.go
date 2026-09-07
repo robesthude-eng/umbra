@@ -11,10 +11,14 @@ type User struct {
 	ID              string    `json:"id"`
 	Username        string    `json:"username"`
 	IdentityEd25519 []byte    `json:"identity_ed25519"`        // открытый ключ подписи (32 байта)
-	IdentityX25519  []byte    `json:"identity_x25519"`         // открытый ключ E2E (32 байта)
+	IdentityX25519  []byte    `json:"identity_x25519"`         // raw 32 байта (legacy) или Signal 33 байта
 	SignedPrekey    []byte    `json:"signed_prekey"`           // подписанный pre-key X25519
-	SignedPrekeySig []byte    `json:"signed_prekey_signature"` // ed25519-подпись pre-key
+	SignedPrekeySig []byte    `json:"signed_prekey_signature"` // v1: Ed25519, v2: подпись identity-ключом Signal
 	OneTimePrekeys  [][]byte  `json:"one_time_prekeys"`        // одноразовые pre-keys
+	KeyVersion      int       `json:"key_version"` // 1: legacy, 2: Signal + явные id
+	RegistrationID  int       `json:"registration_id"`
+	SignedPrekeyID  int       `json:"signed_prekey_id"`
+	KeyBundleID     string    `json:"key_bundle_id"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -35,6 +39,8 @@ type Message struct {
 	Ciphertext  []byte     `json:"ciphertext"`
 	CreatedAt   time.Time  `json:"created_at"`
 	ExpiresAt   *time.Time `json:"expires_at"` // nil = без самоуничтожения
+	ClientID    string     `json:"client_message_id,omitempty"`
+	ExpiresIn   int64      `json:"-"` // исходный TTL для проверки повторов
 }
 
 // Media — метаданные ciphertext; имя файла, ключ и nonce серверу не передаются.

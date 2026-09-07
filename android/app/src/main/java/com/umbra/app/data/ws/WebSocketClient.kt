@@ -1,60 +1,90 @@
 package com.umbra.app.data.ws
 
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import kotlinx.serialization.json.*
+import okhttp3.*
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
-/**
- * WebSocket-клиент для realtime-событий сервера (входящие сообщения, сигналинг звонков).
- * Соединение: wss://host/v1/ws?token=...
- */
+/** Reconnect с backoff; токен передаётся в заголовке, не в URL. */
 class WebSocketClient(private val baseUrl: String) {
-
     private val client = OkHttpClient()
-    private var socket: WebSocket? = null
-    private val events = Channel<Event>(Channel.BUFFERED)
-
-    private val json = Json { ignoreUnknownKeys = true }
-
-    /** Событие от сервера (тип + сырые данные JSON). */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val events = Channel<Event>(128)
+    private var job: Job? = null
+    private var activeToken: String? = null
+    private val connectedState = MutableStateFlow(false)
+    val connected = connectedState.asStateFlow()
+    val eventFlow = events.receiveAsFlow()
     data class Event(val type: String, val data: JsonObject)
 
-    val eventFlow: Flow<Event> = events.receiveAsFlow()
-
+    @Synchronized
     fun connect(token: String) {
+        if (job?.isActive == true && activeToken == token) return
         disconnect()
-        val url = baseUrl.replace("http", "ws") + "/v1/ws?token=$token"
-        val request = Request.Builder().url(url).build()
-        socket = client.newWebSocket(request, listener)
-    }
-
-    fun disconnect() {
-        socket?.close(1000, "client disconnect")
-        socket = null
-    }
-
-    private val listener = object : WebSocketListener() {
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            runCatching {
-                val obj = json.parseToJsonElement(text).jsonObject
-                val type = obj["type"]?.jsonPrimitive?.content ?: return
-                val data = obj["data"]?.jsonObject ?: JsonObject(emptyMap())
-                events.trySend(Event(type, data))
+        activeToken = token
+        job = scope.launch {
+            var waitMs = 1000L
+            while (isActive) {
+                try {
+                    connection(token)
+                    waitMs = 1000
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* REST восстановит пропущенное. */ }
+                connectedState.value = false
+                delay(waitMs)
+                waitMs = (waitMs * 2).coerceAtMost(30_000)
             }
         }
+    }
 
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            // Переподключение выполняет ViewModel/repository (экспоненциальный backoff).
-        }
+    @Synchronized
+    fun disconnect() {
+        job?.cancel()
+        job = null
+        activeToken = null
+        connectedState.value = false
+    }
+
+    fun close() {
+        disconnect()
+        scope.cancel()
+        events.close()
+        client.connectionPool.evictAll()
+        client.dispatcher.executorService.shutdown()
+    }
+
+    private suspend fun connection(token: String): Unit = suspendCancellableCoroutine { continuation ->
+        val request = Request.Builder()
+            .url(requireNotNull(baseUrl.toHttpUrl().resolve("/v1/ws")))
+            .header("Authorization", "Bearer " + token).build()
+        val socket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!continuation.isActive) { webSocket.cancel(); return }
+                connectedState.value = true
+                if (events.trySend(Event("connected", JsonObject(emptyMap()))).isFailure) webSocket.cancel()
+            }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!continuation.isActive) return
+                try {
+                    val obj = Json.parseToJsonElement(text).jsonObject
+                    val event = Event(obj.getValue("type").jsonPrimitive.content, obj.getValue("data").jsonObject)
+                    if (events.trySend(event).isFailure) webSocket.cancel()
+                } catch (_: Exception) { webSocket.cancel() }
+            }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (continuation.isActive) continuation.resume(Unit)
+            }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (continuation.isActive) continuation.resumeWithException(t)
+            }
+        })
+        continuation.invokeOnCancellation { socket.cancel() }
     }
 }

@@ -1,9 +1,21 @@
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+}
+
+val configuredServerUrl = providers.gradleProperty("umbra.serverUrl")
+    .orElse(providers.environmentVariable("UMBRA_SERVER_URL")).getOrElse("").trim()
+fun urlLiteral(value: String): String {
+    val uri = URI(value)
+    require(uri.scheme in listOf("http", "https") && !uri.host.isNullOrEmpty() &&
+        uri.userInfo == null && uri.query == null && uri.fragment == null &&
+        (uri.path.isNullOrEmpty() || uri.path == "/")) { "Umbra URL must be an HTTP(S) origin" }
+    return "\"" + value.trimEnd('/') + "/\""
 }
 
 android {
@@ -14,8 +26,9 @@ android {
         applicationId = "com.umbra.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Реальные устройства: arm64-v8a (современные) и armeabi-v7a (старые).
         // x86_64 — для эмулятора на x86-хостах. x86 (32-бит) не нужен.
         ndk {
@@ -24,16 +37,18 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "SERVER_URL", urlLiteral(configuredServerUrl.ifEmpty { "http://10.0.2.2:8080" }))
+        }
         release {
+            buildConfigField("String", "SERVER_URL", urlLiteral(configuredServerUrl.ifEmpty { "https://example.invalid" }))
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Для разработки подписываем release тем же debug-ключом (устанавливается).
-            // Для публикации в Play Store замените на собственный keystore.
-            signingConfig = signingConfigs.getByName("debug")
+            // Релиз подписывается собственным ключом вне исходников проекта.
         }
     }
     compileOptions {
@@ -47,6 +62,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     // libsignal-client использует нативный код (JNI) — оставляем abiFilters по умолчанию.
     packaging {
@@ -71,6 +87,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.bouncycastle)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -104,4 +121,18 @@ dependencies {
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     debugImplementation(libs.androidx.ui.tooling)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+}
+
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+
+tasks.configureEach {
+    if (name == "preReleaseBuild") doFirst {
+        require(configuredServerUrl.startsWith("https://")) {
+            "Release requires -Pumbra.serverUrl=https://your-server or UMBRA_SERVER_URL"
+        }
+    }
 }

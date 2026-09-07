@@ -4,200 +4,155 @@ import android.content.Context
 import android.util.Base64
 import com.umbra.app.data.api.PreKeyBundle
 import com.umbra.app.data.api.RegisterRequest
-import org.signal.libsignal.protocol.IdentityKey
-import org.signal.libsignal.protocol.IdentityKeyPair
-import org.signal.libsignal.protocol.SessionBuilder
-import org.signal.libsignal.protocol.SessionCipher
-import org.signal.libsignal.protocol.SignalProtocolAddress
+import com.umbra.app.data.db.AppDatabase
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import org.signal.libsignal.protocol.*
 import org.signal.libsignal.protocol.ecc.Curve
-import org.signal.libsignal.protocol.ecc.ECKeyPair
+import org.signal.libsignal.protocol.message.CiphertextMessage
 import org.signal.libsignal.protocol.message.PreKeySignalMessage
 import org.signal.libsignal.protocol.message.SignalMessage
-import org.signal.libsignal.protocol.state.impl.InMemorySignalProtocolStore
-import java.security.KeyPair
-import java.security.KeyPairGenerator
+import org.signal.libsignal.protocol.state.PreKeyRecord
+import org.signal.libsignal.protocol.state.SignedPreKeyRecord
+import java.security.MessageDigest
 import java.security.SecureRandom
-import java.security.Signature
-import javax.crypto.Cipher
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import java.util.UUID
 
-/**
- * Криптографический слой клиента Umbra.
- *
- * Два независимых набора ключей:
- *  1. Ed25519 — для АУТЕНТИФИКАЦИИ (подпись challenge). Сервер проверяет подпись,
- *     но не участвует в шифровании.
- *  2. X25519 (identity + signed pre-key + one-time pre-keys) — для E2E через
- *     Signal Protocol (X3DH + Double Ratchet). Приватные ключи НИКОГДА не покидают
- *     устройство: identity хранится в Android Keystore, сессии — в памяти.
- *
- * Примечание: Ed25519 через java.security доступен с API 33. Для minSdk 26
- * используйте Google Tink или BouncyCastle (см. README).
- */
-class CryptoManager(context: Context) {
+/** Все операции Signal и запись результата выполняются внутри одной Room-транзакции. */
+class CryptoManager(
+    context: Context,
+    private val db: AppDatabase,
+    private val prefs: SecurePrefs = SecurePrefs(context),
+    private val vault: LocalVault = LocalVault(),
+) {
+    private val json = Json { ignoreUnknownKeys = true }
+    private val random = SecureRandom()
 
-    private val securePrefs = SecurePrefs(context)
+    fun ensureIdentity() = prefs.ensureIdentity()
+    fun hasIdentity() = prefs.hasIdentity()
+    fun currentToken() = prefs.sessionToken()
+    fun saveSession(token: String, expires: String) = prefs.saveSession(token, expires)
+    fun clearSession() = prefs.clearSession()
+    fun saveUser(username: String, userId: String) = prefs.saveUser(username, userId)
+    fun userId() = prefs.userId()
+    fun username() = prefs.username()
+    fun signChallenge(challenge: String) = b64(prefs.sign(challenge.toByteArray(Charsets.UTF_8)))
 
-    /** Signal Protocol store (X3DH + Double Ratchet) для текущего пользователя. */
-    private val signalStore: InMemorySignalProtocolStore by lazy {
-        InMemorySignalProtocolStore(identityKeyPair(), REGISTRATION_ID)
+    fun store(): PersistentSignalStore {
+        check(db.inTransaction()) { "Signal operation requires a database transaction" }
+        val pair = prefs.xIdentity()
+        val owner = b64(MessageDigest.getInstance("SHA-256").digest(pair.publicKey.serialize()))
+        return PersistentSignalStore(db.cryptoDao(), vault, owner,
+            IdentityKeyPair(IdentityKey(pair.publicKey), pair.privateKey), prefs.registrationId())
     }
 
-    /**
-     * Генерирует и сохраняет identity-ключи (Ed25519 + X25519) и pre-keys.
-     * Вызывается один раз при регистрации.
-     */
-    fun generateAndPersistIdentity() {
-        // Ed25519 — для подписи challenge (аутентификация).
-        val edKeyGen = KeyPairGenerator.getInstance("Ed25519")
-        val edPair: KeyPair = edKeyGen.generateKeyPair()
-        securePrefs.saveEd25519(edPair)
-
-        // X25519 identity — для E2E.
-        val xIdentity: ECKeyPair = Curve.generateKeyPair()
-        securePrefs.saveXIdentity(xIdentity)
+    fun needsKeyPublication(serverVersion: Int, serverCount: Int): Boolean {
+        val store = store()
+        return serverVersion < 2 || store.read("meta", "published") == null ||
+            serverCount < 20 || store.read("meta", "pending") != null
     }
 
-    /** Identity-пара X25519 (для Signal Protocol). */
-    private fun identityKeyPair(): IdentityKeyPair {
-        val pair = securePrefs.xIdentity()
-        return IdentityKeyPair(IdentityKey(pair.publicKey), pair.privateKey)
-    }
-
-    /**
-     * Собирает запрос регистрации: username + публичные ключи + подписанный pre-key.
-     * Подпись signed pre-key делается Ed25519-ключом (как требует контракт сервера).
-     */
     fun buildRegisterRequest(username: String): RegisterRequest {
-        val ed = securePrefs.ed25519() ?: throw IllegalStateException("identity не сгенерирован")
-        val xIdentity = securePrefs.xIdentity()
-
-        val signedPreKey = Curve.generateKeyPair()
-        securePrefs.saveSignedPreKey(signedPreKey)
-        val spkBytes = signedPreKey.publicKey.serialize()
-        val spkSignature = signEd25519(ed, spkBytes)
-
-        val oneTimePreKeys = List(ONE_TIME_PREKEY_COUNT) {
-            Curve.generateKeyPair().publicKey.serialize()
+        val store = store()
+        store.read("meta", "pending")?.let {
+            return json.decodeFromString<RegisterRequest>(String(it, Charsets.UTF_8)).copy(username = username)
         }
-
-        return RegisterRequest(
+        val identity = prefs.xIdentity()
+        val signed = store.loadSignedPreKeys().maxByOrNull { it.timestamp } ?: run {
+            val pair = Curve.generateKeyPair()
+            val signature = Curve.calculateSignature(identity.privateKey, pair.publicKey.serialize())
+            SignedPreKeyRecord(nextId { store.containsSignedPreKey(it) }, System.currentTimeMillis(), pair, signature)
+                .also { store.storeSignedPreKey(it.id, it) }
+        }
+        // Старые private pre-keys сохраняем для сообщений, уже находящихся в пути.
+        val prekeys = List(100) {
+            PreKeyRecord(nextId { store.containsPreKey(it) }, Curve.generateKeyPair())
+                .also { store.storePreKey(it.id, it) }
+        }
+        val request = RegisterRequest(
             username = username,
-            identity_ed25519 = b64(ed.public.encoded),
-            identity_x25519 = b64(xIdentity.publicKey.serialize()),
-            signed_prekey = b64(spkBytes),
-            signed_prekey_signature = b64(spkSignature),
-            one_time_prekeys = oneTimePreKeys.map { b64(it) },
+            identity_ed25519 = b64(prefs.edPublic()),
+            identity_x25519 = b64(identity.publicKey.serialize()),
+            signed_prekey = b64(signed.keyPair.publicKey.serialize()),
+            signed_prekey_signature = b64(signed.signature),
+            one_time_prekeys = prekeys.map { b64(it.keyPair.publicKey.serialize()) },
+            key_version = 2,
+            registration_id = prefs.registrationId(),
+            signed_prekey_id = signed.id,
+            one_time_prekey_ids = prekeys.map { it.id },
+            key_bundle_id = UUID.randomUUID().toString(),
         )
+        store.write("meta", "pending", json.encodeToString(request).toByteArray(Charsets.UTF_8))
+        return request
     }
 
-    /** Подписывает challenge сервера Ed25519-ключом. */
-    fun signChallenge(challenge: String): String {
-        val ed = securePrefs.ed25519() ?: throw IllegalStateException("identity не сгенерирован")
-        return b64(signEd25519(ed, challenge.toByteArray(Charsets.UTF_8)))
+    fun markKeysPublished() {
+        val store = store()
+        store.write("meta", "published", byteArrayOf(2))
+        // Удаление pending через DAO сохраняется атомарно вместе с меткой.
+        store.clear("meta", "pending")
     }
 
-    // ---------- сессия / профиль ----------
-
-    fun currentToken(): String? = securePrefs.sessionToken()
-    fun saveUser(username: String, userId: String) {
-        securePrefs.saveUsername(username)
-        securePrefs.saveUserId(userId)
-    }
-    fun saveSession(token: String) = securePrefs.saveSessionToken(token)
-    fun clearSession() = securePrefs.clearSession()
-    fun userId(): String? = securePrefs.userId()
-    fun username(): String? = securePrefs.username()
-
-    /**
-     * Устанавливает E2E-сессию с получателем через X3DH, используя его pre-key пакет.
-     */
-    fun establishSession(recipientUserId: String, bundle: PreKeyBundle) {
-        val address = SignalProtocolAddress(recipientUserId, DEVICE_ID)
-        val preKeyBundle = org.signal.libsignal.protocol.state.PreKeyBundle(
-            REGISTRATION_ID,                                    // registrationId
-            DEVICE_ID,                                          // deviceId
-            1,                                                  // preKeyId
-            Curve.decodePoint(fromB64(bundle.identity_x25519), 0), // preKeyPublic
-            1,                                                  // signedPreKeyId
-            Curve.decodePoint(fromB64(bundle.signed_prekey), 0),   // signedPreKeyPublic
-            fromB64(bundle.signed_prekey_signature),            // signedPreKeySignature
-            IdentityKey(Curve.decodePoint(fromB64(bundle.identity_x25519), 0)), // identityKey
-        )
-        SessionBuilder(signalStore, address).process(preKeyBundle)
-    }
-
-    /**
-     * Шифрует текст для получателя. Возвращает base64-сериализованный Signal message
-     * (PreKeySignalMessage или SignalMessage), который сервер пересылает как opaque ciphertext.
-     */
-    fun encrypt(recipientUserId: String, plaintext: String): String {
-        val address = SignalProtocolAddress(recipientUserId, DEVICE_ID)
-        val cipher = SessionCipher(signalStore, address)
-        val message = cipher.encrypt(plaintext.toByteArray(Charsets.UTF_8))
-        return b64(message.serialize())
-    }
-
-    /** Расшифровывает входящее сообщение от отправителя. */
-    fun decrypt(senderUserId: String, ciphertextBase64: String): String {
-        val address = SignalProtocolAddress(senderUserId, DEVICE_ID)
-        val cipher = SessionCipher(signalStore, address)
-        val bytes = fromB64(ciphertextBase64)
-        val plaintext: ByteArray = try {
-            cipher.decrypt(PreKeySignalMessage(bytes))
-        } catch (_: Exception) {
-            cipher.decrypt(SignalMessage(bytes))
+    fun establishSession(userId: String, bundle: PreKeyBundle) {
+        require(bundle.key_version == 2 && bundle.device_id == 1) { "Собеседнику нужно обновить клиент и ключи" }
+        val store = store()
+        val address = SignalProtocolAddress(userId, 1)
+        val identity = IdentityKey(Curve.decodePoint(unb64(bundle.identity_x25519), 0))
+        check(store.isTrustedIdentity(address, identity, org.signal.libsignal.protocol.state.IdentityKeyStore.Direction.SENDING)) {
+            "Ключ собеседника изменился. Проверьте его личность."
         }
-        return String(plaintext, Charsets.UTF_8)
+        if (store.containsSession(address)) return
+        val hasPrekey = bundle.one_time_prekey.isNotEmpty()
+        if (hasPrekey) require(bundle.one_time_prekey_id > 0)
+        val signalBundle = org.signal.libsignal.protocol.state.PreKeyBundle(
+            bundle.registration_id, bundle.device_id,
+            if (hasPrekey) bundle.one_time_prekey_id else -1,
+            if (hasPrekey) Curve.decodePoint(unb64(bundle.one_time_prekey), 0) else null,
+            bundle.signed_prekey_id, Curve.decodePoint(unb64(bundle.signed_prekey), 0),
+            unb64(bundle.signed_prekey_signature), identity,
+        )
+        SessionBuilder(store, address).process(signalBundle)
     }
 
-    // ---------- шифрование медиа (AES-256-GCM на файл) ----------
-    //
-    // Каждый файл шифруется одноразовым ключом; ключ и nonce вкладываются
-    // в E2E-конверт сообщения (Signal-сессия), на сервер уходит только ciphertext.
-
-    /** Новый AES-256 ключ файла (32 байта, SecureRandom). */
-    fun newFileKey(): ByteArray = ByteArray(FILE_KEY_BYTES).also { secureRandom.nextBytes(it) }
-
-    /** Новый GCM-nonce (12 байт); НИКОГДА не переиспользовать с тем же ключом. */
-    fun newFileNonce(): ByteArray = ByteArray(GCM_NONCE_BYTES).also { secureRandom.nextBytes(it) }
-
-    /** Шифрует байты файла: ciphertext = plaintext || GCM-тег (16 байт). */
-    fun encryptFileBytes(key: ByteArray, nonce: ByteArray, plaintext: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance(AES_GCM)
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
-        return cipher.doFinal(plaintext)
+    fun encrypt(recipient: String, plaintext: String): String {
+        val message = SessionCipher(store(), SignalProtocolAddress(recipient, 1))
+            .encrypt(plaintext.toByteArray(Charsets.UTF_8))
+        // Это версия контейнера, не новая криптосхема; bytes внутри — результат libsignal.
+        return b64(byteArrayOf(85, 77, 66, 2, message.type.toByte()) + message.serialize())
     }
 
-    /** Расшифровывает байты файла; при подмене ciphertext бросает AEADBadTagException. */
-    fun decryptFileBytes(key: ByteArray, nonce: ByteArray, ciphertext: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance(AES_GCM)
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
-        return cipher.doFinal(ciphertext)
+    fun decrypt(sender: String, value: String): String {
+        val bytes = unb64(value)
+        val cipher = SessionCipher(store(), SignalProtocolAddress(sender, 1))
+        val clear = if (bytes.size > 5 && bytes[0] == 85.toByte() && bytes[1] == 77.toByte() && bytes[2] == 66.toByte()) {
+            require(bytes[3] == 2.toByte()) { "Неподдерживаемая версия сообщения" }
+            val payload = bytes.copyOfRange(5, bytes.size)
+            when (bytes[4].toInt()) {
+                CiphertextMessage.PREKEY_TYPE -> cipher.decrypt(PreKeySignalMessage(payload))
+                CiphertextMessage.WHISPER_TYPE -> cipher.decrypt(SignalMessage(payload))
+                else -> error("Неизвестный тип Signal-сообщения")
+            }
+        } else {
+            // Совместимость с прежним контейнером: только разбор формата может
+            // переключить тип; ошибки доверия/расшифровки не маскируются.
+            val prekey = try { PreKeySignalMessage(bytes) } catch (_: InvalidMessageException) { null }
+                catch (_: InvalidVersionException) { null }
+            if (prekey != null) cipher.decrypt(prekey) else cipher.decrypt(SignalMessage(bytes))
+        }
+        return String(clear, Charsets.UTF_8)
     }
 
-    // ---------- вспомогательное ----------
+    fun sealHistory(owner: String, id: String, text: String) =
+        vault.seal("history:" + owner + ":" + id, text.toByteArray(Charsets.UTF_8))
+    fun openHistory(owner: String, id: String, value: String) =
+        String(vault.open("history:" + owner + ":" + id, value), Charsets.UTF_8)
 
-    private val secureRandom = SecureRandom()
-
-    private fun signEd25519(pair: KeyPair, data: ByteArray): ByteArray {
-        val sig = Signature.getInstance("Ed25519")
-        sig.initSign(pair.private)
-        sig.update(data)
-        return sig.sign()
+    private fun nextId(used: (Int) -> Boolean): Int {
+        var id: Int
+        do { id = random.nextInt(0xffffff) + 1 } while (used(id))
+        return id
     }
-
-    private fun b64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
-    private fun fromB64(s: String): ByteArray = Base64.decode(s, Base64.NO_WRAP)
-
-    companion object {
-        const val REGISTRATION_ID = 1
-        const val DEVICE_ID = 1
-        const val ONE_TIME_PREKEY_COUNT = 100
-        private const val AES_GCM = "AES/GCM/NoPadding"
-        private const val GCM_TAG_BITS = 128
-        private const val FILE_KEY_BYTES = 32
-        private const val GCM_NONCE_BYTES = 12
-    }
+    private fun b64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    private fun unb64(value: String) = Base64.decode(value, Base64.NO_WRAP)
 }

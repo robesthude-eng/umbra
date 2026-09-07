@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -30,6 +31,9 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 }
 
 func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
+	if u.KeyVersion == 0 { u.KeyVersion = 1 }
+	if u.RegistrationID == 0 { u.RegistrationID = 1 }
+	if u.SignedPrekeyID == 0 { u.SignedPrekeyID = 1 }
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -37,9 +41,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO users (id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		u.ID, u.Username, u.IdentityEd25519, u.IdentityX25519, u.SignedPrekey, u.SignedPrekeySig)
+		`INSERT INTO users (id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, key_version, registration_id, signed_prekey_id, key_bundle_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		u.ID, u.Username, u.IdentityEd25519, u.IdentityX25519, u.SignedPrekey, u.SignedPrekeySig, u.KeyVersion, u.RegistrationID, u.SignedPrekeyID, u.KeyBundleID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -55,9 +59,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 func (p *PostgresStore) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at
+		`SELECT id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE username = $1`, username).
-		Scan(&u.ID, &u.Username, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt)
+		Scan(&u.ID, &u.Username, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -67,9 +71,9 @@ func (p *PostgresStore) GetUserByUsername(ctx context.Context, username string) 
 func (p *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at
+		`SELECT id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE id = $1`, id).
-		Scan(&u.ID, &u.Username, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt)
+		Scan(&u.ID, &u.Username, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -111,6 +115,29 @@ func (p *PostgresStore) DeleteToken(ctx context.Context, tokenHash string) error
 }
 
 func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error {
+    // PostgreSQL сохраняет TIMESTAMPTZ с микросекундной точностью.
+    m.CreatedAt = m.CreatedAt.Truncate(time.Microsecond)
+    if m.ExpiresAt != nil { expires := m.ExpiresAt.Truncate(time.Microsecond); m.ExpiresAt = &expires }
+	tx, err := p.pool.Begin(ctx)
+	if err != nil { return err }
+	defer tx.Rollback(ctx)
+	if m.ClientID != "" {
+		hash := messageRequestHash(m)
+		tag, err := tx.Exec(ctx, `INSERT INTO message_receipts
+		 (sender_id,client_id,request_hash,message_id,created_at,expires_at)
+		 VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (sender_id,client_id) DO NOTHING`,
+		 m.SenderID, m.ClientID, hash[:], m.ID, m.CreatedAt, m.ExpiresAt)
+		if err != nil { return mapErr(err) }
+		if tag.RowsAffected() == 0 {
+			var previous []byte
+			err = tx.QueryRow(ctx, `SELECT request_hash,message_id,created_at,expires_at FROM message_receipts
+			 WHERE sender_id=$1 AND client_id=$2`, m.SenderID, m.ClientID).
+			 Scan(&previous, &m.ID, &m.CreatedAt, &m.ExpiresAt)
+			if err != nil { return mapErr(err) }
+			if !bytes.Equal(previous, hash[:]) { return ErrConflict }
+			return tx.Commit(ctx)
+		}
+	}
 	var recipient, chatID any
 	if m.RecipientID != "" {
 		recipient = m.RecipientID
@@ -118,11 +145,12 @@ func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error
 	if m.ChatID != "" {
 		chatID = m.ChatID
 	}
-	_, err := p.pool.Exec(ctx,
-		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext, expires_at)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		m.ID, m.SenderID, recipient, chatID, m.Ciphertext, m.ExpiresAt)
-	return mapErr(err)
+	_, err = tx.Exec(ctx,
+		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext, expires_at, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		m.ID, m.SenderID, recipient, chatID, m.Ciphertext, m.ExpiresAt, m.CreatedAt)
+	if err != nil { return mapErr(err) }
+	return tx.Commit(ctx)
 }
 
 func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since time.Time) ([]*model.Message, error) {
@@ -417,6 +445,11 @@ func (p *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Блокировка пользователя согласована с SaveMediaWithQuota: новые файлы
+	// не могут появиться между постановкой в очередь и каскадным удалением.
+	var lockedID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedID); err != nil { return mapErr(err) }
+	if _, err := tx.Exec(ctx, `INSERT INTO blob_deletions(id) SELECT id FROM media WHERE owner_id=$1 ON CONFLICT DO NOTHING`, userID); err != nil { return err }
 
 	// Чаты, где пользователь — создатель, удаляем целиком (вместе с участниками).
 	if _, err := tx.Exec(ctx, `DELETE FROM chats WHERE created_by = $1`, userID); err != nil {

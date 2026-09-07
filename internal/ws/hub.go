@@ -1,6 +1,4 @@
-// Package ws — WebSocket-хаб для realtime-доставки сообщений.
-// Hub не знает и не хранит содержимого сообщений — только пересылает
-// уже зашифрованные блобы подключённым клиентам по их userID.
+// Package ws доставляет непрозрачные сообщения всем подключённым устройствам.
 package ws
 
 import (
@@ -8,77 +6,74 @@ import (
 	"sync"
 )
 
-// Hub хранит активные WebSocket-соединения в разрезе userID.
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[string]map[*Client]bool
-	register   chan *Client
-	unregister chan *Client
+	mu sync.RWMutex
+	clients map[string]map[*Client]bool
+	done chan struct{}
+	closed bool
 }
 
-func NewHub() *Hub {
-	return &Hub{
-		clients:    make(map[string]map[*Client]bool),
-		register:   make(chan *Client, 256),
-		unregister: make(chan *Client, 256),
+func NewHub() *Hub { return &Hub{clients:make(map[string]map[*Client]bool),done:make(chan struct{})} }
+
+// Run оставлен для совместимости. Регистрация теперь синхронная: push сразу
+// после WebSocket-handshake не теряется в очереди регистрации.
+func (h *Hub) Run() { <-h.done }
+
+func (h *Hub) Register(c *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed { close(c.send); _=c.conn.Close(); return }
+	if h.clients[c.userID]==nil { h.clients[c.userID]=make(map[*Client]bool) }
+	h.clients[c.userID][c]=true
+}
+
+func (h *Hub) Unregister(c *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.remove(c)
+}
+
+func (h *Hub) remove(c *Client) {
+	if h.clients[c.userID][c] {
+		delete(h.clients[c.userID],c)
+		close(c.send)
+		if len(h.clients[c.userID])==0 { delete(h.clients,c.userID) }
 	}
 }
 
-// Run — главный цикл хаба. Запускать в отдельной горутине.
-func (h *Hub) Run() {
-	for {
-		select {
-		case c := <-h.register:
-			h.mu.Lock()
-			if h.clients[c.userID] == nil {
-				h.clients[c.userID] = make(map[*Client]bool)
-			}
-			h.clients[c.userID][c] = true
-			h.mu.Unlock()
-		case c := <-h.unregister:
-			h.mu.Lock()
-			if m := h.clients[c.userID]; m != nil {
-				if m[c] {
-					delete(m, c)
-					close(c.send)
-				}
-				if len(m) == 0 {
-					delete(h.clients, c.userID)
-				}
-			}
-			h.mu.Unlock()
-		}
-	}
-}
-
-// Push отправляет payload (уже сериализованный в JSON) всем соединениям userID.
 func (h *Hub) Push(userID string, payload any) {
 	data, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	if err != nil { return }
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for c := range h.clients[userID] {
 		select {
 		case c.send <- data:
 		default:
-			// Медленный клиент — пропускаем, чтобы не блокировать хаб.
-			// Клиент догонит сообщения через REST-синхронизацию.
+			// Пропуск явно превращаем в разрыв: клиент пересинхронизируется через REST.
+			h.remove(c)
+			_=c.conn.Close()
 		}
 	}
 }
 
-// Online сообщает, подключён ли пользователь в данный момент.
-// Используется клиентами для статуса «онлайн» (метаданные не логируются).
 func (h *Hub) Online(userID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return len(h.clients[userID]) > 0
+	return len(h.clients[userID])!=0
 }
 
-// Register подключает клиента к хабу.
-func (h *Hub) Register(c *Client) { h.register <- c }
+func (h *Hub) DisconnectUser(userID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.clients[userID] { h.remove(c); _=c.conn.Close() }
+}
 
-// Unregister отключает клиента.
-func (h *Hub) Unregister(c *Client) { h.unregister <- c }
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed { return }
+	h.closed=true
+	for _, clients := range h.clients { for c := range clients { h.remove(c); _=c.conn.Close() } }
+	close(h.done)
+}

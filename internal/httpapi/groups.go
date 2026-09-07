@@ -42,6 +42,7 @@ type chatMessageRequest struct {
 	Ciphertext string `json:"ciphertext"` // base64
 	// ExpiresIn — секунды до самоуничтожения (секретные сообщения в группе). 0 = без таймера.
 	ExpiresIn int64 `json:"expires_in"`
+	ClientID string `json:"client_message_id"`
 }
 
 type contactRequest struct {
@@ -64,12 +65,24 @@ const typingTTL = 5 * time.Second
 func (t *typingStore) mark(chatID, userID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+    now := time.Now()
+    live := 0
+    for id, members := range t.data {
+        for uid, expires := range members {
+            if !expires.After(now) { delete(members, uid) } else { live++ }
+        }
+        if len(members) == 0 { delete(t.data, id) }
+    }
+    // Индикатор эфемерен: при перегрузке пропускаем новый, не накапливаем память.
+    if live >= 16384 {
+        if _, exists := t.data[chatID][userID]; !exists { return }
+    }
 	m, ok := t.data[chatID]
 	if !ok {
 		m = make(map[string]time.Time)
 		t.data[chatID] = m
 	}
-	m[userID] = time.Now().Add(typingTTL)
+	m[userID] = now.Add(typingTTL)
 }
 
 func (t *typingStore) list(chatID string) []string {
@@ -271,7 +284,7 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ct, err := b64(req.Ciphertext)
-	if err != nil {
+	if err != nil || len(ct) == 0 || !validMessageOptions(req.ClientID, req.ExpiresIn) {
 		writeError(w, http.StatusBadRequest, "invalid ciphertext")
 		return
 	}
@@ -303,12 +316,14 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		ChatID:     chatID,
 		Ciphertext: ct,
 		CreatedAt:  time.Now().UTC(),
+		ClientID: req.ClientID, ExpiresIn: req.ExpiresIn,
 	}
 	if req.ExpiresIn > 0 {
 		exp := msg.CreatedAt.Add(time.Duration(req.ExpiresIn) * time.Second)
 		msg.ExpiresAt = &exp
 	}
 	if err := s.store.SaveMessage(r.Context(), msg); err != nil {
+		if errors.Is(err, store.ErrConflict) { writeError(w, 409, "client_message_id reused with different content"); return }
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -318,13 +333,14 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		SenderID:   msg.SenderID,
 		ChatID:     msg.ChatID,
 		Ciphertext: req.Ciphertext,
-		CreatedAt:  msg.CreatedAt.Format(time.RFC3339),
+		CreatedAt:  msg.CreatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:  formatTime(msg.ExpiresAt),
+		ClientID: msg.ClientID,
 	}
 
 	// Рассылка всем участникам (включая отправителя — для multi-device).
 	members, err := s.store.ListMembers(r.Context(), chatID)
-	if err == nil {
+	if err == nil && (msg.ExpiresAt == nil || msg.ExpiresAt.After(time.Now())) {
 		for _, m := range members {
 			s.hub.Push(m.UserID, ws.Event{Type: "message", Data: resp})
 		}

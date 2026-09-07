@@ -25,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,22 +47,32 @@ fun ChatsScreen(
     onLogout: () -> Unit,
 ) {
     val vm: ChatsViewModel = viewModel(factory = ChatsViewModel.Factory(container))
-    val chats by vm.chats.collectAsState(initial = emptyList())
+    val chats by vm.chats.collectAsState()
     val newChat by vm.newChatState.collectAsState()
+    val connected by container.chatRepository.connected.collectAsState()
+    val syncError by container.chatRepository.syncError.collectAsState()
 
     // Обработка результата диалога «новый чат».
-    (newChat as? ChatsViewModel.NewChatState.Started)?.let { started ->
-        vm.hideNewChatDialog()
-        onOpenChat(started.chat.id)
+    LaunchedEffect(newChat) {
+        (newChat as? ChatsViewModel.NewChatState.Started)?.let { started ->
+            vm.hideNewChatDialog()
+            onOpenChat(started.chat.id)
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Чаты") },
+                title = {
+                    Column {
+                        Text("Чаты")
+                        val status = syncError ?: if (!connected) "Подключение…" else null
+                        status?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+                    }
+                },
                 actions = {
                     Icon(Icons.Filled.Lock, contentDescription = "E2E", tint = MaterialTheme.colorScheme.secondary)
-                    IconButton(onClick = onLogout) { Text("⏻") }
+                    TextButton(onClick = onLogout) { Text("Выйти") }
                 },
             )
         },
