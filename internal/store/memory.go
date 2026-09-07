@@ -13,16 +13,16 @@ import (
 // Не предназначен для продакшна (данные теряются при рестарте).
 type MemoryStore struct {
 	mu          sync.Mutex
-	users       map[string]*model.User           // id -> user
-	byName      map[string]string                // username -> id
-	prekeys     map[string][][]byte              // userID -> очередь одноразовых pre-keys
-	tokens      map[string]tokenEntry            // tokenHash -> запись
-	messages    []*model.Message                 // все сообщения (личные + групповые)
-	media       map[string]*model.Media          // id -> метаданные
-	chats       map[string]*model.Chat           // chatID -> чат
+	users       map[string]*model.User                 // id -> user
+	byName      map[string]string                      // username -> id
+	prekeys     map[string][][]byte                    // userID -> очередь одноразовых pre-keys
+	tokens      map[string]tokenEntry                  // tokenHash -> запись
+	messages    []*model.Message                       // все сообщения (личные + групповые)
+	media       map[string]*model.Media                // id -> метаданные
+	chats       map[string]*model.Chat                 // chatID -> чат
 	chatMembers map[string]map[string]model.MemberRole // chatID -> (userID -> роль)
-	contacts    map[string]map[string]bool       // userID -> (contactID -> true)
-	calls       map[string]*model.Call           // callID -> звонок
+	contacts    map[string]map[string]bool             // userID -> (contactID -> true)
+	calls       map[string]*model.Call                 // callID -> звонок
 }
 
 type tokenEntry struct {

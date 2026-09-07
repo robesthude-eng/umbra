@@ -41,20 +41,20 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:      getenv("LISTEN_ADDR", ":8080"),
-		Store:           getenv("STORE", "memory"),
-		DatabaseURL:     getenv("DATABASE_URL", ""),
-		TokenTTL:        time.Duration(getenvInt("TOKEN_TTL_SECONDS", 86400)) * time.Second,
-		MaxMessageBytes: int64(getenvInt("MAX_MESSAGE_BYTES", 2_097_152)), // 2 MiB по умолчанию
-		BlobDir:         getenv("BLOB_DIR", "./data/blobs"),
-		MaxMediaBytes:   getenvPositiveInt("MAX_MEDIA_BYTES", DefaultMaxMediaBytes),
-		BlobStoreType:   getenv("BLOB_STORE_TYPE", "file"),
-		S3Endpoint:      getenv("S3_ENDPOINT", ""),
-		S3AccessKey:     getenv("S3_ACCESS_KEY", ""),
-		S3SecretKey:     getenv("S3_SECRET_KEY", ""),
-		S3Bucket:        getenv("S3_BUCKET", ""),
-		S3Region:        getenv("S3_REGION", ""),
-		S3UseSSL:        getenvBool("S3_USE_SSL", true),
+		ListenAddr:        getenv("LISTEN_ADDR", ":8080"),
+		Store:             getenv("STORE", "memory"),
+		DatabaseURL:       getenv("DATABASE_URL", ""),
+		TokenTTL:          time.Duration(getenvInt("TOKEN_TTL_SECONDS", 86400)) * time.Second,
+		MaxMessageBytes:   int64(getenvInt("MAX_MESSAGE_BYTES", 2_097_152)), // 2 MiB по умолчанию
+		BlobDir:           getenv("BLOB_DIR", "./data/blobs"),
+		MaxMediaBytes:     getenvPositiveInt("MAX_MEDIA_BYTES", DefaultMaxMediaBytes),
+		BlobStoreType:     getenv("BLOB_STORE_TYPE", "file"),
+		S3Endpoint:        getenv("S3_ENDPOINT", ""),
+		S3AccessKey:       getenv("S3_ACCESS_KEY", ""),
+		S3SecretKey:       getenv("S3_SECRET_KEY", ""),
+		S3Bucket:          getenv("S3_BUCKET", ""),
+		S3Region:          getenv("S3_REGION", ""),
+		S3UseSSL:          getenvBool("S3_USE_SSL", true),
 		MaxUserMediaBytes: int64(getenvInt("MAX_USER_MEDIA_BYTES", 0)),
 	}
 }
