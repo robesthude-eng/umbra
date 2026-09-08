@@ -1,8 +1,11 @@
 name: Android APK (debug)
 
+# Собирает debug-APK при изменении Android-кода на ветке main.
+# Артефакт (umbra-apk-debug) доступен на странице прогона Actions 60 дней;
+# теги/релизы не создаются — в репозитории остаётся одна ветка main.
 on:
   push:
-    branches: [integrity-0.2.0, main]
+    branches: [main]
     paths:
       - 'android/**'
       - '.github/workflows/android-apk.yml'
@@ -14,7 +17,7 @@ on:
         default: 'http://194.226.126.253:8081'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   apk:
@@ -60,16 +63,3 @@ jobs:
             umbra-debug.apk
             umbra-debug.apk.sha256
           retention-days: 60
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: apk-debug
-          name: 'Umbra debug APK (автосборка)'
-          body: |
-            Debug-APK из ветки `${{ github.ref_name }}`, коммит `${{ github.sha }}`.
-            Сервер, вшитый в APK: `${{ inputs.serverUrl || 'http://194.226.126.253:8081' }}`
-            Прямая ссылка: https://github.com/robesthude-eng/umbra/releases/download/apk-debug/umbra-debug.apk
-          files: |
-            umbra-debug.apk
-            umbra-debug.apk.sha256
-          fail_on_unmatched_files: true

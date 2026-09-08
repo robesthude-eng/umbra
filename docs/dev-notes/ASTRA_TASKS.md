@@ -8,7 +8,7 @@
 Не пропускай файлы, не пиши «…здесь остальной код». Придерживайся существующей
 структуры и стиля (пакеты в `internal/`, домен в `internal/model`, хранилище в `internal/store`).
 
-> 📌 Есть референс-проект «Vela» (Telegram-клон): разбор — в `docs/vela-analysis.md`.
+> 📌 Есть референс-проект «Vela» (Telegram-клон): разбор — в `vela-analysis.md`.
 > Из него берём **концепции** (фиче-лист, WebRTC-паттерн, схему данных, UX), код НЕ переносим.
 > Криптография у нас строже: E2E всегда, Signal Protocol, forward secrecy.
 
@@ -47,7 +47,7 @@
 
 ## Задача 5 — Звонки (Этап 4)
 Реализуй сигналинг для голосовых/видеозвонков, заимствуя WebRTC-паттерн из Vela:
-- perfect negotiation (polite/impolite peer) — см. docs/vela-analysis.md §3.2;
+- perfect negotiation (polite/impolite peer) — см. vela-analysis.md §3.2;
 - сигналинг через наш WS-хаб (НЕ поллинг БД): `offer`/`answer`/`ice` relay между peers;
 - таблицы `calls` и эфемерный ростер peer'ов (TTL);
 - медиа-канал end-to-end: ключи согласуются через libsignal, DTLS fingerprint сверяется
@@ -64,7 +64,7 @@
 для Signal Protocol (через libsignal), Room-БД для офлайн-очереди, Retrofit/OkHttp
 клиент под этот API.
 UX-референс из Vela: вкладки Chats/Contacts/Calls/Settings, пузыри сообщений,
-reply-превью, unread-бейджи, замок на E2EE-чатах (см. docs/vela-analysis.md §3.4).
+reply-превью, unread-бейджи, замок на E2EE-чатах (см. vela-analysis.md §3.4).
 Полный функционал — отдельными задачами.
 
 ---
