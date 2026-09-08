@@ -19,6 +19,8 @@ type MemoryStore struct {
 	receipts    map[string]messageReceipt
 	users       map[string]*model.User           // id -> user
 	byName      map[string]string                // username -> id
+	byPhone     map[string]string                // phone E.164 -> id
+	byPhoneHash map[string]string                // sha256(phone) -> id
 	prekeys     map[string][][]byte              // userID -> очередь одноразовых pre-keys
 	tokens      map[string]tokenEntry            // tokenHash -> запись
 	messages    []*model.Message                 // все сообщения (личные + групповые)
@@ -40,6 +42,8 @@ func NewMemoryStore() *MemoryStore {
 		receipts:    make(map[string]messageReceipt),
 		users:       make(map[string]*model.User),
 		byName:      make(map[string]string),
+		byPhone:     make(map[string]string),
+		byPhoneHash: make(map[string]string),
 		prekeys:     make(map[string][][]byte),
 		tokens:      make(map[string]tokenEntry),
 		media:       make(map[string]*model.Media),
@@ -56,6 +60,11 @@ func (m *MemoryStore) CreateUser(_ context.Context, u *model.User) error {
 	if _, ok := m.byName[u.Username]; ok {
 		return ErrConflict
 	}
+	if u.Phone != "" {
+		if _, ok := m.byPhone[u.Phone]; ok {
+			return ErrConflict
+		}
+	}
 	cp := *u
 	if cp.KeyVersion == 0 { cp.KeyVersion = 1 }
 	if cp.RegistrationID == 0 { cp.RegistrationID = 1 }
@@ -63,8 +72,43 @@ func (m *MemoryStore) CreateUser(_ context.Context, u *model.User) error {
 	cp.OneTimePrekeys = append([][]byte(nil), u.OneTimePrekeys...)
 	m.users[u.ID] = &cp
 	m.byName[u.Username] = u.ID
+	if cp.Phone != "" {
+		m.byPhone[cp.Phone] = u.ID
+	}
+	if cp.PhoneHash != "" {
+		m.byPhoneHash[cp.PhoneHash] = u.ID
+	}
 	m.prekeys[u.ID] = append([][]byte(nil), u.OneTimePrekeys...)
 	return nil
+}
+
+func (m *MemoryStore) GetUserByPhone(_ context.Context, phone string) (*model.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.byPhone[phone]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return m.copyUser(m.users[id]), nil
+}
+
+func (m *MemoryStore) FindUsersByPhoneHashes(_ context.Context, hashes []string) ([]*model.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*model.User, 0, len(hashes))
+	seen := make(map[string]bool, len(hashes))
+	for _, h := range hashes {
+		id, ok := m.byPhoneHash[h]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if u := m.copyUser(m.users[id]); u != nil {
+			out = append(out, u)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 func (m *MemoryStore) GetUserByUsername(_ context.Context, username string) (*model.User, error) {
@@ -356,6 +400,12 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 
 	delete(m.users, userID)
 	delete(m.byName, username)
+	if u.Phone != "" {
+		delete(m.byPhone, u.Phone)
+	}
+	if u.PhoneHash != "" {
+		delete(m.byPhoneHash, u.PhoneHash)
+	}
 	delete(m.prekeys, userID)
 
 	// токены

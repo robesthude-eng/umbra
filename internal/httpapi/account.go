@@ -50,6 +50,8 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":         u.ID,
 		"username":   u.Username,
+		"phone":      u.Phone,
+		"display_name": u.DisplayName,
 		"created_at": u.CreatedAt.Format(time.RFC3339),
 		"key_version": u.KeyVersion,
         "one_time_prekey_count": count,

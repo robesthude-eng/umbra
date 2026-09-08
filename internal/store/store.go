@@ -26,6 +26,12 @@ type Store interface {
 	CreateUser(ctx context.Context, u *model.User) error
 	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
+	// GetUserByPhone ищет пользователя по нормализованному номеру E.164.
+	GetUserByPhone(ctx context.Context, phone string) (*model.User, error)
+	// FindUsersByPhoneHashes возвращает пользователей, чей phone_hash входит
+	// в переданный список (приватный поиск контактов). Пользователи без номера
+	// не участвуют в поиске.
+	FindUsersByPhoneHashes(ctx context.Context, hashes []string) ([]*model.User, error)
 	// TakeOneTimePrekey извлекает и УДАЛЯЕТ один одноразовый pre-key (однократное использование).
 	TakeOneTimePrekey(ctx context.Context, userID string) ([]byte, error)
 	TakePrekeyBundle(ctx context.Context, username string) (*model.User, []byte, error)

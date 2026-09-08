@@ -8,6 +8,7 @@ import android.webkit.MimeTypeMap
 import androidx.room.withTransaction
 import com.umbra.app.crypto.CryptoManager
 import com.umbra.app.data.api.*
+import com.umbra.app.data.contacts.PhoneNumbers
 import com.umbra.app.data.db.*
 import com.umbra.app.data.media.MediaInfo
 import com.umbra.app.data.media.MessagePayload
@@ -73,36 +74,66 @@ class ChatRepository(
     private fun auth() = "Bearer " + requireNotNull(crypto.currentToken()) { "Войдите в аккаунт" }
     fun isLoggedIn() = logged.value
 
-    suspend fun register(username: String) = withContext(Dispatchers.IO) {
+    /**
+     * Регистрация по имени и номеру телефона. Без SMS и писем: владение номером
+     * подтверждает не код, а ключи устройства (Ed25519 challenge-response).
+     * Поэтому восстановление аккаунта возможно только на устройстве, где ключи
+     * уже сохранены, — на новом устройстве регистрируется новый аккаунт.
+     */
+    suspend fun register(name: String, phoneRaw: String) = withContext(Dispatchers.IO) {
+        val displayName = name.trim()
+        require(displayName.isNotEmpty() && displayName.length <= 64) { "Введите имя (1–64 символа)" }
+        val phone = PhoneNumbers.normalize(phoneRaw)
+            ?: throw IllegalArgumentException("Некорректный номер телефона. Пример: +7 999 123-45-67")
         check(crypto.userId() == null) { "На устройстве уже есть аккаунт. Используйте вход; ключи сохранены." }
         crypto.ensureIdentity()
-        val request = db.withTransaction { crypto.buildRegisterRequest(username) }
+        // username оставляем пустым: сервер сгенерирует служебный из номера.
+        val request = db.withTransaction { crypto.buildRegisterRequest("", phone, displayName) }
         try {
             val registered = api.register(request)
             crypto.saveUser(registered.username, registered.id)
+            crypto.savePhone(registered.phone.ifEmpty { phone })
             db.withTransaction { crypto.markKeysPublished() }
         } catch (e: HttpException) {
             if (e.code() != 409) throw e
             // Регистрация могла завершиться на сервере до обрыва HTTP-ответа.
-            try { login(username); return@withContext }
+            try { login(phone); return@withContext }
             catch (loginError: HttpException) {
                 if (loginError.code() != 401) throw loginError
-                error("Имя уже занято. Выберите другое имя; локальные ключи сохранены.")
+                error("Номер уже зарегистрирован на другом устройстве. Без переноса ключей войти нельзя; локальные ключи сохранены.")
             }
         }
-        login(username)
+        login(phone)
     }
 
-    suspend fun login(username: String) = withContext(Dispatchers.IO) {
+    /** Вход по номеру телефона (основной путь). Требует ключей аккаунта на устройстве. */
+    suspend fun login(phoneRaw: String) {
+        val phone = PhoneNumbers.normalize(phoneRaw)
+            ?: throw IllegalArgumentException("Некорректный номер телефона. Пример: +7 999 123-45-67")
+        loginInternal(username = "", phone = phone)
+    }
+
+    /** Вход по имени пользователя — для аккаунтов старого формата (без номера). */
+    suspend fun loginLegacy(username: String) {
+        require(username.isNotBlank()) { "Введите имя пользователя" }
+        loginInternal(username = username.trim(), phone = "")
+    }
+
+    private suspend fun loginInternal(username: String, phone: String) = withContext(Dispatchers.IO) {
         authMutex.withLock {
-            check(crypto.hasIdentity()) { "На устройстве нет ключей этого аккаунта. Одного имени для входа недостаточно." }
-            val saved = crypto.username()
-            check(saved == null || saved == username) { "На устройстве сохранены ключи другого аккаунта" }
-            val challenge = api.challenge(ChallengeRequest(username)).challenge
-            val session = api.verify(VerifyRequest(username, challenge, crypto.signChallenge(challenge)))
+            check(crypto.hasIdentity()) {
+                "На устройстве нет ключей аккаунта. Без SMS-кодов вход возможен только с сохранёнными ключами."
+            }
+            val challenge = api.challenge(ChallengeRequest(username = username, phone = phone)).challenge
+            val session = api.verify(VerifyRequest(
+                username = username, phone = phone,
+                challenge = challenge, signature = crypto.signChallenge(challenge),
+            ))
             try {
                 val account = api.account("Bearer " + session.token)
+                // saveUser сам не даст войти в чужой аккаунт с этими ключами.
                 crypto.saveUser(account.username, account.id)
+                if (account.phone.isNotEmpty()) crypto.savePhone(account.phone)
                 crypto.saveSession(session.token, session.expires_at)
                 prepareAccount(account)
                 logged.value = true
@@ -201,16 +232,91 @@ class ChatRepository(
         }
     }
 
-    suspend fun startChat(username: String): ChatEntity = withContext(Dispatchers.IO) {
+    suspend fun startChat(username: String, title: String? = null): ChatEntity = withContext(Dispatchers.IO) {
         val bundle = api.prekeys(username)
         require(bundle.id != crypto.userId()) { "Диалог с собой пока не поддерживается" }
         db.withTransaction {
             crypto.establishSession(bundle.id, bundle)
-            ChatEntity(bundle.id, "dm", bundle.username).also { db.chatDao().upsert(it) }
+            ChatEntity(bundle.id, "dm", title?.takeIf { it.isNotBlank() } ?: bundle.username)
+                .also { db.chatDao().upsert(it) }
         }
     }
 
     fun chats(): Flow<List<ChatEntity>> = db.chatDao().all()
+
+    /** Карточка чата (заголовок для экрана диалога). */
+    fun chat(chatId: String): Flow<ChatEntity?> = db.chatDao().observe(chatId)
+
+    /** Телефонная книга, сопоставленная с пользователями Umbra (см. syncContacts). */
+    fun contacts(): Flow<List<ContactEntity>> = db.contactDao().all()
+
+    /**
+     * Синхронизация контактов: читает телефонную книгу (READ_CONTACTS),
+     * нормализует номера и отправляет на сервер ТОЛЬКО их SHA-256-хэши.
+     * Совпадения (люди уже в Umbra) сохраняются локально и добавляются
+     * в серверный список контактов. Возвращает число найденных в Umbra.
+     */
+    suspend fun syncContacts(): Int = withContext(Dispatchers.IO) {
+        check(logged.value) { "Войдите в аккаунт" }
+        val device = PhoneNumbers.readAll(context.contentResolver)
+        val me = crypto.userId()
+        val byHash = device.associateBy { PhoneNumbers.hash(it.phone) }
+        val matches = if (byHash.isEmpty()) emptyList() else
+            api.discoverContacts(auth(), DiscoverRequest(byHash.keys.toList())).matches
+        val now = System.currentTimeMillis()
+        val matchedHashes = matches.map { it.phone_hash }.toSet()
+        val entities = ArrayList<ContactEntity>(device.size)
+        for (m in matches) {
+            if (m.id == me) continue // себя не показываем в списке контактов
+            val local = byHash[m.phone_hash]
+            entities.add(ContactEntity(
+                phoneHash = m.phone_hash,
+                phone = local?.phone ?: m.phone,
+                name = local?.name?.takeIf { it.isNotBlank() } ?: m.display_name.ifEmpty { m.phone },
+                umbraUserId = m.id,
+                umbraUsername = m.username,
+                umbraDisplayName = m.display_name,
+                syncedAt = now,
+            ))
+        }
+        for ((hash, c) in byHash) {
+            if (hash !in matchedHashes) {
+                entities.add(ContactEntity(phoneHash = hash, phone = c.phone, name = c.name, syncedAt = now))
+            }
+        }
+        // Таблица отражает текущую телефонную книгу: удалённые из неё пропадают и здесь.
+        db.withTransaction {
+            db.contactDao().clear()
+            db.contactDao().upsertAll(entities)
+        }
+        // Серверный список контактов — для будущих устройств; ошибки не критичны.
+        for (m in matches) {
+            if (m.id == me) continue
+            try { api.addContact(auth(), ContactRequest(m.id)) }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { }
+        }
+        entities.count { it.umbraUserId != null }
+    }
+
+    /**
+     * Полное удаление аккаунта («сжечь»): сервер удаляет ключи, сообщения,
+     * медиа, чаты и контакты. Локально стираются история, контакты и ключи —
+     * восстановление невозможно.
+     */
+    suspend fun deleteAccount() = withContext(Dispatchers.IO) {
+        val token = crypto.currentToken()
+        disconnectRealtime()
+        if (token != null) {
+            try { withTimeout(5000) { api.burnAccount("Bearer " + token) } }
+            catch (e: CancellationException) { if (e !is TimeoutCancellationException) throw e }
+            catch (_: Exception) { }
+        }
+        crypto.wipeAll()
+        logged.value = false
+        db.clearAllTables()
+        runCatching { File(context.cacheDir, MEDIA_CACHE_DIR).deleteRecursively() }
+    }
 
     suspend fun refreshChats() = withContext(Dispatchers.IO) {
         api.chats(auth()).chats.forEach { db.chatDao().upsert(ChatEntity(it.id, it.type, it.title)) }

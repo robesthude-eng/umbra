@@ -76,8 +76,8 @@ android {
         targetSdk = 35
         // Перед каждым выпуском увеличивайте versionCode, иначе Android не даст
         // обновить установленное приложение («Приложение не установлено»).
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Реальные устройства: arm64-v8a (современные) и armeabi-v7a (старые).
         // x86_64 — для эмулятора на x86-хостах. x86 (32-бит) не нужен.

@@ -63,6 +63,10 @@ class SecurePrefs(context: Context, name: String = "umbra_secure") {
     fun registrationId(): Int = prefs.getString("registration_id", null)?.toInt() ?: 1
     fun username(): String? = prefs.getString("username", null)
     fun userId(): String? = prefs.getString("user_id", null)
+    fun phone(): String? = prefs.getString("phone", null)
+    fun savePhone(phone: String) {
+        check(prefs.edit().putString("phone", phone).commit())
+    }
     fun saveUser(username: String, userId: String) {
         val existing = this.userId()
         check(existing == null || existing == userId) { "Смена аккаунта без переноса ключей запрещена" }
@@ -81,6 +85,11 @@ class SecurePrefs(context: Context, name: String = "umbra_secure") {
 
     fun clearSession() {
         check(prefs.edit().remove("token").remove("token_expires").commit())
+    }
+
+    /** Полное стирание профиля: ключи, сессия, аккаунт. Только для «сжечь аккаунт». */
+    fun wipeAll() {
+        check(prefs.edit().clear().commit())
     }
 
     private fun b64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)

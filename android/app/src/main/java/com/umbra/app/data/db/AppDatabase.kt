@@ -31,6 +31,21 @@ data class MessageEntity(
 @Entity(tableName = "chats")
 data class ChatEntity(@PrimaryKey val id: String, val type: String, val title: String)
 
+/**
+ * Контакт из телефонной книги + результат поиска в Umbra.
+ * umbraUserId != null — человек зарегистрирован, ему можно писать.
+ */
+@Entity(tableName = "contacts")
+data class ContactEntity(
+    @PrimaryKey val phoneHash: String,
+    val phone: String,
+    val name: String,
+    val umbraUserId: String? = null,
+    val umbraUsername: String? = null,
+    val umbraDisplayName: String? = null,
+    val syncedAt: Long = 0,
+)
+
 @Entity(tableName = "identity_keys")
 data class IdentityKeyEntity(@PrimaryKey val id: String, val identityKey: String, val verified: Boolean)
 
@@ -88,8 +103,24 @@ interface ChatDao {
     @Query("SELECT * FROM chats WHERE id = :id")
     fun get(id: String): ChatEntity?
 
+    @Query("SELECT * FROM chats WHERE id = :id")
+    fun observe(id: String): Flow<ChatEntity?>
+
     @Query("SELECT * FROM chats ORDER BY title ASC")
     fun all(): Flow<List<ChatEntity>>
+}
+
+@Dao
+interface ContactDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsertAll(contacts: List<ContactEntity>)
+
+    /** Сначала зарегистрированные в Umbra (по имени), затем остальные. */
+    @Query("SELECT * FROM contacts ORDER BY (umbraUserId IS NOT NULL) DESC, name ASC")
+    fun all(): Flow<List<ContactEntity>>
+
+    @Query("DELETE FROM contacts")
+    fun clear()
 }
 
 @Dao
@@ -101,13 +132,14 @@ interface IdentityKeyDao {
 }
 
 @Database(
-    entities = [MessageEntity::class, ChatEntity::class, IdentityKeyEntity::class, CryptoRecord::class],
-    version = 2,
+    entities = [MessageEntity::class, ChatEntity::class, ContactEntity::class, IdentityKeyEntity::class, CryptoRecord::class],
+    version = 3,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun chatDao(): ChatDao
+    abstract fun contactDao(): ContactDao
     abstract fun identityKeyDao(): IdentityKeyDao
     abstract fun cryptoDao(): CryptoDao
 
@@ -129,9 +161,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Телефонная книга + статус регистрации в Umbra; заполняется синхронизацией.
+                db.execSQL("CREATE TABLE IF NOT EXISTS contacts (phoneHash TEXT NOT NULL, phone TEXT NOT NULL, name TEXT NOT NULL, umbraUserId TEXT DEFAULT NULL, umbraUsername TEXT DEFAULT NULL, umbraDisplayName TEXT DEFAULT NULL, syncedAt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(phoneHash))")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "umbra.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

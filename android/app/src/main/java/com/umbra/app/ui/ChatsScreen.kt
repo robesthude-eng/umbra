@@ -11,9 +11,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -44,6 +48,7 @@ import com.umbra.app.di.AppContainer
 fun ChatsScreen(
     container: AppContainer,
     onOpenChat: (String) -> Unit,
+    onOpenContacts: () -> Unit,
     onLogout: () -> Unit,
 ) {
     val vm: ChatsViewModel = viewModel(factory = ChatsViewModel.Factory(container))
@@ -51,6 +56,8 @@ fun ChatsScreen(
     val newChat by vm.newChatState.collectAsState()
     val connected by container.chatRepository.connected.collectAsState()
     val syncError by container.chatRepository.syncError.collectAsState()
+    var menuOpen by remember { mutableStateOf(false) }
+    var showBurnConfirm by remember { mutableStateOf(false) }
 
     // Обработка результата диалога «новый чат».
     LaunchedEffect(newChat) {
@@ -72,7 +79,28 @@ fun ChatsScreen(
                 },
                 actions = {
                     Icon(Icons.Filled.Lock, contentDescription = "E2E", tint = MaterialTheme.colorScheme.secondary)
-                    TextButton(onClick = onLogout) { Text("Выйти") }
+                    IconButton(onClick = onOpenContacts) {
+                        Icon(Icons.Filled.Person, contentDescription = "Контакты")
+                    }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Меню")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Выйти") },
+                            onClick = {
+                                menuOpen = false
+                                onLogout()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Удалить аккаунт", color = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                menuOpen = false
+                                showBurnConfirm = true
+                            },
+                        )
+                    }
                 },
             )
         },
@@ -90,7 +118,8 @@ fun ChatsScreen(
             ) {
                 Text("Пока нет чатов", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Нажмите «+», чтобы начать диалог по имени пользователя.",
+                    "Откройте «Контакты», чтобы написать тем, кто уже в Umbra, " +
+                        "или нажмите «+» для диалога по имени пользователя.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -106,6 +135,26 @@ fun ChatsScreen(
     // Диалог нового чата.
     if (newChat != ChatsViewModel.NewChatState.Hidden) {
         NewChatDialog(vm)
+    }
+
+    // Подтверждение полного удаления аккаунта.
+    if (showBurnConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBurnConfirm = false },
+            title = { Text("Удалить аккаунт?") },
+            text = {
+                Text("Аккаунт, ключи, сообщения, медиа и контакты будут удалены безвозвратно — и на сервере, и на этом устройстве.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBurnConfirm = false
+                    vm.deleteAccount()
+                }) { Text("Удалить навсегда", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBurnConfirm = false }) { Text("Отмена") }
+            },
+        )
     }
 }
 

@@ -37,9 +37,12 @@ class CryptoManager(
     fun currentToken() = prefs.sessionToken()
     fun saveSession(token: String, expires: String) = prefs.saveSession(token, expires)
     fun clearSession() = prefs.clearSession()
+    fun wipeAll() = prefs.wipeAll()
     fun saveUser(username: String, userId: String) = prefs.saveUser(username, userId)
     fun userId() = prefs.userId()
     fun username() = prefs.username()
+    fun phone() = prefs.phone()
+    fun savePhone(phone: String) = prefs.savePhone(phone)
     fun signChallenge(challenge: String) = b64(prefs.sign(challenge.toByteArray(Charsets.UTF_8)))
 
     fun store(): PersistentSignalStore {
@@ -56,10 +59,11 @@ class CryptoManager(
             serverCount < 20 || store.read("meta", "pending") != null
     }
 
-    fun buildRegisterRequest(username: String): RegisterRequest {
+    fun buildRegisterRequest(username: String, phone: String = "", name: String = ""): RegisterRequest {
         val store = store()
         store.read("meta", "pending")?.let {
-            return json.decodeFromString<RegisterRequest>(String(it, Charsets.UTF_8)).copy(username = username)
+            return json.decodeFromString<RegisterRequest>(String(it, Charsets.UTF_8))
+                .copy(username = username, phone = phone, name = name)
         }
         val identity = prefs.xIdentity()
         val signed = store.loadSignedPreKeys().maxByOrNull { it.timestamp } ?: run {
@@ -75,6 +79,8 @@ class CryptoManager(
         }
         val request = RegisterRequest(
             username = username,
+            phone = phone,
+            name = name,
             identity_ed25519 = b64(prefs.edPublic()),
             identity_x25519 = b64(identity.publicKey.serialize()),
             signed_prekey = b64(signed.keyPair.publicKey.serialize()),

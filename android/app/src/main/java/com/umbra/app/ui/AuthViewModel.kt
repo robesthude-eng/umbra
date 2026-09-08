@@ -10,7 +10,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 
+/** Режим экрана авторизации: регистрация, вход по номеру, вход старого аккаунта. */
+enum class AuthMode { REGISTER, LOGIN, LOGIN_LEGACY }
+
 data class AuthState(
+    val mode: AuthMode = AuthMode.REGISTER,
+    val name: String = "",
+    val phone: String = "",
     val username: String = "",
     val loading: Boolean = false,
     val error: String? = null,
@@ -18,24 +24,51 @@ data class AuthState(
 )
 
 class AuthViewModel(private val container: AppContainer) : ViewModel() {
-    private val _state = MutableStateFlow(AuthState(username = container.cryptoManager.username().orEmpty()))
+    private val _state = MutableStateFlow(
+        AuthState(
+            phone = container.cryptoManager.phone().orEmpty(),
+            username = container.cryptoManager.username().orEmpty(),
+            // Устройство с сохранёнными ключами, но без сессии — это вход, не регистрация.
+            mode = if (container.cryptoManager.hasIdentity()) AuthMode.LOGIN else AuthMode.REGISTER,
+        )
+    )
     val state: StateFlow<AuthState> = _state
 
+    fun onModeChange(mode: AuthMode) = _state.update { it.copy(mode = mode, error = null) }
+    fun onNameChange(v: String) = _state.update { it.copy(name = v.take(64)) }
+    fun onPhoneChange(v: String) = _state.update { it.copy(phone = v.take(24)) }
     fun onUsernameChange(v: String) = _state.update { it.copy(username = v.trim()) }
 
+    /** Регистрация по имени и номеру телефона (без SMS/писем — ключи устройства). */
     fun register() = run {
-        val name = _state.value.username
-        container.chatRepository.register(name)
+        val s = _state.value
+        container.chatRepository.register(s.name, s.phone)
     }
 
+    /** Вход по номеру телефона (ключи аккаунта должны быть на устройстве). */
     fun login() = run {
-        container.chatRepository.login(_state.value.username)
+        container.chatRepository.login(_state.value.phone)
+    }
+
+    /** Вход старого аккаунта по имени пользователя. */
+    fun loginLegacy() = run {
+        container.chatRepository.loginLegacy(_state.value.username)
     }
 
     private fun run(block: suspend () -> Unit) {
         if (_state.value.loading) return
-        if (_state.value.username.isBlank()) {
-            _state.update { it.copy(error = "Введите имя пользователя") }
+        val s = _state.value
+        val inputError = when (s.mode) {
+            AuthMode.REGISTER -> when {
+                s.name.isBlank() -> "Введите имя"
+                s.phone.isBlank() -> "Введите номер телефона"
+                else -> null
+            }
+            AuthMode.LOGIN -> if (s.phone.isBlank()) "Введите номер телефона" else null
+            AuthMode.LOGIN_LEGACY -> if (s.username.isBlank()) "Введите имя пользователя" else null
+        }
+        if (inputError != null) {
+            _state.update { it.copy(error = inputError) }
             return
         }
         viewModelScope.launch {

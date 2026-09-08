@@ -21,6 +21,8 @@ func (l *requestLimiter) wrap(next http.Handler) http.Handler {
 		category, limit := "api", 600
 		if strings.HasPrefix(r.URL.Path,"/v1/auth/") || strings.HasSuffix(r.URL.Path,"/prekeys") { category,limit="auth",120 }
 		if r.URL.Path == "/v1/register" { category,limit="register",30 }
+		// Поиск контактов по хэшам номеров: защита от перебора телефонной базы.
+		if r.URL.Path == "/v1/contacts/discover" { category,limit="discover",30 }
 		if !l.allow(category+":"+ip,limit,time.Now()) {
 			w.Header().Set("Retry-After","60")
 			writeError(w,http.StatusTooManyRequests,"too many requests"); return

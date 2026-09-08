@@ -28,7 +28,9 @@ import java.util.concurrent.TimeUnit
 
 @Serializable
 data class RegisterRequest(
-    val username: String,
+    val username: String = "",
+    val phone: String = "",
+    val name: String = "",
     val identity_ed25519: String,
     val identity_x25519: String,
     val signed_prekey: String,
@@ -42,22 +44,25 @@ data class RegisterRequest(
 )
 
 @Serializable
-data class RegisterResponse(val id: String, val username: String)
+data class RegisterResponse(val id: String, val username: String,
+    val phone: String = "", val display_name: String = "")
 
 @Serializable
-data class ChallengeRequest(val username: String)
+data class ChallengeRequest(val username: String = "", val phone: String = "")
 
 @Serializable
 data class ChallengeResponse(val challenge: String)
 
 @Serializable
-data class VerifyRequest(val username: String, val challenge: String, val signature: String)
+data class VerifyRequest(val username: String = "", val phone: String = "",
+    val challenge: String, val signature: String)
 
 @Serializable
 data class VerifyResponse(val token: String, val expires_at: String)
 
 @Serializable
 data class AccountResponse(val id: String, val username: String, val created_at: String = "",
+    val phone: String = "", val display_name: String = "",
     val key_version: Int = 1, val one_time_prekey_count: Int = 100)
 
 @Serializable
@@ -132,6 +137,22 @@ data class ContactRequest(val contact_id: String)
 @Serializable
 data class ContactsResponse(val contacts: List<String>)
 
+/** Хэши номеров телефонной книги (SHA-256, см. PhoneNumbers); номера в открытом виде не уходят. */
+@Serializable
+data class DiscoverRequest(val hashes: List<String>)
+
+@Serializable
+data class DiscoveredUser(
+    val id: String,
+    val username: String,
+    val display_name: String = "",
+    val phone: String = "",
+    val phone_hash: String = "",
+)
+
+@Serializable
+data class DiscoverResponse(val matches: List<DiscoveredUser>)
+
 @Serializable
 data class MediaUploadResponse(
     val id: String,
@@ -196,6 +217,10 @@ interface UmbraApi {
 
     @GET("/v1/contacts")
     suspend fun contacts(@Header("Authorization") auth: String): ContactsResponse
+
+    /** Приватный поиск контактов: какие номера из телефонной книги уже в Umbra. */
+    @POST("/v1/contacts/discover")
+    suspend fun discoverContacts(@Header("Authorization") auth: String, @Body body: DiscoverRequest): DiscoverResponse
 
     @POST("/v1/account/burn")
     suspend fun burnAccount(@Header("Authorization") auth: String): Unit

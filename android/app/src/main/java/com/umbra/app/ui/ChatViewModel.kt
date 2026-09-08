@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.umbra.app.data.db.ChatEntity
 import com.umbra.app.data.media.MediaInfo
 import com.umbra.app.data.repo.UiMessage
 import com.umbra.app.di.AppContainer
@@ -25,6 +26,17 @@ class ChatViewModel(
     val messages: StateFlow<List<UiMessage>> = repo.messagesFor(chatId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /** Карточка чата: заголовок для TopAppBar (имя контакта или username). */
+    val chat: StateFlow<ChatEntity?> = repo.chat(chatId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** Таймер самоуничтожения исходящих сообщений, секунды (0 = выключен). */
+    val ttlSeconds = MutableStateFlow(0L)
+
+    fun setTtl(seconds: Long) {
+        ttlSeconds.value = seconds
+    }
+
     val sending = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
 
@@ -42,7 +54,7 @@ class ChatViewModel(
         viewModelScope.launch {
             try {
                 error.value = null
-                repo.sendMessage(chatId, text.trim())
+                repo.sendMessage(chatId, text.trim(), ttlSeconds.value.takeIf { it > 0 })
                 onQueued()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error.value = e.userMessage() }

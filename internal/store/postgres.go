@@ -41,9 +41,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO users (id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, key_version, registration_id, signed_prekey_id, key_bundle_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		u.ID, u.Username, u.IdentityEd25519, u.IdentityX25519, u.SignedPrekey, u.SignedPrekeySig, u.KeyVersion, u.RegistrationID, u.SignedPrekeyID, u.KeyBundleID)
+		`INSERT INTO users (id, username, phone, phone_hash, display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, key_version, registration_id, signed_prekey_id, key_bundle_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		u.ID, u.Username, nullIfEmpty(u.Phone), nullIfEmpty(u.PhoneHash), nullIfEmpty(u.DisplayName), u.IdentityEd25519, u.IdentityX25519, u.SignedPrekey, u.SignedPrekeySig, u.KeyVersion, u.RegistrationID, u.SignedPrekeyID, u.KeyBundleID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -59,9 +59,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 func (p *PostgresStore) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		`SELECT id, username, phone, phone_hash, display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE username = $1`, username).
-		Scan(&u.ID, &u.Username, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
+		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -71,13 +71,47 @@ func (p *PostgresStore) GetUserByUsername(ctx context.Context, username string) 
 func (p *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		`SELECT id, username, phone, phone_hash, display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE id = $1`, id).
-		Scan(&u.ID, &u.Username, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
+		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	return &u, nil
+}
+
+func (p *PostgresStore) GetUserByPhone(ctx context.Context, phone string) (*model.User, error) {
+	var u model.User
+	err := p.pool.QueryRow(ctx,
+		`SELECT id, username, phone, phone_hash, display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		 FROM users WHERE phone = $1`, phone).
+		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &u, nil
+}
+
+func (p *PostgresStore) FindUsersByPhoneHashes(ctx context.Context, hashes []string) ([]*model.User, error) {
+	if len(hashes) == 0 {
+		return []*model.User{}, nil
+	}
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, username, phone, phone_hash, display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		 FROM users WHERE phone_hash = ANY($1) ORDER BY id`, hashes)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]*model.User, 0)
+	for rows.Next() {
+		var u model.User
+		if err := rows.Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID); err != nil {
+			return nil, err
+		}
+		out = append(out, &u)
+	}
+	return out, rows.Err()
 }
 
 func (p *PostgresStore) TakeOneTimePrekey(ctx context.Context, userID string) ([]byte, error) {
@@ -472,6 +506,14 @@ func (p *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
 }
 
 func (p *PostgresStore) Close() error { p.pool.Close(); return nil }
+
+// nullIfEmpty отдаёт NULL для пустых строковых колонок (phone у legacy-аккаунтов).
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
 
 // mapErr приводит ошибки драйвера к каноничным ErrNotFound / ErrConflict.
 func mapErr(err error) error {

@@ -41,7 +41,15 @@ fun UmbraRoot(container: AppContainer) {
             ChatsScreen(
                 container = container,
                 onOpenChat = { chatId -> nav.navigate("chat/$chatId") },
+                onOpenContacts = { nav.navigate("contacts") },
                 onLogout = { scope.launch { repo.logout() } },
+            )
+        }
+        composable("contacts") {
+            ContactsScreen(
+                container = container,
+                onOpenChat = { chatId -> nav.navigate("chat/$chatId") },
+                onBack = { nav.popBackStack() },
             )
         }
         composable("chat/{chatId}") { entry ->

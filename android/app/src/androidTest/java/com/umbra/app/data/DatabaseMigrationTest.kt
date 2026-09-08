@@ -29,7 +29,7 @@ class DatabaseMigrationTest {
                 db.version = 1
             }
             val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .addMigrations(AppDatabase.MIGRATION_1_2).build()
+                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3).build()
             try {
                 val row = db.messageDao().get("old")!!
                 assertEquals("opaque", row.ciphertext)

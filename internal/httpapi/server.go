@@ -63,6 +63,7 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 	mux.Handle("POST /v1/chats/{id}/messages", s.requireAuth(http.HandlerFunc(s.handleSendChatMessage)))
 	mux.Handle("POST /v1/contacts", s.requireAuth(http.HandlerFunc(s.handleAddContact)))
 	mux.Handle("GET /v1/contacts", s.requireAuth(http.HandlerFunc(s.handleListContacts)))
+	mux.Handle("POST /v1/contacts/discover", s.requireAuth(http.HandlerFunc(s.handleDiscoverContacts)))
 	mux.Handle("POST /v1/chats/{id}/typing", s.requireAuth(http.HandlerFunc(s.handleMarkTyping)))
 	mux.Handle("GET /v1/chats/{id}/typing", s.requireAuth(http.HandlerFunc(s.handleListTyping)))
 	// Звонки (сигналинг; медиа peer-to-peer).

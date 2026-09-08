@@ -26,10 +26,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -83,6 +85,8 @@ fun ChatScreen(container: AppContainer, chatId: String, onBack: () -> Unit) {
     val error by vm.error.collectAsState()
     val sendingMedia by vm.sendingMedia.collectAsState()
     val mediaError by vm.mediaError.collectAsState()
+    val chat by vm.chat.collectAsState()
+    val ttl by vm.ttlSeconds.collectAsState()
     val listState = rememberLazyListState()
 
     val context = LocalContext.current
@@ -129,7 +133,7 @@ fun ChatScreen(container: AppContainer, chatId: String, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Диалог") },
+                title = { Text(chat?.title ?: "Диалог") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
@@ -170,6 +174,8 @@ fun ChatScreen(container: AppContainer, chatId: String, onBack: () -> Unit) {
                 }
                 MessageInput(
                     sending = busy,
+                    ttlSeconds = ttl,
+                    onTtlChange = vm::setTtl,
                     onSend = vm::send,
                     onPickPhoto = {
                         photoPicker.launch(
@@ -353,19 +359,61 @@ private fun humanSize(bytes: Long): String = when {
 
 private const val MAX_IMAGE_PX = 1080
 
+/** Опции таймера самоуничтожения (секунды → подпись). 0 = без таймера. */
+private val TTL_OPTIONS = listOf(
+    0L to "Без таймера",
+    60L to "1 минута",
+    3600L to "1 час",
+    86400L to "24 часа",
+    604800L to "7 дней",
+)
+
 @Composable
 private fun MessageInput(
     sending: Boolean,
+    ttlSeconds: Long,
+    onTtlChange: (Long) -> Unit,
     onSend: (String, () -> Unit) -> Unit,
     onPickPhoto: () -> Unit,
     onPickFile: () -> Unit,
 ) {
     var text by rememberSaveable { mutableStateOf("") }
     var attachExpanded by remember { mutableStateOf(false) }
+    var timerExpanded by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth().padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Таймер самоуничтожения: сервер перестаёт отдавать сообщение после expires_at,
+        // клиенты удаляют его из локальной истории (API expires_in уже поддержан).
+        Box {
+            IconButton(onClick = { timerExpanded = true }, enabled = !sending) {
+                Icon(
+                    Icons.Filled.Timer,
+                    contentDescription = "Таймер самоуничтожения",
+                    tint = if (ttlSeconds > 0) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                )
+            }
+            DropdownMenu(
+                expanded = timerExpanded,
+                onDismissRequest = { timerExpanded = false },
+            ) {
+                TTL_OPTIONS.forEach { (seconds, label) ->
+                    DropdownMenuItem(
+                        text = { Text(label) },
+                        onClick = {
+                            timerExpanded = false
+                            onTtlChange(seconds)
+                        },
+                        trailingIcon = {
+                            if (ttlSeconds == seconds) {
+                                Icon(Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                    )
+                }
+            }
+        }
         Box {
             IconButton(onClick = { attachExpanded = true }, enabled = !sending) {
                 Icon(Icons.Filled.AttachFile, contentDescription = "Прикрепить")

@@ -24,6 +24,11 @@ import (
 
 type registerRequest struct {
 	Username        string   `json:"username"`
+	// Phone — номер телефона (нормализуется к E.164); Name — отображаемое имя.
+	// Если задан phone, username можно не передавать: сервер сгенерирует
+	// служебный идентификатор вида u<digits>.
+	Phone string `json:"phone"`
+	Name  string `json:"name"`
 	IdentityEd25519 string   `json:"identity_ed25519"` // base64
 	IdentityX25519  string   `json:"identity_x25519"`  // base64
 	SignedPrekey    string   `json:"signed_prekey"`    // base64
@@ -53,6 +58,7 @@ type prekeysResponse struct {
 
 type challengeRequest struct {
 	Username string `json:"username"`
+	Phone    string `json:"phone"`
 }
 
 type challengeResponse struct {
@@ -61,6 +67,7 @@ type challengeResponse struct {
 
 type verifyRequest struct {
 	Username  string `json:"username"`
+	Phone     string `json:"phone"`
 	Challenge string `json:"challenge"`
 	Signature string `json:"signature"` // ed25519-подпись challenge, base64
 }
@@ -139,6 +146,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.TrimSpace(req.Username)
+	phone := ""
+	phoneHash := ""
+	displayName := strings.TrimSpace(req.Name)
+	if raw := strings.TrimSpace(req.Phone); raw != "" {
+		normalized, err := NormalizePhone(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid phone")
+			return
+		}
+		phone, phoneHash = normalized, PhoneHash(normalized)
+	}
+	if phone != "" && !validDisplayName(displayName) {
+		writeError(w, http.StatusBadRequest, "invalid name")
+		return
+	}
+	if username == "" && phone != "" {
+		// Служебный username из цифр номера: детерминирован и уникален
+		// вместе с номером. Пользователю показывается DisplayName.
+		username = "u" + phone[1:]
+	}
 	if !validUsername(username) {
 		writeError(w, http.StatusBadRequest, "invalid username")
 		return
@@ -187,6 +214,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	u := &model.User{
 		ID:              userID,
 		Username:        username,
+		Phone:           phone,
+		PhoneHash:       phoneHash,
+		DisplayName:     displayName,
 		IdentityEd25519: idKey,
 		IdentityX25519:  ix,
 		SignedPrekey:    spk,
@@ -202,13 +232,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateUser(r.Context(), u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
+			if phone != "" {
+				if _, lookErr := s.store.GetUserByPhone(r.Context(), phone); lookErr == nil {
+					writeError(w, http.StatusConflict, "phone already registered")
+					return
+				}
+			}
 			writeError(w, http.StatusConflict, "username already taken")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"id": userID, "username": username})
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"id": userID, "username": username, "phone": phone, "display_name": displayName,
+	})
 }
 
 // handlePrekeys — отдаёт публичный ключевой материал пользователя для X3DH.
@@ -245,8 +283,8 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if _, err := s.store.GetUserByUsername(r.Context(), strings.TrimSpace(req.Username)); err != nil {
-		// Имена публичны: каталог prekeys также доступен по username.
+	u, err := s.findUserByLogin(r, req.Username, req.Phone)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -255,11 +293,24 @@ func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if !s.challenges.put(ch, 5*time.Minute, strings.TrimSpace(req.Username)) {
+	if !s.challenges.put(ch, 5*time.Minute, u.Username) {
 		writeError(w, http.StatusTooManyRequests, "too many challenges")
 		return
 	}
 	writeJSON(w, http.StatusOK, challengeResponse{Challenge: ch})
+}
+
+// findUserByLogin находит пользователя по номеру телефона (приоритет) или
+// по username (legacy-вход старых клиентов).
+func (s *Server) findUserByLogin(r *http.Request, username, phone string) (*model.User, error) {
+	if raw := strings.TrimSpace(phone); raw != "" {
+		normalized, err := NormalizePhone(raw)
+		if err != nil {
+			return nil, err
+		}
+		return s.store.GetUserByPhone(r.Context(), normalized)
+	}
+	return s.store.GetUserByUsername(r.Context(), strings.TrimSpace(username))
 }
 
 // handleAuthVerify — проверяет ed25519-подпись challenge и выдаёт сессионный токен.
@@ -269,14 +320,13 @@ func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !s.challenges.consume(req.Challenge, strings.TrimSpace(req.Username)) {
-		writeError(w, http.StatusUnauthorized, "invalid or expired challenge")
-		return
-	}
-	username := strings.TrimSpace(req.Username)
-	u, err := s.store.GetUserByUsername(r.Context(), username)
+	u, err := s.findUserByLogin(r, req.Username, req.Phone)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if !s.challenges.consume(req.Challenge, u.Username) {
+		writeError(w, http.StatusUnauthorized, "invalid or expired challenge")
 		return
 	}
 	sig, err := b64(req.Signature)

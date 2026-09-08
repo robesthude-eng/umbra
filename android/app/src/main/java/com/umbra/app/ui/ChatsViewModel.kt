@@ -28,6 +28,15 @@ class ChatsViewModel(private val container: AppContainer) : ViewModel() {
         data class Started(val chat: ChatEntity) : NewChatState
     }
 
+    /** Полное удаление аккаунта: сервер стирает все данные, локально — ключи и история. */
+    fun deleteAccount() {
+        viewModelScope.launch {
+            try { repo.deleteAccount() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { }
+        }
+    }
+
     fun showNewChatDialog() = newChatState.tryEmit(NewChatState.Dialog)
     fun hideNewChatDialog() = newChatState.tryEmit(NewChatState.Hidden)
 

@@ -10,6 +10,14 @@ import "time"
 type User struct {
 	ID              string    `json:"id"`
 	Username        string    `json:"username"`
+	// Phone — нормализованный номер E.164 (например "+79991234567"); у legacy-
+	// аккаунтов, зарегистрированных только по username, может быть пустым.
+	Phone string `json:"phone"`
+	// PhoneHash — SHA-256(hex) от нормализованного номера. Используется для
+	// приватного поиска контактов: клиент присылает хэши телефонной книги.
+	PhoneHash string `json:"phone_hash"`
+	// DisplayName — имя, указанное при регистрации (как человек представляется).
+	DisplayName     string    `json:"display_name"`
 	IdentityEd25519 []byte    `json:"identity_ed25519"`        // открытый ключ подписи (32 байта)
 	IdentityX25519  []byte    `json:"identity_x25519"`         // raw 32 байта (legacy) или Signal 33 байта
 	SignedPrekey    []byte    `json:"signed_prekey"`           // подписанный pre-key X25519
