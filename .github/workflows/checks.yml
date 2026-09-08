@@ -59,6 +59,14 @@ jobs:
           # без этого packageDebug падает с OOM на больших нативных .so.
           sed -i 's/-Xmx1280m/-Xmx5g/g; s/MaxMetaspaceSize=512m/MaxMetaspaceSize=1g/' gradle.properties
           ./gradlew assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
+      - name: Upload lint report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report-api${{ matrix.api }}
+          path: android/app/build/intermediates/lint_intermediate_text_report/
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Enable KVM in CI
         run: sudo chmod a+rw /dev/kvm
       - uses: reactivecircus/android-emulator-runner@v2
