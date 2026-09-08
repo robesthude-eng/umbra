@@ -1,0 +1,126 @@
+# Android v0.4 — переделка под модель T1 (код из Telegram, облачные сообщения)
+
+Дата: 2026-09-08. Решения пользователя: OTP-вход по номеру с кодом из Telegram
+(код приходит владельцу в личный чат бота, с любого номера — без привязок);
+один аккаунт на номер; вся история в облаке; профиль (аватар-кружок, @ник,
+имя обязательно, фамилия опционально); нижний таб-бар Чаты/Группы/Звонки/
+Настройки; стиль Liquid Glass без фиолетового; старый E2EE (Signal) убираем.
+
+## Состояние окружения (полезно при продолжении)
+- Локальная сборка Android: JDK21 (`/usr/lib/jvm/java-21-openjdk-amd64`),
+  Android SDK `/home/android-sdk` (platforms;android-35, build-tools;34.0.0,
+  platform-tools), Gradle 8.9 (wrapper). Сборка: `cd android && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ANDROID_HOME=/home/android-sdk ./gradlew :app:compileDebugKotlin` (GRADLE_USER_HOME стоит держать вне workspace, напр. /home/gradle, чтобы не раздувать снапшоты).
+- Go 1.27.1: `/home/user/.cache/go-toolchain/go/bin/go`; модуль-кэш `/home/user/.cache/gomod`.
+- Пуш в git: конфиг `.git/config` (remote+токен) между сообщениями теряется — использовать `bash /home/user/work/gitpush.sh`.
+
+## Сетевой адрес API (для APK)
+Выбран https-домен: `https://api.agentwill.ru`. ВАЖНО: DNS зоны agentwill.ru
+обслуживается у рег.ру (NS = ns1.reg.ru), НЕ в Cloudflare (в CF только Worker +
+учётка, но не DNS). Запись A `api → 194.226.126.253` пользователь должен добавить
+в DNS-панели регистратора (рег.ру). Nginx на VPS уже готов: сайт `umbra`
+слушает :80 c server_name `api.agentwill.ru`/`umbra.agentwill.ru`, проксирует на
+127.0.0.1:8080. Как только DNS заработает: `certbot --nginx -d api.agentwill.ru`
+и проверить `https://api.agentwill.ru/healthz`. Временный запасной вариант,
+который уже работает: `https://game.agentwill.ru:8443` (тот же API, свой
+сертификат) — для тестов, не для продукта.
+Менять конфиги web-game/chassis-3d нельзя; сайт `umbra` в sites-enabled — наш.
+
+## Контракт сервера (проверено по коду internal/httpapi)
+- OTP: `POST /v1/auth/request_code {phone}`; `POST /v1/auth/verify_code {phone,code}`
+  → `{token, expires_at, new_account, profile_complete, account{id,username,phone,display_name,last_name}}`.
+- Профиль: `POST /v1/account/profile {name, last_name?, username?}`;
+  `POST /v1/account/avatar {media_id}`; `GET /v1/account` → + `avatar_media_id`.
+- `GET /v1/users/{id}` (НОВОЕ, есть на проде после деплоя) → карточка
+  `{id,username,display_name,last_name,avatar_media_id,created_at}`.
+- Сообщения: ciphertext-поле — это **base64** от содержимого (сервер делает
+  b64-decode/encode). Для T1 содержимое = plaintext JSON-конверт (см. ниже).
+  DM: `POST /v1/messages {recipient_id,ciphertext,client_id,expires_in}`.
+  Группа: `POST /v1/chats/{id}/messages {ciphertext,...}`; создание
+  `POST /v1/groups {title}` (создатель авто-owner); члены: `POST/GET/DELETE
+  /v1/chats/{id}/members`, `GET /v1/chats/{id}/members` (только user_id+role).
+  `GET /v1/messages?since=&after_id=&limit=` возвращает входящие+исходящие DM и
+  сообщения групп, где пользователь участник (chat_id заполнен) — этого хватает
+  для докачки истории с нуля и инкрементальной синхронизации.
+- Медиа: `POST /v1/media` multipart (file + content_type) → `{id,...}`;
+  `GET /v1/media/{id}` — любой авторизованный. Аватар = обычное медиа.
+- Звонки (WebRTC-сигналинг): `POST /v1/calls {callee_id,video}`,
+  `POST /v1/calls/{id}/signal {to,kind(offer|answer|ice),payload}`,
+  `POST /v1/calls/{id}/status {active|ended|declined|missed}`, `GET /v1/calls`.
+  События приходят по WS: type `call` (data=callResponse), `call_signal`
+  {call_id,from,kind,payload}, `call_status` {call_id,status}, `message`.
+- WS: `GET /v1/ws?token=...` (или Bearer).
+
+## Новый клиент — устройство (все файлы под android/app/src/main)
+1. **data/api/UmbraApi.kt** — переписать: убрать RegisterRequest/Verify/PreKey;
+   добавить RequestCode/VerifyCode, AccountView(+last_name/avatar), UserCard,
+   ChatDto(тип+title+created_by), MemberDto(user_id,role,display_name? нет —
+   имена через GET /v1/users/{id}), сообщения как есть (ciphertext=base64
+   конверта). Эндпоинты users/get users, account/profile/avatar, media, groups.
+2. **MessageBody (конверт, plaintext)**: `{"v":1,"kind":"text|media","text":...,
+   "media_id","name","mime","size"}` — кладём в JSON → UTF-8 → base64 → ciphertext.
+   Парсим на приёме. Медиа качаем через /v1/media/{id} (сырой файл, без шифрования).
+3. **Сессия**: выкинуть CryptoManager/Signal. Новый лёгкий SessionStore
+   (EncryptedSharedPreferences через androidx.security-crypto, что уже в проекте):
+   token, userId, username, phone, displayName, lastName, avatarMediaId.
+   При verify_code сохраняем сессию + данные аккаунта.
+4. **Room**: схему можно не менять (version 3). Семантика:
+   - `MessageEntity.ciphertext` = base64-конверт с сервера (или локальный для outbox),
+   - `localBody` = открытый текст конверта (для кэша/офлайна), БЕЗ AEAD-печати.
+   - При первом OTP-входе чистить локальные messages/chats/contacts (старый
+     E2EE-мусор не читаем) — clearAllTables после верификации, перед синком.
+   - ВАЖНО: для установленного v0.3 на телефоне схема та же (версия 3),
+     поэтому апдейт пройдёт без миграции.
+5. **ChatRepository (T1)**: удалить register/login/loginLegacy (ключевые),
+   сигнальные вызовы, prepareAccount(keys), sync contacts оставить (полезно),
+   но discover не обязателен: имена дёргать через GET /v1/users/{id}.
+   Новые методы:
+   - `requestCode(phone)` → POST /v1/auth/request_code.
+   - `verifyCode(phone, code)` → POST verify_code; сохранить сессию; вернуть
+     результат (newAccount/profileComplete). Если profileComplete=false —
+     UI показывает экран профиля.
+   - `updateProfile(name, lastName, username)` / `setAvatar(mediaId)`.
+   - `syncNow()`: GET /v1/messages пагинация по since/after_id (как сейчас),
+     persist(): для DM chatId = собеседник, для group — chat_id; localBody =
+     декодированный текст конверта; заголовки чатов резолвить из UserCard кэша.
+   - `chats()` — Flow из DB + вычисляемая карточка (последнее сообщение/дата);
+     для простоты: отдельная View-таблица `chat_previews` не нужна — вычисляем
+     в UI из messagesFor группы? Лучше: хранить по каждому chatId в DAO query
+     последнее сообщение. Сделать DAO: lastMessagePerChat.
+   - outbox: pending c client_id, flush при сети, как сейчас, но без crypto.
+   - Медиа: sendMedia upload raw (content_type настоящий!), конверт kind=media,
+     fetchMediaFile просто скачивает файл в кэш (проверка размера из конверта).
+   - Группы: createGroup(title), addMember(userId), removeMember, listMembers
+     (+разрез UserCard), sendGroupMessage через /v1/chats/{id}/messages;
+     в persist для group тоже создаём/обновляем ChatEntity.
+   - Звонки: держать в отдельном CallRepository/ViewModel? Проще методы в
+     ChatRepository: callPeer(id), accept/decline/end, sendSignal, list calls;
+     события WS — в сторадж через flow. Вкладка Звонки: история + исходящий/
+     входящий экран.
+6. **WebSocketClient**: оставить, приспособить URL wss://.../v1/ws?token=...;
+   поток событий в репозиторий (message/call/call_signal/call_status).
+7. **UI**:
+   - AuthScreen (номер → код → профиль). Профиль: кружок-аватар сверху с
+     выбором фото (PhotoPicker/SAF), @никнейм, Имя (обязательно), Фамилия
+     (опц.), кнопка «Продолжить». Путь входа: если profileComplete — сразу в чаты
+     с докачкой истории (sync EPOCH).
+   - Главный экран с нижним таб-баром: Чаты / Группы / Звонки / Настройки
+     (шестерёнка). Внутри: списки, экран чата (переиспользовать ChatScreen
+     облегчённо, без E2E-бейджей/замков), группа, настройки (профиль, аватар,
+     выход, удалить аккаунт).
+   - Тема: Theme.kt — Liquid Glass: полупрозрачный фон, blur (Android 12+
+     blur behind можно скромно), стеклянные карточки, акцент голубой/синий,
+     БЕЗ фиолетового. Иконки tabs: Chat/Forum/Call/Settings.
+   - Звонки: вкладка со списком (GET /v1/calls) и входящий звонок (WS event)
+     — accept/decline; медиа-часть WebRTC — отдельным этапом (сервер даёт
+     только сигналинг, TURN нет; обсудить позже).
+8. **Сборка/подпись**: versionCode 4→5, versionName 0.4.0; URL через
+   `-Pumbra.serverUrl=https://api.agentwill.ru`. Стабильный ключ — из секретов
+   GitHub (CI собирает подписанный APK артефактом); локально только compileDebug.
+
+## Порядок работ
+1. Сервер: GET /v1/users/{id} — готово (коммит e347ae0), задеплоено на прод (маршрут жив, 401 без токена).
+2. DNS api.agentwill.ru у рег.ру + certbot (ждём запись от пользователя).
+3. Android: data layer (контракт, конверт, сессия, репо T1, выпил Signal).
+4. Android: UI auth+профиль, таб-бар, чаты/группы, тема Liquid Glass.
+5. Локальный compileDebugKotlin до зелёного, push → CI (соберёт APK), ручная
+   проверка на телефоне с реальным кодом из Telegram.
