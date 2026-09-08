@@ -55,3 +55,24 @@ func TestGetUserCard(t *testing.T) {
 		t.Fatalf("без авторизации: %d", code)
 	}
 }
+
+func TestGetUserByUsername(t *testing.T) {
+	sender := &fakeOTPSender{}
+	h, _ := newTestServerWith(t, sender)
+	doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": "+79991112233"}, "")
+	code, m := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": "+79991112233", "code": sender.code("+79991112233")}, "")
+	if code != http.StatusOK {
+		t.Fatalf("verify: %d %v", code, m)
+	}
+	tok := m["token"].(string)
+	doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": "Иван", "username": "van"}, tok)
+
+	if code, m := doReq(t, h, http.MethodGet, "/v1/by-username/van", nil, tok); code != http.StatusOK {
+		t.Fatalf("by-username: %d %v", code, m)
+	} else if m["username"] != "van" || m["display_name"] != "Иван" {
+		t.Fatalf("неожиданная карточка: %v", m)
+	}
+	if code, m := doReq(t, h, http.MethodGet, "/v1/by-username/nobody", nil, tok); code != http.StatusNotFound {
+		t.Fatalf("неизвестный username: %d %v", code, m)
+	}
+}

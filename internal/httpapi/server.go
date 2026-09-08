@@ -92,6 +92,7 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.Handle("POST /v1/account/avatar", s.requireAuth(http.HandlerFunc(s.handleSetAvatar)))
 	// Публичная карточка пользователя (имя/аватар для диалогов и групп).
 	mux.Handle("GET /v1/users/{user_id}", s.requireAuth(http.HandlerFunc(s.handleGetUser)))
+	mux.Handle("GET /v1/by-username/{username}", s.requireAuth(http.HandlerFunc(s.handleGetUserByUsername)))
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
 	s.handler = logMiddleware(newRequestLimiter().wrap(mux))

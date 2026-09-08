@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"umbra/server/internal/store"
@@ -17,6 +18,34 @@ type userCard struct {
 	LastName      string `json:"last_name,omitempty"`
 	AvatarMediaID string `json:"avatar_media_id,omitempty"`
 	CreatedAt     string `json:"created_at"`
+}
+
+// handleGetUserByUsername — GET /v1/users/by-username/{username}. Разрешает
+// @username в карточку (нужно для «новый диалог по имени пользователя»).
+func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(strings.TrimSpace(r.PathValue("username")), "@")
+	if !validUsername(name) {
+		writeError(w, http.StatusBadRequest, "invalid username")
+		return
+	}
+	u, err := s.store.GetUserByUsername(r.Context(), name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "account temporarily unavailable")
+		}
+		return
+	}
+	avatar, _ := s.store.GetAvatar(r.Context(), u.ID)
+	writeJSON(w, http.StatusOK, userCard{
+		ID:            u.ID,
+		Username:      u.Username,
+		DisplayName:   u.DisplayName,
+		LastName:      u.LastName,
+		AvatarMediaID: avatar,
+		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+	})
 }
 
 // handleGetUser — GET /v1/users/{user_id}. Карточка произвольного пользователя
