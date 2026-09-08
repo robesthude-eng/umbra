@@ -53,6 +53,21 @@ func TestAccountTransferRoundtrip(t *testing.T) {
 	}
 }
 
+func TestAccountTransferWithClientCode(t *testing.T) {
+	h := newTestServer(t)
+	token := registerAndAuth(t, h, "dave")
+	clientCode := "WXYZ-2345-6789" // клиент шифрует vault ключом из этого кода
+	if code, m := doReq(t, h, http.MethodPost, "/v1/account/transfer",
+		map[string]any{"vault": vaultB64("cv"), "code": clientCode}, token); code != http.StatusOK {
+		t.Fatalf("create with client code: ожидался 200, получен %d (%v)", code, m)
+	}
+	// Claim тем же кодом в слитном/нижнем виде.
+	if code, m := doReq(t, h, http.MethodPost, "/v1/account/transfer/claim",
+		map[string]any{"code": "wxyz23456789"}, ""); code != http.StatusOK || m["vault"] != vaultB64("cv") {
+		t.Fatalf("claim по клиентскому коду не удался: %d (%v)", code, m)
+	}
+}
+
 func TestAccountTransferCreateRequiresAuth(t *testing.T) {
 	h := newTestServer(t)
 	code, _ := doReq(t, h, http.MethodPost, "/v1/account/transfer",

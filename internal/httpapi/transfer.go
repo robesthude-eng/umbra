@@ -29,6 +29,10 @@ const (
 type createTransferRequest struct {
 	// Vault — base64 зашифрованного бэкапа аккаунта.
 	Vault string `json:"vault"`
+	// Code — опциональный код переноса, сгенерированный клиентом. Нужен, чтобы
+	// клиент мог зашифровать vault ключом, производным от кода, ещё до выгрузки.
+	// Если пуст — сервер генерирует код сам.
+	Code string `json:"code"`
 }
 
 type createTransferResponse struct {
@@ -104,20 +108,34 @@ func (s *Server) handleCreateTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, err := newTransferCode()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+	canonical := ""
+	if strings.TrimSpace(req.Code) != "" {
+		// Клиентский код: сервер только проверяет формат и хэширует — содержимое
+		// vault шифруется клиентом ключом из этого кода до выгрузки.
+		canonical = normalizeTransferCode(req.Code)
+		if canonical == "" {
+			writeError(w, http.StatusBadRequest, "invalid code")
+			return
+		}
+	} else {
+		code, err := newTransferCode()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		canonical = normalizeTransferCode(code)
 	}
 	// Храним хэш канонического кода (без разделителей): при claim клиент шлёт
 	// код в любом регистре/формате, и normalizeTransferCode приводит к тому же виду.
-	canonical := normalizeTransferCode(code)
 	if err := s.store.PutAccountTransfer(r.Context(), userID, crypto.HashToken(canonical), vault, time.Now().Add(transferTTL)); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// Клиенту возвращаем код в читаемом формате (тот же, что будет показываться
+	// на экране старого телефона и вводиться на новом).
+	display := canonical[0:4] + "-" + canonical[4:8] + "-" + canonical[8:12]
 	writeJSON(w, http.StatusOK, createTransferResponse{
-		Code:      code,
+		Code:      display,
 		ExpiresAt: time.Now().Add(transferTTL).UTC().Format(time.RFC3339),
 	})
 }
