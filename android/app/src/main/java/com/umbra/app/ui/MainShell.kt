@@ -297,6 +297,8 @@ private fun SettingsTab(container: AppContainer) {
     val repo = container.chatRepository
     val scope = rememberCoroutineScope()
     val me = repo.accountInfo()
+    val connected by repo.connected.collectAsState()
+    val syncError by repo.syncError.collectAsState()
     var editProfile by remember { mutableStateOf(false) }
     var confirmBurn by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
@@ -325,8 +327,8 @@ private fun SettingsTab(container: AppContainer) {
 
             val status = when {
                 busy -> "Синхронизация…"
-                repo.syncError.value != null -> "Нет связи с сервером"
-                else -> if (repo.connected.value) "Облако: подключено" else "Облако: подключение…"
+                syncError != null -> "Нет связи с сервером"
+                else -> if (connected) "Облако: подключено" else "Облако: подключение…"
             }
             Text(status, color = UmbraColors.Fog, style = MaterialTheme.typography.bodySmall)
 

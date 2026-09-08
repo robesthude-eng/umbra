@@ -145,3 +145,20 @@
   SDK в /home/user/.cache/android-sdk, gradle-home в /home/user/.cache/gradle-home,
   при сборке требуется swap (2GB) из-за 2GB RAM: mkswap+swapon на
   /home/user/.cache/swapfile.
+
+## Статус (2026-09-08, вечер — деплой и CI)
+- Сервер ДЕПЛОИТСЯ на VPS (root@194.226.126.253): /usr/local/bin/umbra-server
+  заменён на собранный из main (sha256 9c83d7…), service umbra active.
+  GET /v1/by-username/{x} теперь 401 (маршрут жив), /v1/account 401.
+  Миграции не нужны (users.username UNIQUE с 001). Резервная копия бинарника —
+  /root/umbra-deploy-bak/umbra-server.pre-byusername.*.
+- Правило пользователя: APK собирает ТОЛЬКО GitHub Actions; локально JDK не ставить.
+  Workflow .github/workflows/android-apk.yml: подписанный debug-APK на push в main
+  (стабильный ключ из секретов UMBRA_SIGNING_*). Для f2fd8ad — SUCCESS,
+  артефакт umbra-apk-debug ~18 МБ (Actions → Artifacts, 60 дней).
+- versionCode=5, versionName=0.4.0; URL по умолчанию http://194.226.126.253:8081
+  (HTTP-стенд; cleartext к этому IP разрешён в debug network_security_config).
+- checks.yml: сервер go build/vet/test PASS; android-job: компиляция+lint (эмуляторы
+  убраны). Линт правится через collectAsState вместо StateFlow.value в композиции.
+- Из зависимостей удалены libsignal-client/android/bouncycastle (Signal выпилен),
+  androidTest E2EE-тесты удалены.

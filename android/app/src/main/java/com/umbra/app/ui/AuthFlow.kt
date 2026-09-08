@@ -51,10 +51,12 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
         if (uri != null) avatarUri = uri.toString()
     }
 
+    val phase by repo.phase.collectAsState()
+
     // Профиль не заполнен после входа — показать его даже после перезапуска приложения.
-    LaunchedEffect(repo.phase.value) {
-        if (repo.phase.value == SessionPhase.NEEDS_PROFILE) step = AuthStep.PROFILE.name
-        if (repo.phase.value == SessionPhase.READY) onDone()
+    LaunchedEffect(phase) {
+        if (phase == SessionPhase.NEEDS_PROFILE) step = AuthStep.PROFILE.name
+        if (phase == SessionPhase.READY) onDone()
     }
 
     Column(
