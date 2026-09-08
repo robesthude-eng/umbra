@@ -9,3 +9,9 @@ captures/
 .cxx/
 *.apk
 *.aab
+
+# Стабильный ключ подписи APK (никогда не коммитить)
+keystore.properties
+keystore/
+*.keystore
+*.jks
