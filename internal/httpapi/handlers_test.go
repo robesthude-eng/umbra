@@ -51,6 +51,14 @@ func newKeyBundle(username string) testKeyBundle {
 // newTestServer возвращает готовый http.Handler поверх in-memory хранилища.
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
+	h, _ := newTestServerWith(t, nil)
+	return h
+}
+
+// newTestServerWith возвращает handler и его in-memory хранилище (для тестов,
+// которым нужно заранее привязать данные, например OTP-привязку номера).
+func newTestServerWith(t *testing.T, sender OTPSender) (http.Handler, *store.MemoryStore) {
+	t.Helper()
 	cfg := &config.Config{
 		ListenAddr:      ":0",
 		Store:           "memory",
@@ -59,8 +67,8 @@ func newTestServer(t *testing.T) http.Handler {
 	}
 	st := store.NewMemoryStore()
 	hub := ws.NewHub()
-	srv := NewServer(cfg, st, hub)
-	return srv.Handler
+	srv := NewServerForMain(cfg, st, hub, nil, sender)
+	return srv.Handler, st
 }
 
 // do выполняет HTTP-запрос к handler'у и возвращает код + декодированный JSON.
@@ -237,11 +245,15 @@ func TestSendAndListMessages(t *testing.T) {
 		t.Fatalf("list без токена: ожидался 401, получен %d", code)
 	}
 
-	// A не должен видеть сообщения, адресованные B
+	// A видит собственное отправленное (облачная история обеих сторон, T1):
+	// «как в Telegram» — после входа на новом устройстве подтягиваются и свои сообщения.
 	code, m = doReq(t, h, http.MethodGet, "/v1/messages", nil, tokA)
 	msgsA, _ := m["messages"].([]any)
-	if code != http.StatusOK || len(msgsA) != 0 {
-		t.Fatalf("A не должен видеть чужие сообщения (код %d, кол-во %d)", code, len(msgsA))
+	if code != http.StatusOK || len(msgsA) != 1 {
+		t.Fatalf("A должен видеть свою историю (код %d, кол-во %d)", code, len(msgsA))
+	}
+	if a0, _ := msgsA[0].(map[string]any); a0["ciphertext"] != ciphertext {
+		t.Fatal("A: своё отправленное не совпадает")
 	}
 }
 

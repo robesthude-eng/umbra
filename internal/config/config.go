@@ -38,39 +38,54 @@ type Config struct {
 	S3UseSSL    bool
 	// MaxUserMediaBytes — квота суммарного объёма медиа на пользователя (0 = без лимита).
 	MaxUserMediaBytes int64
+	// TelegramBotToken — токен бота для доставки OTP-кодов (пусто = коды отключены).
+	TelegramBotToken string
 }
 
 func Load() *Config {
 	return &Config{
-		ListenAddr:      getenv("LISTEN_ADDR", ":8080"),
-		Store:           getenv("STORE", "memory"),
-		DatabaseURL:     getenv("DATABASE_URL", ""),
-		TokenTTL:        time.Duration(getenvInt("TOKEN_TTL_SECONDS", 86400)) * time.Second,
-		MaxMessageBytes: int64(getenvInt("MAX_MESSAGE_BYTES", 2_097_152)), // 2 MiB по умолчанию
-		BlobDir:         getenv("BLOB_DIR", "./data/blobs"),
-		MaxMediaBytes:   getenvPositiveInt("MAX_MEDIA_BYTES", DefaultMaxMediaBytes),
-		BlobStoreType:   getenv("BLOB_STORE_TYPE", "file"),
-		S3Endpoint:      getenv("S3_ENDPOINT", ""),
-		S3AccessKey:     getenv("S3_ACCESS_KEY", ""),
-		S3SecretKey:     getenv("S3_SECRET_KEY", ""),
-		S3Bucket:        getenv("S3_BUCKET", ""),
-		S3Region:        getenv("S3_REGION", ""),
-		S3UseSSL:        getenvBool("S3_USE_SSL", true),
+		ListenAddr:        getenv("LISTEN_ADDR", ":8080"),
+		Store:             getenv("STORE", "memory"),
+		DatabaseURL:       getenv("DATABASE_URL", ""),
+		TokenTTL:          time.Duration(getenvInt("TOKEN_TTL_SECONDS", 86400)) * time.Second,
+		MaxMessageBytes:   int64(getenvInt("MAX_MESSAGE_BYTES", 2_097_152)), // 2 MiB по умолчанию
+		BlobDir:           getenv("BLOB_DIR", "./data/blobs"),
+		MaxMediaBytes:     getenvPositiveInt("MAX_MEDIA_BYTES", DefaultMaxMediaBytes),
+		BlobStoreType:     getenv("BLOB_STORE_TYPE", "file"),
+		S3Endpoint:        getenv("S3_ENDPOINT", ""),
+		S3AccessKey:       getenv("S3_ACCESS_KEY", ""),
+		S3SecretKey:       getenv("S3_SECRET_KEY", ""),
+		S3Bucket:          getenv("S3_BUCKET", ""),
+		S3Region:          getenv("S3_REGION", ""),
+		S3UseSSL:          getenvBool("S3_USE_SSL", true),
 		MaxUserMediaBytes: int64(getenvInt("MAX_USER_MEDIA_BYTES", 0)),
+		TelegramBotToken:  getenv("TELEGRAM_BOT_TOKEN", ""),
 	}
 }
 
 func (c *Config) Validate() error {
-    if c.Store != "memory" && c.Store != "postgres" { return errors.New("STORE must be memory or postgres") }
-    if c.Store == "postgres" && c.DatabaseURL == "" { return errors.New("DATABASE_URL is required for PostgreSQL") }
-    if c.BlobStoreType != "file" && c.BlobStoreType != "s3" { return errors.New("BLOB_STORE_TYPE must be file or s3") }
-    if c.BlobStoreType == "s3" && (c.S3Endpoint == "" || c.S3Bucket == "" || c.S3AccessKey == "" || c.S3SecretKey == "") {
-        return errors.New("S3 endpoint, bucket and credentials are required")
-    }
-    if c.TokenTTL <= 0 || c.TokenTTL > 365*24*time.Hour { return errors.New("TOKEN_TTL_SECONDS must be positive and at most one year") }
-    if c.MaxMessageBytes <= 0 { return errors.New("MAX_MESSAGE_BYTES must be positive") }
-    if c.MaxUserMediaBytes < 0 { return errors.New("MAX_USER_MEDIA_BYTES must not be negative") }
-    return nil
+	if c.Store != "memory" && c.Store != "postgres" {
+		return errors.New("STORE must be memory or postgres")
+	}
+	if c.Store == "postgres" && c.DatabaseURL == "" {
+		return errors.New("DATABASE_URL is required for PostgreSQL")
+	}
+	if c.BlobStoreType != "file" && c.BlobStoreType != "s3" {
+		return errors.New("BLOB_STORE_TYPE must be file or s3")
+	}
+	if c.BlobStoreType == "s3" && (c.S3Endpoint == "" || c.S3Bucket == "" || c.S3AccessKey == "" || c.S3SecretKey == "") {
+		return errors.New("S3 endpoint, bucket and credentials are required")
+	}
+	if c.TokenTTL <= 0 || c.TokenTTL > 365*24*time.Hour {
+		return errors.New("TOKEN_TTL_SECONDS must be positive and at most one year")
+	}
+	if c.MaxMessageBytes <= 0 {
+		return errors.New("MAX_MESSAGE_BYTES must be positive")
+	}
+	if c.MaxUserMediaBytes < 0 {
+		return errors.New("MAX_USER_MEDIA_BYTES must not be negative")
+	}
+	return nil
 }
 
 func getenvBool(key string, def bool) bool {

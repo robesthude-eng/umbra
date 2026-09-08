@@ -17,7 +17,7 @@ var (
 	ErrConflict = errors.New("store: conflict")
 	// ErrForbidden — операция запрещена правилами (например, удаление владельца).
 	ErrForbidden = errors.New("store: forbidden")
-	ErrQuota = errors.New("store: media quota exceeded")
+	ErrQuota     = errors.New("store: media quota exceeded")
 )
 
 // Store — единый интерфейс персистентности.
@@ -36,7 +36,7 @@ type Store interface {
 	TakeOneTimePrekey(ctx context.Context, userID string) ([]byte, error)
 	TakePrekeyBundle(ctx context.Context, username string) (*model.User, []byte, error)
 	UpdateKeys(ctx context.Context, userID string, keys *model.User) error
-    OneTimePrekeyCount(ctx context.Context, userID string) (int, error)
+	OneTimePrekeyCount(ctx context.Context, userID string) (int, error)
 
 	// Сессионные токены.
 	PutToken(ctx context.Context, tokenHash, userID string, expires time.Time) error
@@ -74,6 +74,19 @@ type Store interface {
 	// Контакты.
 	AddContact(ctx context.Context, userID, contactID string) error
 	ListContacts(ctx context.Context, userID string) ([]string, error)
+
+	// Вход по коду из Telegram (v0.4): привязка номера к чату бота.
+	// BindTelegram — идемпотентная запись chat_id для номера (номер должен быть E.164).
+	BindTelegram(ctx context.Context, phone string, tgChatID int64) error
+	// TelegramChatForPhone возвращает chat_id бота, привязанный к номеру.
+	TelegramChatForPhone(ctx context.Context, phone string) (int64, error)
+
+	// Профиль аккаунта (имя, @username, аватар).
+	// UpdateAccountProfile меняет username/display_name; конфликт по username -> ErrConflict.
+	UpdateAccountProfile(ctx context.Context, userID, username, displayName string) error
+	SetAvatar(ctx context.Context, userID, mediaID string) error
+	// GetAvatar возвращает id медиа-аватара; ErrNotFound, если аватара нет.
+	GetAvatar(ctx context.Context, userID string) (string, error)
 
 	// Звонки (метаданные; медиа идёт peer-to-peer).
 	SaveCall(ctx context.Context, c *model.Call) error

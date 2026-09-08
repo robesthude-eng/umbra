@@ -143,8 +143,9 @@ func TestLegacyEndpointsAndWebSocket(t *testing.T) {
 	if len(inbox.Messages) != 1 || inbox.Messages[0].ID != sent.ID || inbox.Messages[0].Ciphertext != ct {
 		t.Fatalf("inbox changed: %#v", inbox)
 	}
+	// Облачная история: alice тоже видит собственное отправленное (своя сторона DM).
 	call("GET", "/v1/messages", tokens["alice"], nil, 200, &inbox)
-	if len(inbox.Messages) != 0 {
-		t.Fatal("sender sees recipient inbox")
+	if len(inbox.Messages) != 1 || inbox.Messages[0].ID != sent.ID || inbox.Messages[0].Ciphertext != ct {
+		t.Fatalf("alice не видит свою отправленную историю: %#v", inbox)
 	}
 }

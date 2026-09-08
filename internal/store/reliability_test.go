@@ -17,7 +17,9 @@ func TestMemoryReliability(t *testing.T) { reliabilityContract(t, NewMemoryStore
 func reliabilityContract(t *testing.T, st Store) {
 	t.Helper()
 	ctx := context.Background()
-	for _, name := range []string{"owner", "member", "peer"} { mustStore(t, st.CreateUser(ctx, testUser(name))) }
+	for _, name := range []string{"owner", "member", "peer"} {
+		mustStore(t, st.CreateUser(ctx, testUser(name)))
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
 	t.Run("concurrent quota", func(t *testing.T) {
@@ -35,10 +37,16 @@ func reliabilityContract(t *testing.T, st Store) {
 		close(results)
 		accepted := 0
 		for err := range results {
-			if err == nil { accepted++ } else if !errors.Is(err, ErrQuota) { t.Fatal(err) }
+			if err == nil {
+				accepted++
+			} else if !errors.Is(err, ErrQuota) {
+				t.Fatal(err)
+			}
 		}
 		used, err := st.MediaBytesForUser(ctx, "id-member")
-		if err != nil || used != 10 || accepted != 5 { t.Fatalf("quota: used=%d accepted=%d error=%v", used, accepted, err) }
+		if err != nil || used != 10 || accepted != 5 {
+			t.Fatalf("quota: used=%d accepted=%d error=%v", used, accepted, err)
+		}
 	})
 
 	t.Run("idempotent send and expiry", func(t *testing.T) {
@@ -54,18 +62,27 @@ func reliabilityContract(t *testing.T, st Store) {
 				retry := request
 				retry.ID = fmt.Sprintf("retry-%d", i)
 				retry.CreatedAt = now.Add(time.Second)
-				if err := st.SaveMessage(ctx, &retry); err != nil { t.Error(err); return }
-				if retry.ID != request.ID || !retry.CreatedAt.Equal(now) || !retry.ExpiresAt.Equal(expires) { t.Errorf("changed receipt: %#v", retry) }
+				if err := st.SaveMessage(ctx, &retry); err != nil {
+					t.Error(err)
+					return
+				}
+				if retry.ID != request.ID || !retry.CreatedAt.Equal(now) || !retry.ExpiresAt.Equal(expires) {
+					t.Errorf("changed receipt: %#v", retry)
+				}
 			}(i)
 		}
 		wg.Wait()
 		changed := request
 		changed.Ciphertext = []byte("different")
-		if err := st.SaveMessage(ctx, &changed); !errors.Is(err, ErrConflict) { t.Fatalf("conflicting retry: %v", err) }
+		if err := st.SaveMessage(ctx, &changed); !errors.Is(err, ErrConflict) {
+			t.Fatalf("conflicting retry: %v", err)
+		}
 		mustStore(t, st.PurgeExpired(ctx, expires.Add(time.Second)))
 		mustStore(t, st.SaveMessage(ctx, &request))
 		messages, err := st.ListMessages(ctx, "id-peer", time.Unix(0, 0))
-		if err != nil || len(messages) != 0 { t.Fatalf("expired retry resurrected message: %v %v", messages, err) }
+		if err != nil || len(messages) != 0 {
+			t.Fatalf("expired retry resurrected message: %v %v", messages, err)
+		}
 	})
 
 	t.Run("stable pagination with equal timestamps", func(t *testing.T) {
@@ -73,9 +90,13 @@ func reliabilityContract(t *testing.T, st Store) {
 			mustStore(t, st.SaveMessage(ctx, &model.Message{ID: id, SenderID: "id-owner", RecipientID: "id-peer", Ciphertext: []byte(id), CreatedAt: now}))
 		}
 		first, err := st.ListMessagesPage(ctx, "id-peer", now.Add(-time.Second), "", 2)
-		if err != nil || len(first) != 2 || first[0].ID != "page-a" || first[1].ID != "page-b" { t.Fatalf("first page: %v %v", first, err) }
+		if err != nil || len(first) != 2 || first[0].ID != "page-a" || first[1].ID != "page-b" {
+			t.Fatalf("first page: %v %v", first, err)
+		}
 		second, err := st.ListMessagesPage(ctx, "id-peer", first[1].CreatedAt, first[1].ID, 2)
-		if err != nil || len(second) != 1 || second[0].ID != "page-c" { t.Fatalf("second page: %v %v", second, err) }
+		if err != nil || len(second) != 1 || second[0].ID != "page-c" {
+			t.Fatalf("second page: %v %v", second, err)
+		}
 	})
 
 	t.Run("prekey publication retry does not replenish consumed keys", func(t *testing.T) {
@@ -88,9 +109,13 @@ func reliabilityContract(t *testing.T, st Store) {
 		_, second, err := st.TakePrekeyBundle(ctx, keys.Username)
 		mustStore(t, err)
 		_, third, err := st.TakePrekeyBundle(ctx, keys.Username)
-		if err != nil || string(first) == string(second) || len(third) != 0 { t.Fatalf("prekey reused: %q %q %q %v", first, second, third, err) }
+		if err != nil || string(first) == string(second) || len(third) != 0 {
+			t.Fatalf("prekey reused: %q %q %q %v", first, second, third, err)
+		}
 		keys.KeyBundleID, keys.IdentityX25519 = "batch-2", []byte("different identity")
-		if err := st.UpdateKeys(ctx, keys.ID, keys); !errors.Is(err, ErrConflict) { t.Fatalf("identity rotation: %v", err) }
+		if err := st.UpdateKeys(ctx, keys.ID, keys); !errors.Is(err, ErrConflict) {
+			t.Fatalf("identity rotation: %v", err)
+		}
 	})
 
 	t.Run("burn member preserves other authors and queues files", func(t *testing.T) {
@@ -103,18 +128,35 @@ func reliabilityContract(t *testing.T, st Store) {
 		}
 		mustStore(t, st.DeleteUser(ctx, "id-member"))
 		messages, err := st.ListMessages(ctx, "id-owner", time.Unix(0, 0))
-		if err != nil || len(messages) != 2 { t.Fatalf("foreign group history lost: %v %v", messages, err) }
+		if err != nil {
+			t.Fatalf("list after burn: %v", err)
+		}
+		seen := map[string]bool{}
+		for _, mm := range messages {
+			seen[mm.ID] = true
+		}
+		if !seen["group-owner"] || !seen["group-peer"] || seen["group-member"] {
+			t.Fatalf("foreign group history lost after burn: %v", seen)
+		}
 		pending, err := st.PendingBlobDeletes(ctx)
-		if err != nil || len(pending) != 5 { t.Fatalf("blob deletion queue: %v %v", pending, err) }
+		if err != nil || len(pending) != 5 {
+			t.Fatalf("blob deletion queue: %v %v", pending, err)
+		}
 		mustStore(t, st.CompleteBlobDelete(ctx, pending[0]))
 		pending, err = st.PendingBlobDeletes(ctx)
-		if err != nil || len(pending) != 4 { t.Fatalf("completed blob still pending: %v %v", pending, err) }
+		if err != nil || len(pending) != 4 {
+			t.Fatalf("completed blob still pending: %v %v", pending, err)
+		}
 		mustStore(t, st.DeleteUser(ctx, "id-owner"))
-		if _, err := st.GetChat(ctx, "group"); !errors.Is(err, ErrNotFound) { t.Fatalf("owner's group survived: %v", err) }
+		if _, err := st.GetChat(ctx, "group"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("owner's group survived: %v", err)
+		}
 	})
 }
 
 func mustStore(t *testing.T, err error) {
 	t.Helper()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 }

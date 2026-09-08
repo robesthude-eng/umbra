@@ -158,16 +158,16 @@ func TestMemoryStore_Messages(t *testing.T) {
 		}
 	}
 
-	// получатель bob должен видеть m1 и m3 (адресованы ему), в порядке времени
+	// Облачная история (T1): bob видит все три — m1/m3 (адресованы ему) и своё m2.
 	got, err := s.ListMessages(ctx, "id-bob", time.Unix(0, 0))
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("ожидалось 2 сообщения, получено %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("ожидалось 3 сообщения, получено %d", len(got))
 	}
-	if got[0].ID != "m1" || got[1].ID != "m3" {
-		t.Fatalf("неверный порядок/состав: %v, %v", got[0].ID, got[1].ID)
+	if got[0].ID != "m1" || got[1].ID != "m2" || got[2].ID != "m3" {
+		t.Fatalf("неверный порядок/состав: %v, %v, %v", got[0].ID, got[1].ID, got[2].ID)
 	}
 
 	// фильтр по since: только m3 (после now+1s)

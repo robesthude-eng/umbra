@@ -17,19 +17,21 @@ type MemoryStore struct {
 	blobMu      sync.RWMutex
 	deletions   map[string]bool
 	receipts    map[string]messageReceipt
-	users       map[string]*model.User           // id -> user
-	byName      map[string]string                // username -> id
-	byPhone     map[string]string                // phone E.164 -> id
-	byPhoneHash map[string]string                // sha256(phone) -> id
-	prekeys     map[string][][]byte              // userID -> очередь одноразовых pre-keys
-	tokens      map[string]tokenEntry            // tokenHash -> запись
-	messages    []*model.Message                 // все сообщения (личные + групповые)
-	media       map[string]*model.Media          // id -> метаданные
-	chats       map[string]*model.Chat           // chatID -> чат
+	users       map[string]*model.User                 // id -> user
+	byName      map[string]string                      // username -> id
+	byPhone     map[string]string                      // phone E.164 -> id
+	byPhoneHash map[string]string                      // sha256(phone) -> id
+	prekeys     map[string][][]byte                    // userID -> очередь одноразовых pre-keys
+	tokens      map[string]tokenEntry                  // tokenHash -> запись
+	messages    []*model.Message                       // все сообщения (личные + групповые)
+	media       map[string]*model.Media                // id -> метаданные
+	chats       map[string]*model.Chat                 // chatID -> чат
 	chatMembers map[string]map[string]model.MemberRole // chatID -> (userID -> роль)
-	contacts    map[string]map[string]bool       // userID -> (contactID -> true)
-	calls       map[string]*model.Call           // callID -> звонок
-	transfers   map[string]*accountTransfer      // codeHash -> запись переноса
+	contacts    map[string]map[string]bool             // userID -> (contactID -> true)
+	calls       map[string]*model.Call                 // callID -> звонок
+	transfers   map[string]*accountTransfer            // codeHash -> запись переноса
+	tgChat      map[string]int64                       // phone -> tg chat_id
+	avatars     map[string]string                      // userID -> mediaID
 }
 
 type accountTransfer struct {
@@ -60,6 +62,8 @@ func NewMemoryStore() *MemoryStore {
 		contacts:    make(map[string]map[string]bool),
 		calls:       make(map[string]*model.Call),
 		transfers:   make(map[string]*accountTransfer),
+		tgChat:      make(map[string]int64),
+		avatars:     make(map[string]string),
 	}
 }
 
@@ -75,9 +79,15 @@ func (m *MemoryStore) CreateUser(_ context.Context, u *model.User) error {
 		}
 	}
 	cp := *u
-	if cp.KeyVersion == 0 { cp.KeyVersion = 1 }
-	if cp.RegistrationID == 0 { cp.RegistrationID = 1 }
-	if cp.SignedPrekeyID == 0 { cp.SignedPrekeyID = 1 }
+	if cp.KeyVersion == 0 {
+		cp.KeyVersion = 1
+	}
+	if cp.RegistrationID == 0 {
+		cp.RegistrationID = 1
+	}
+	if cp.SignedPrekeyID == 0 {
+		cp.SignedPrekeyID = 1
+	}
 	cp.OneTimePrekeys = append([][]byte(nil), u.OneTimePrekeys...)
 	m.users[u.ID] = &cp
 	m.byName[u.Username] = u.ID
@@ -187,7 +197,9 @@ func (m *MemoryStore) SaveMessage(_ context.Context, msg *model.Message) error {
 		key := msg.SenderID + ":" + msg.ClientID
 		hash := messageRequestHash(msg)
 		if receipt, ok := m.receipts[key]; ok {
-			if receipt.hash != hash { return ErrConflict }
+			if receipt.hash != hash {
+				return ErrConflict
+			}
 			msg.ID, msg.CreatedAt, msg.ExpiresAt = receipt.id, receipt.created, receipt.expires
 			return nil
 		}
@@ -212,7 +224,7 @@ func (m *MemoryStore) ListMessages(_ context.Context, userID string, since time.
 		if msg.ExpiresAt != nil && !msg.ExpiresAt.After(now) {
 			continue
 		}
-		if msg.RecipientID == userID {
+		if msg.RecipientID == userID || msg.SenderID == userID {
 			cp := *msg
 			out = append(out, &cp)
 			continue
@@ -463,7 +475,9 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 	}
 	// звонки
 	for key := range m.receipts {
-		if strings.HasPrefix(key, userID+":") { delete(m.receipts, key) }
+		if strings.HasPrefix(key, userID+":") {
+			delete(m.receipts, key)
+		}
 	}
 	for cid, call := range m.calls {
 		if call.CallerID == userID || call.CalleeID == userID {

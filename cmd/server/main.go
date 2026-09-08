@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -16,8 +17,19 @@ import (
 	"umbra/server/internal/httpapi"
 	"umbra/server/internal/maintenance"
 	"umbra/server/internal/store"
+	"umbra/server/internal/telegram"
 	"umbra/server/internal/ws"
 )
+
+// tgOTPSender доставляет OTP-код в Telegram-чат, привязанный к номеру.
+type tgOTPSender struct {
+	cl *telegram.Client
+}
+
+func (t tgOTPSender) SendCode(ctx context.Context, phone string, chatID int64, code string) error {
+	return t.cl.SendMessage(ctx, chatID,
+		fmt.Sprintf("Umbra: код для номера %s — %s. Действует 5 минут.", phone, code))
+}
 
 func main() {
 	cfg := config.Load()
@@ -61,7 +73,30 @@ func main() {
 		maintenance.Run(background, st, blobs)
 	}()
 
-	srv := httpapi.NewServerWithBlobStore(cfg, st, hub, blobs)
+	// Доставка OTP-кодов через Telegram-бота (если задан токен).
+	// ВАЖНО: у бота должен быть один слушатель — если его опрашивает что-то ещё
+	// (n8n), второй getUpdates-цикл получит конфликт; отключите другой опрос.
+	var otpSender httpapi.OTPSender
+	if cfg.TelegramBotToken != "" {
+		tg := telegram.NewClient(cfg.TelegramBotToken)
+		otpSender = tgOTPSender{cl: tg}
+		go tg.StartPolling(background, func(ctx context.Context, raw string, chatID int64) (bool, error) {
+			phone, err := httpapi.NormalizePhone(raw)
+			if err != nil {
+				return false, nil // сообщение не похоже на номер — игнорируем
+			}
+			if err := st.BindTelegram(ctx, phone, chatID); err != nil {
+				return false, err
+			}
+			log.Printf("telegram: номер %s привязан к chat %d", phone, chatID)
+			return true, nil
+		}, "umbra")
+		log.Printf("Telegram-бот для OTP-кодов включён")
+	} else {
+		log.Printf("TELEGRAM_BOT_TOKEN не задан: вход/регистрация по коду выключены")
+	}
+
+	srv := httpapi.NewServerForMain(cfg, st, hub, blobs, otpSender)
 
 	go func() {
 		log.Printf("Umbra сервер запущен на %s", cfg.ListenAddr)

@@ -15,7 +15,7 @@ func newTestChat(id string, typ model.ChatType, createdBy string) *model.Chat {
 		Type:      typ,
 		Title:     "чат " + id,
 		CreatedBy: createdBy,
-		CreatedAt:  time.Now().UTC(),
+		CreatedAt: time.Now().UTC(),
 	}
 }
 
@@ -125,10 +125,17 @@ func TestMemoryStore_GroupMessages(t *testing.T) {
 	if len(gotCarol) != 1 || gotCarol[0].ID != "dm1" {
 		t.Fatalf("carol должен видеть только личное сообщение, получено %d", len(gotCarol))
 	}
-	// alice видит только групповое (dm1 — исходящее личное, в её inbox не попадает)
+	// Облачная история (T1): alice видит групповое gm1 и своё исходящее dm1.
 	gotAlice, _ := s.ListMessages(ctx, "id-alice", time.Unix(0, 0))
-	if len(gotAlice) != 1 || gotAlice[0].ID != "gm1" {
-		t.Fatalf("alice должен видеть только групповое сообщение, получено %d", len(gotAlice))
+	if len(gotAlice) != 2 {
+		t.Fatalf("alice должен видеть групповое и своё исходящее, получено %d", len(gotAlice))
+	}
+	seen := map[string]bool{}
+	for _, mm := range gotAlice {
+		seen[mm.ID] = true
+	}
+	if !seen["gm1"] || !seen["dm1"] {
+		t.Fatalf("состав истории alice неполный: %v", seen)
 	}
 }
 

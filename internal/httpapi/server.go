@@ -3,7 +3,7 @@ package httpapi
 
 import (
 	"context"
-    "errors"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -30,6 +30,9 @@ type Server struct {
 	challenges *challengeStore
 	typing     *typingStore
 	uploads    chan struct{}
+	otp        *otpStore
+	otpSender  OTPSender
+	handler    http.Handler
 }
 
 // NewServer сохраняет прежний контракт; без BlobStore медиа возвращает 503.
@@ -39,7 +42,12 @@ func NewServer(cfg *config.Config, st store.Store, hub *ws.Hub) *http.Server {
 
 // NewServerWithBlobStore включает медиа; вызывающий код закрывает оба хранилища.
 func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore) *http.Server {
-	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8)}
+	return NewServerForMain(cfg, st, hub, blobs, nil)
+}
+
+// NewServerForMain собирает сервер с OTP-доставкой кодов (Telegram) и готов к запуску.
+func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender) *http.Server {
+	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -47,6 +55,9 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 	mux.HandleFunc("GET /v1/users/{username}/prekeys", s.handlePrekeys)
 	mux.HandleFunc("POST /v1/auth/challenge", s.handleAuthChallenge)
 	mux.HandleFunc("POST /v1/auth/verify", s.handleAuthVerify)
+	// Вход/регистрация по номеру с кодом из Telegram (v0.4).
+	mux.HandleFunc("POST /v1/auth/request_code", s.handleRequestCode)
+	mux.HandleFunc("POST /v1/auth/verify_code", s.handleVerifyCode)
 	mux.Handle("POST /v1/auth/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
 	mux.Handle("PUT /v1/account/keys", s.requireAuth(http.HandlerFunc(s.handleUpdateKeys)))
 	mux.Handle("POST /v1/messages", s.requireAuth(http.HandlerFunc(s.handleSendMessage)))
@@ -76,11 +87,15 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 	mux.Handle("POST /v1/account/burn", s.requireAuth(http.HandlerFunc(s.handleBurnAccount)))
 	mux.Handle("POST /v1/account/transfer", s.requireAuth(http.HandlerFunc(s.handleCreateTransfer)))
 	mux.HandleFunc("POST /v1/account/transfer/claim", s.handleClaimTransfer)
+	// Профиль (имя, @username) и аватар — завершение регистрации/редактирование.
+	mux.Handle("POST /v1/account/profile", s.requireAuth(http.HandlerFunc(s.handleUpdateProfile)))
+	mux.Handle("POST /v1/account/avatar", s.requireAuth(http.HandlerFunc(s.handleSetAvatar)))
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
+	s.handler = logMiddleware(newRequestLimiter().wrap(mux))
 	return &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           logMiddleware(newRequestLimiter().wrap(mux)),
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      5 * time.Minute,
@@ -98,8 +113,11 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		userID, err := s.store.GetUserIDByTokenHash(r.Context(), crypto.HashToken(token))
 		if err != nil {
-            if errors.Is(err, store.ErrNotFound) { writeError(w, http.StatusUnauthorized, "unauthorized")
-            } else { writeError(w, http.StatusServiceUnavailable, "authentication temporarily unavailable") }
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "authentication temporarily unavailable")
+			}
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUserID, userID)))
@@ -119,7 +137,9 @@ func logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		if strings.HasSuffix(r.URL.Path, "/typing") { return }
+		if strings.HasSuffix(r.URL.Path, "/typing") {
+			return
+		}
 		log.Printf("%s %s %s (%s)", r.Method, r.URL.Path, r.RemoteAddr, time.Since(start))
 	})
 }
