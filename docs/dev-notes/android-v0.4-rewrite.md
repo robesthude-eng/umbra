@@ -124,3 +124,24 @@
 4. Android: UI auth+профиль, таб-бар, чаты/группы, тема Liquid Glass.
 5. Локальный compileDebugKotlin до зелёного, push → CI (соберёт APK), ручная
    проверка на телефоне с реальным кодом из Telegram.
+
+## Статус (2026-09-08, сессия после компиляции)
+- Сервер: единый `GET /v1/by-username/{username}` (внешний 6fed67e) — это
+  эталон; локальный дубль `/v1/resolve` НЕ переносим. go build + go test
+  internal/httpapi PASS. Прод-деплой нового бинарника НЕ выполнялся в этой
+  сессии — проверить актуальность бинарника на VPS.
+- Android: data+UI T1 написаны и **compileDebugKotlin зелёный**
+  (commit 6db8d10 + фиксы компиляции 6739adc, origin/main). Что сделано:
+  SessionStore, конверт-сообщения (MessageContent/MessageCodec, поле ciphertext
+  = base64 JSON), инкрементальная синхронизация по maxCreatedAtMillis,
+  AuthScreen (номер→код→профиль), UmbraRoot по фазам, MainShell с таб-баром
+  Чаты/Группы/Звонки/Настройки, ChatView, журнал/оверлей звонка (сигналинг),
+  Liquid Glass-тема. Room: schema version 3, добавлены maxCreatedAtMillis/all.
+- Осталось: убрать libsignal-зависимости из gradle (код не использует; чистка
+  сборки); деплой сервера; APK: versionCode 4→5, versionName 0.4.0,
+  -Pumbra.serverUrl=https://api.agentwill.ru, стабильный ключ; проверка на
+  телефоне (реальный код из Telegram-бота владельцу).
+- Локальный тулчейн (не переносится между сессиями): JDK21 в /usr/lib/jvm,
+  SDK в /home/user/.cache/android-sdk, gradle-home в /home/user/.cache/gradle-home,
+  при сборке требуется swap (2GB) из-за 2GB RAM: mkswap+swapon на
+  /home/user/.cache/swapfile.
