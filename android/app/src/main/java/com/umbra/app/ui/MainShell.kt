@@ -113,6 +113,9 @@ private fun ChatsTab(container: AppContainer, onOpenChat: (String) -> Unit) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(conversations, key = { it.chatId }) { c ->
                         GlassRow(onClick = { onOpenChat(c.chatId) }) {
+                            if (c.isGroup) Avatar(repo, null, c.title, 44.dp)
+                            else UserAvatar(repo, c.chatId, c.title, 44.dp)
+                            Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(c.title, color = UmbraColors.Ice, fontWeight = FontWeight.Medium)
                                 Text(c.subtitle, color = UmbraColors.Fog, maxLines = 1)
@@ -177,6 +180,8 @@ private fun GroupsTab(container: AppContainer, onOpenChat: (String) -> Unit) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(groups, key = { it.id }) { g ->
                         GlassRow(onClick = { onOpenChat(g.id) }) {
+                            Avatar(repo, null, g.title, 44.dp)
+                            Spacer(Modifier.width(10.dp))
                             Column { Text(g.title, color = UmbraColors.Ice); Text("группа", color = UmbraColors.Fog) }
                         }
                     }
@@ -270,7 +275,7 @@ private fun CallsTab(container: AppContainer) {
             text = {
                 Column {
                     Text("Наберите @никнейм. Собеседнику придёт уведомление о входящем вызове.")
-                    OutlinedTextField(username, { username = it }, label = { Text("@никнейм") }, singleLine = true)
+                    OutlinedTextField(username, { username = it }, label = { Text("@никнейм *") }, singleLine = true)
                     err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             },
@@ -296,24 +301,25 @@ private fun CallsTab(container: AppContainer) {
 private fun SettingsTab(container: AppContainer) {
     val repo = container.chatRepository
     val scope = rememberCoroutineScope()
-    val me = repo.accountInfo()
+    var profileVersion by remember { mutableStateOf(0) }
+    val me = remember(profileVersion) { repo.accountInfo() }
     val connected by repo.connected.collectAsState()
     val syncError by repo.syncError.collectAsState()
     var editProfile by remember { mutableStateOf(false) }
     var confirmBurn by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     val pickAvatar = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) scope.launch { runCatching { repo.uploadAndSetAvatar(uri) } }
+        if (uri != null) scope.launch {
+            runCatching { repo.uploadAndSetAvatar(uri) }
+            profileVersion++
+        }
     }
 
     GlassBackground {
         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             TabTitle("Настройки")
             GlassRow(onClick = { editProfile = true }) {
-                Box(Modifier.size(48.dp).clip(CircleShape).background(UmbraColors.headerGradient),
-                    contentAlignment = Alignment.Center) {
-                    Text(me.displayName.take(1).ifBlank { "?" }, color = Color.White, style = MaterialTheme.typography.titleLarge)
-                }
+                Avatar(repo, me.avatarMediaId.ifBlank { null }, me.displayName.ifBlank { "?" }, 48.dp)
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text((me.displayName + " " + me.lastName).trim().ifBlank { "Без имени" },
@@ -360,11 +366,14 @@ private fun SettingsTab(container: AppContainer) {
                 }
             },
             confirmButton = {
-                TextButton(enabled = name.isNotBlank(), onClick = {
+                TextButton(enabled = name.isNotBlank() && username.isNotBlank(), onClick = {
                     scope.launch {
-                        try { repo.updateProfile(name.trim(), lastName.trim(), username.trim()) }
-                        catch (e: Exception) { err = e.userMessage() }
-                        finally { if (err == null) editProfile = false }
+                        err = null
+                        try {
+                            repo.updateProfile(name.trim(), lastName.trim(), username.trim())
+                            profileVersion++
+                            editProfile = false
+                        } catch (e: Exception) { err = e.userMessage() }
                     }
                 }) { Text("Сохранить") }
             },

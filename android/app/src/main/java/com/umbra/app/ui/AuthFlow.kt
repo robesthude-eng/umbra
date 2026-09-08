@@ -108,13 +108,16 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
                 onBack = { step = AuthStep.CODE.name },
                 onSubmit = {
                     if (name.isBlank()) { error = "Введите имя"; return@ProfileStep }
+                    if (username.isBlank()) { error = "Введите @никнейм — он обязателен"; return@ProfileStep }
                     scope.launch {
                         loading = true; error = null
                         try {
-                            repo.updateProfile(name.trim(), lastName.trim(), username.trim())
+                            // Сначала фото: updateProfile переводит фазу в READY и AuthScreen
+                            // уйдёт из композиции (корутина отменилась бы на полпути).
                             avatarUri?.let { uri ->
                                 runCatching { repo.uploadAndSetAvatar(Uri.parse(uri)) }
                             }
+                            repo.updateProfile(name.trim(), lastName.trim(), username.trim())
                             onDone()
                         } catch (e: Exception) { error = e.userMessage() }
                         finally { loading = false }
@@ -207,9 +210,9 @@ fun ProfileStep(avatarUri: String?, name: String, lastName: String, username: St
         Spacer(Modifier.height(10.dp))
         GlassField("Фамилия", lastName, { onLastName(it.take(64)) })
         Spacer(Modifier.height(10.dp))
-        GlassField("@никнейм (необязательно)", username, { onUsername(it.filter { ch -> ch.isLetterOrDigit() || ch == '_' || ch == '.' }.take(32)) })
+        GlassField("@никнейм *", username, { onUsername(it.filter { ch -> ch.isLetterOrDigit() || ch == '_' || ch == '.' }.take(32)) })
         Spacer(Modifier.height(20.dp))
-        Button(onClick = onSubmit, enabled = !loading && name.isNotBlank(),
+        Button(onClick = onSubmit, enabled = !loading && name.isNotBlank() && username.isNotBlank(),
             modifier = Modifier.fillMaxWidth(), colors = glassButtonColors()) { Text(if (loading) "Сохраняем…" else "Продолжить") }
     }
 }

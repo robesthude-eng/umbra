@@ -28,6 +28,7 @@ import java.io.File
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /** Фаза приложения относительно сессии. */
 enum class SessionPhase { LOGGED_OUT, NEEDS_PROFILE, READY }
@@ -87,6 +88,8 @@ class ChatRepository(
     private val json = Json { ignoreUnknownKeys = true }
     private val syncMutex = Mutex()
     private val sendMutex = Mutex()
+    /** Кэш скачанных аватаров (медиа-id → байты), в памяти. */
+    private val avatarCache = ConcurrentHashMap<String, ByteArray>()
     private val authMutex = Mutex()
     private var pollJob: Job? = null
     private var eventJob: Job? = null
@@ -533,8 +536,16 @@ class ChatRepository(
 
     suspend fun avatarBytes(mediaId: String): ByteArray? = try {
         val r = api.downloadMedia(auth(), mediaId)
-        if (!r.isSuccessful) null else r.body()?.use { it.bytes() }
-    } catch (_: Exception) { null }
+        if (!r.isSuccessful) null else withContext(Dispatchers.IO) { r.body()?.use { it.bytes() } }
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+
+    /** Аватар с кэшем в памяти (для списков и шапок чатов). */
+    suspend fun avatarBytesCached(mediaId: String): ByteArray? {
+        avatarCache[mediaId]?.let { return it }
+        val bytes = avatarBytes(mediaId) ?: return null
+        if (bytes.isNotEmpty()) avatarCache[mediaId] = bytes
+        return bytes
+    }
 
     companion object {
         const val MEDIA_CACHE_DIR = "media"

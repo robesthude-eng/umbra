@@ -49,10 +49,16 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(chat?.title?.ifBlank { chatId.take(12) } ?: chatId.take(12))
-                        if (chat?.type == "group") {
-                            Text("группа", style = MaterialTheme.typography.labelSmall, color = UmbraColors.Fog)
+                    val titleText = chat?.title?.ifBlank { chatId.take(12) } ?: chatId.take(12)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (chat?.type == "group") Avatar(repo, null, titleText, 40.dp)
+                        else UserAvatar(repo, chatId, titleText, 40.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(titleText)
+                            if (chat?.type == "group") {
+                                Text("группа", style = MaterialTheme.typography.labelSmall, color = UmbraColors.Fog)
+                            }
                         }
                     }
                 },
