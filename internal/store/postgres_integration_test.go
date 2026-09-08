@@ -35,7 +35,7 @@ func TestPostgresReliability(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer pool.Close()
 	paths, err := filepath.Glob("../../migrations/*.sql")
-	if err != nil || len(paths) != 6 { t.Fatalf("migration files: %v %v", paths, err) }
+	if err != nil || len(paths) != 7 { t.Fatalf("migration files: %v %v", paths, err) }
 	for _, path := range paths {
 		sql, err := os.ReadFile(path)
 		if err != nil { t.Fatal(err) }
