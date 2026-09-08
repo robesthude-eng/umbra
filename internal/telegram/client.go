@@ -97,9 +97,13 @@ type update struct {
 // ответное сообщение ("" = не отвечать).
 type HandleMessage func(ctx context.Context, chatID int64, text string) (reply string)
 
-// StartPolling крутит getUpdates (long polling). Для одного бота должен быть
-// ровно один слушатель: если его опрашивает что-то ещё (например, n8n того же
-// бота), Telegram вернёт конфликт — лишние опросы нужно отключить.
+// StartPolling крутит getUpdates КОРОТКИМИ запросами (timeout:0) с паузой между
+// опросами. Long-polling (timeout 25с) ненадёжен через Cloudflare Worker-релей:
+// соединение висит дольше лимита и клиент ловит таймауты. Короткий опрос раз в
+// секунду достаточно для бота одного владельца.
+// Для одного бота должен быть ровно один слушатель: если его опрашивает что-то
+// ещё (например, n8n того же бота), Telegram вернёт конфликт — лишние опросы
+// нужно отключить.
 func (c *Client) StartPolling(ctx context.Context, handle HandleMessage, name string) {
 	offset := int64(0)
 	greeted := make(map[int64]bool)
@@ -109,7 +113,7 @@ func (c *Client) StartPolling(ctx context.Context, handle HandleMessage, name st
 		}
 		body, err := c.post(ctx, "getUpdates", map[string]any{
 			"offset":  offset,
-			"timeout": 25,
+			"timeout": 0,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -151,6 +155,11 @@ func (c *Client) StartPolling(ctx context.Context, handle HandleMessage, name st
 					log.Printf("telegram (%s): send reply: %v", name, err)
 				}
 			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
 		}
 	}
 }
