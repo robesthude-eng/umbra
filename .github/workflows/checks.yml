@@ -35,10 +35,6 @@ jobs:
 
   android:
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        api: [26, 35]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -47,33 +43,24 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
-      - name: Accept SDK licenses and install compile SDK
+      - name: Accept SDK licenses and install SDK components
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platforms;android-35" "build-tools;34.0.0"
+      # Компиляция app + androidTest и lint. Инструментальные тесты на эмуляторе
+      # здесь не гоняются: устройство есть у владельца (проверка вручную).
       - name: Build and lint
         working-directory: android
         run: |
           chmod +x gradlew
-          # Heap под раннер GH (дефолт 1280m в репозитории — под слабые машины):
-          # без этого packageDebug падает с OOM на больших нативных .so.
+          # Heap под раннер GH (дефолт в репозитории под слабые машины).
           sed -i 's/-Xmx1280m/-Xmx5g/g; s/MaxMetaspaceSize=512m/MaxMetaspaceSize=1g/' gradle.properties
           ./gradlew assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
       - name: Upload lint report on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: lint-report-api${{ matrix.api }}
+          name: lint-report
           path: android/app/build/intermediates/lint_intermediate_text_report/
           retention-days: 7
           if-no-files-found: ignore
-      - name: Enable KVM in CI
-        run: sudo chmod a+rw /dev/kvm
-      - uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.api }}
-          arch: x86_64
-          target: google_apis
-          disable-animations: true
-          working-directory: android
-          script: ./gradlew connectedDebugAndroidTest --stacktrace

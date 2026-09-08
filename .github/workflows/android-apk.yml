@@ -1,8 +1,9 @@
-name: Android APK (debug)
+name: Android APK (подписанный, debug)
 
-# Собирает debug-APK при изменении Android-кода на ветке main.
-# Артефакт (umbra-apk-debug) доступен на странице прогона Actions 60 дней;
-# теги/релизы не создаются — в репозитории остаётся одна ветка main.
+# Собирает подписанный debug-APK на push в main при изменении Android-кода.
+# Подпись — стабильный ключ из секретов: новый APK ОБНОВЛЯЕТ установленное
+# приложение (без удаления). Артефакт umbra-apk-debug доступен со страницы
+# Actions 60 дней; теги/релизы не создаются (одна ветка main).
 on:
   push:
     branches: [main]
@@ -32,12 +33,12 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Accept SDK licenses and install NDK (стриппинг .so)
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept SDK licenses and install SDK components
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "ndk;26.1.10909125" >/dev/null
-
-      - uses: gradle/actions/setup-gradle@v4
+          sdkmanager "platforms;android-35" "build-tools;34.0.0" "platform-tools"
 
       # Стабильная подпись: APK из CI подписываются постоянным ключом (секреты),
       # поэтому новые сборки ОБНОВЛЯЮТ установленное приложение без удаления.
@@ -68,8 +69,7 @@ jobs:
           UMBRA_SERVER_URL: ${{ inputs.serverUrl || 'http://194.226.126.253:8081' }}
         run: |
           chmod +x gradlew
-          # Раннер GH: 16 ГБ RAM — поднимаем heap (в репозитории дефолт под слабые машины,
-          # иначе packageDebug падает с OOM на нестрипанных libsignal_jni.so ×3 ABI).
+          # Раннер GH: 16 ГБ RAM — поднимаем heap (дефолт в репозитории под слабые машины).
           sed -i 's/-Xmx1280m/-Xmx5g/g; s/MaxMetaspaceSize=512m/MaxMetaspaceSize=1g/' gradle.properties
           ./gradlew assembleDebug -Pumbra.serverUrl="$UMBRA_SERVER_URL" --stacktrace
 
