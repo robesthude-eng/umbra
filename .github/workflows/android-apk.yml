@@ -29,8 +29,10 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Accept SDK licenses
-        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
+      - name: Accept SDK licenses and install NDK (стриппинг .so)
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "ndk;26.1.10909125" >/dev/null
 
       - uses: gradle/actions/setup-gradle@v4
 
@@ -40,6 +42,9 @@ jobs:
           UMBRA_SERVER_URL: ${{ inputs.serverUrl || 'http://194.226.126.253:8081' }}
         run: |
           chmod +x gradlew
+          # Раннер GH: 16 ГБ RAM — поднимаем heap (в репозитории дефолт под слабые машины,
+          # иначе packageDebug падает с OOM на нестрипанных libsignal_jni.so ×3 ABI).
+          sed -i 's/-Xmx1280m/-Xmx5g/g; s/MaxMetaspaceSize=512m/MaxMetaspaceSize=1g/' gradle.properties
           ./gradlew assembleDebug -Pumbra.serverUrl="$UMBRA_SERVER_URL" --stacktrace
 
       - name: Prepare artifact

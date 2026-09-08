@@ -55,6 +55,9 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
+          # Heap под раннер GH (дефолт 1280m в репозитории — под слабые машины):
+          # без этого packageDebug падает с OOM на больших нативных .so.
+          sed -i 's/-Xmx1280m/-Xmx5g/g; s/MaxMetaspaceSize=512m/MaxMetaspaceSize=1g/' gradle.properties
           ./gradlew assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
       - name: Enable KVM in CI
         run: sudo chmod a+rw /dev/kvm
