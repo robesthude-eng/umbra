@@ -6,6 +6,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!-- Lint PermissionImpliesHardware: разрешения не должны делать железо
+         обязательным — приложение ставится и на устройства без камеры/микрофона. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <application
         android:name=".UmbraApp"
         android:allowBackup="false"
