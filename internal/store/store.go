@@ -85,5 +85,14 @@ type Store interface {
 	// ключи, сообщения, медиа, членства в чатах, контакты, звонки) — «сжечь аккаунт».
 	DeleteUser(ctx context.Context, userID string) error
 
+	// Перенос аккаунта между устройствами (v0.4). Vault — непрозрачный
+	// зашифрованный клиентом blob; сервер его не читает.
+	// PutAccountTransfer создаёт одноразовый код переноса (codeHash = SHA-256 кода)
+	// и отзывает предыдущие неиспользованные коды пользователя.
+	PutAccountTransfer(ctx context.Context, userID, codeHash string, vault []byte, expiresAt time.Time) error
+	// TakeAccountTransfer извлекает vault по коду (однократно). Возвращает
+	// ErrNotFound, если кода нет, он использован или истёк.
+	TakeAccountTransfer(ctx context.Context, codeHash string) (string, []byte, error)
+
 	Close() error
 }

@@ -29,6 +29,14 @@ type MemoryStore struct {
 	chatMembers map[string]map[string]model.MemberRole // chatID -> (userID -> роль)
 	contacts    map[string]map[string]bool       // userID -> (contactID -> true)
 	calls       map[string]*model.Call           // callID -> звонок
+	transfers   map[string]*accountTransfer      // codeHash -> запись переноса
+}
+
+type accountTransfer struct {
+	userID    string
+	vault     []byte
+	expiresAt time.Time
+	used      bool
 }
 
 type tokenEntry struct {
@@ -51,6 +59,7 @@ func NewMemoryStore() *MemoryStore {
 		chatMembers: make(map[string]map[string]model.MemberRole),
 		contacts:    make(map[string]map[string]bool),
 		calls:       make(map[string]*model.Call),
+		transfers:   make(map[string]*accountTransfer),
 	}
 }
 
@@ -549,4 +558,28 @@ func (m *MemoryStore) copyUser(u *model.User) *model.User {
 	cp.SignedPrekey = append([]byte(nil), u.SignedPrekey...)
 	cp.SignedPrekeySig = append([]byte(nil), u.SignedPrekeySig...)
 	return &cp
+}
+
+func (m *MemoryStore) PutAccountTransfer(_ context.Context, userID, codeHash string, vault []byte, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Один действующий код на пользователя: отзываем прежние неиспользованные.
+	for h, t := range m.transfers {
+		if t.userID == userID && !t.used {
+			delete(m.transfers, h)
+		}
+	}
+	m.transfers[codeHash] = &accountTransfer{userID: userID, vault: vault, expiresAt: expiresAt}
+	return nil
+}
+
+func (m *MemoryStore) TakeAccountTransfer(_ context.Context, codeHash string) (string, []byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.transfers[codeHash]
+	if !ok || t.used || !t.expiresAt.After(time.Now()) {
+		return "", nil, ErrNotFound
+	}
+	t.used = true
+	return t.userID, t.vault, nil
 }

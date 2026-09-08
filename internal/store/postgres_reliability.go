@@ -106,6 +106,7 @@ func (p *PostgresStore) PurgeExpired(ctx context.Context, now time.Time) error {
 	if _, err = tx.Exec(ctx, `DELETE FROM messages WHERE expires_at <= $1`, now); err != nil { return err }
 	if _, err = tx.Exec(ctx, `DELETE FROM auth_tokens WHERE expires_at <= $1`, now); err != nil { return err }
 	if _, err = tx.Exec(ctx, `DELETE FROM message_receipts WHERE created_at < $1`, now.Add(-30*24*time.Hour)); err != nil { return err }
+	if _, err = tx.Exec(ctx, `DELETE FROM account_transfers WHERE expires_at <= $1 OR used = TRUE`, now); err != nil { return err }
 	return tx.Commit(ctx)
 }
 

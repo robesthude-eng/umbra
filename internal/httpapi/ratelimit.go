@@ -23,6 +23,8 @@ func (l *requestLimiter) wrap(next http.Handler) http.Handler {
 		if r.URL.Path == "/v1/register" { category,limit="register",30 }
 		// Поиск контактов по хэшам номеров: защита от перебора телефонной базы.
 		if r.URL.Path == "/v1/contacts/discover" { category,limit="discover",30 }
+		// Приём кода переноса — перебор кода ограничиваем жёстко.
+		if r.URL.Path == "/v1/account/transfer/claim" { category,limit="transfer",20 }
 		if !l.allow(category+":"+ip,limit,time.Now()) {
 			w.Header().Set("Retry-After","60")
 			writeError(w,http.StatusTooManyRequests,"too many requests"); return

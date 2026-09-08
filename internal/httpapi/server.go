@@ -74,6 +74,8 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 	// Аккаунт: получение и полное удаление («сжечь»).
 	mux.Handle("GET /v1/account", s.requireAuth(http.HandlerFunc(s.handleGetAccount)))
 	mux.Handle("POST /v1/account/burn", s.requireAuth(http.HandlerFunc(s.handleBurnAccount)))
+	mux.Handle("POST /v1/account/transfer", s.requireAuth(http.HandlerFunc(s.handleCreateTransfer)))
+	mux.HandleFunc("POST /v1/account/transfer/claim", s.handleClaimTransfer)
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
 	return &http.Server{
