@@ -327,7 +327,6 @@ class ChatRepository(
             val peer = if (dto.senderId == owner) dto.recipientId else dto.senderId
             scope.launch { resolveUser(peer); updateDmTitle(peer) }
         }
-        _ = owner
     }
 
     private suspend fun updateDmTitle(peerId: String) {
@@ -460,7 +459,8 @@ class ChatRepository(
         db.messageDao().upsert(MessageEntity(
             id = "local:$id", senderId = owner, recipientId = if (chat?.type == "dm") chatId else "",
             chatId = chatId, ciphertext = envelope, createdAt = Instant.now().toString(),
-            ownerId = owner, createdAtMillis = now, deliveryState = "pending", clientId = id,
+            expiresAt = null, ownerId = owner, createdAtMillis = now,
+            deliveryState = "pending", clientId = id,
         ))
         scope.launch { flushOutbox() }
     }

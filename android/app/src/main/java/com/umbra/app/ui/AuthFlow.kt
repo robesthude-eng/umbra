@@ -254,11 +254,13 @@ private fun GlassField(label: String, value: String, onValue: (String) -> Unit) 
     )
 }
 
+@Composable
 private fun glassFieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = UmbraColors.Aqua, unfocusedBorderColor = UmbraColors.Mist,
     cursorColor = UmbraColors.Aqua, focusedLabelColor = UmbraColors.Aqua,
 )
 
+@Composable
 private fun glassButtonColors() = ButtonDefaults.buttonColors(
-    containerColor = UmbraColors.headerGradient, contentColor = Color.White,
+    containerColor = Color(0xFF1E96E8), contentColor = Color.White,
 )

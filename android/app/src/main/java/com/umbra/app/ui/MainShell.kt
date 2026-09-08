@@ -47,10 +47,26 @@ fun MainShell(container: AppContainer, onOpenChat: (String) -> Unit) {
         containerColor = Color.Transparent,
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                TabItem(0, selected = tab == 0, Icons.Filled.Chat, "Чаты") { tab = 0 }
-                TabItem(1, selected = tab == 1, Icons.Filled.Groups, "Группы") { tab = 1 }
-                TabItem(2, selected = tab == 2, Icons.Filled.Call, "Звонки") { tab = 2 }
-                TabItem(3, selected = tab == 3, Icons.Filled.Settings, "Настройки") { tab = 3 }
+                NavigationBarItem(
+                    selected = tab == 0, onClick = { tab = 0 },
+                    icon = { Icon(Icons.Filled.Chat, null) },
+                    label = { Text("Чаты", style = MaterialTheme.typography.labelSmall) },
+                )
+                NavigationBarItem(
+                    selected = tab == 1, onClick = { tab = 1 },
+                    icon = { Icon(Icons.Filled.Groups, null) },
+                    label = { Text("Группы", style = MaterialTheme.typography.labelSmall) },
+                )
+                NavigationBarItem(
+                    selected = tab == 2, onClick = { tab = 2 },
+                    icon = { Icon(Icons.Filled.Call, null) },
+                    label = { Text("Звонки", style = MaterialTheme.typography.labelSmall) },
+                )
+                NavigationBarItem(
+                    selected = tab == 3, onClick = { tab = 3 },
+                    icon = { Icon(Icons.Filled.Settings, null) },
+                    label = { Text("Настройки", style = MaterialTheme.typography.labelSmall) },
+                )
             }
         },
     ) { pad ->
@@ -63,16 +79,6 @@ fun MainShell(container: AppContainer, onOpenChat: (String) -> Unit) {
             }
         }
     }
-}
-
-@Composable
-private fun NavigationBarItemScope.TabItem(sel: Int, selected: Boolean,
-                                           icon: androidx.compose.ui.graphics.vector.ImageVector,
-                                           label: String, select: (Int) -> Unit) {
-    NavigationBarItem(
-        selected = selected, onClick = { select(sel) },
-        icon = { Icon(icon, label) }, label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-    )
 }
 
 @Composable
