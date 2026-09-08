@@ -9,6 +9,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 
 @RunWith(AndroidJUnit4::class)
 class DatabaseMigrationTest {
@@ -31,15 +32,17 @@ class DatabaseMigrationTest {
             val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
                 .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3).build()
             try {
-                val row = db.messageDao().get("old")!!
-                assertEquals("opaque", row.ciphertext)
-                assertEquals("", row.ownerId)
-                assertNull(row.localBody)
-                assertEquals("Alice", db.chatDao().get("alice")!!.title)
-                // После назначения owner таймер удаляет и ciphertext, и локальную копию.
-                db.messageDao().upsert(row.copy(ownerId = "bob", localBody = "encrypted", expiresAtMillis = 100))
-                db.messageDao().deleteExpired(100)
-                assertNull(db.messageDao().get("old"))
+                runBlocking {
+                    val row = db.messageDao().get("old")!!
+                    assertEquals("opaque", row.ciphertext)
+                    assertEquals("", row.ownerId)
+                    assertNull(row.localBody)
+                    assertEquals("Alice", db.chatDao().get("alice")!!.title)
+                    // После назначения owner таймер удаляет и ciphertext, и локальную копию.
+                    db.messageDao().upsert(row.copy(ownerId = "bob", localBody = "encrypted", expiresAtMillis = 100))
+                    db.messageDao().deleteExpired(100)
+                    assertNull(db.messageDao().get("old"))
+                }
             } finally { db.close() }
         } finally { context.deleteDatabase(name) }
     }

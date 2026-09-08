@@ -138,16 +138,15 @@ class ChatRepository(
     }
 
     /** Шаг 2: проверка кода. Создаёт/находит облачный аккаунт и сохраняет сессию. */
-    suspend fun verifyCode(phone: String, code: String): VerifyCodeResponse = withContext(Dispatchers.IO) {
+    suspend fun verifyCode(phone: String, code: String): VerifyCodeResponse =
         authMutex.withLock {
             val v = api.verifyCode(VerifyCodeRequest(phone, code.trim()))
             val a = v.account ?: throw IllegalStateException("Сервер не вернул аккаунт")
             session.save(v.token, a.id, a.username, a.phone, a.displayName, a.lastName, a.avatarMediaId)
-            db.clearAllTables()
+            withContext(Dispatchers.IO) { db.clearAllTables() }
             _phase.value = currentPhase()
             v
         }
-    }
 
     /** Заполнение профиля после регистрации. */
     suspend fun updateProfile(name: String, lastName: String, username: String) {
@@ -157,49 +156,43 @@ class ChatRepository(
     }
 
     /** Загружает выбранное фото как аватар и привязывает к аккаунту. */
-    suspend fun uploadAndSetAvatar(uri: Uri) = withContext(Dispatchers.IO) {
-
-            val resolver = context.contentResolver
-            val mime = resolver.getType(uri) ?: "image/jpeg"
-            val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: throw IOException("не удалось прочитать фото")
-            if (bytes.size > 10 * 1024 * 1024) throw IOException("фото больше 10 МБ")
-            val part = MultipartBody.Part.createFormData("file", "avatar", bytes.toRequestBody(mime.toMediaType()))
-            val typeField = mime.toRequestBody("text/plain".toMediaType())
-            val up = api.uploadMedia(auth(), part, typeField)
-            if (!up.isSuccessful) throw IOException("загрузка аватара: HTTP ${up.code()}")
-            val mediaId = up.body()?.id ?: throw IOException("пустой ответ при загрузке аватара")
-            api.setAvatar(auth(), SetAvatarRequest(mediaId))
-            session.saveAvatar(mediaId)
-            putUserCache(UserCard(id = session.userId().orEmpty(), username = session.username().orEmpty(),
-                displayName = session.displayName().orEmpty(), lastName = session.lastName().orEmpty(),
-                avatarMediaId = mediaId))
-    
+    suspend fun uploadAndSetAvatar(uri: Uri) {
+        val resolver = context.contentResolver
+        val mime = resolver.getType(uri) ?: "image/jpeg"
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IOException("не удалось прочитать фото")
+        if (bytes.size > 10 * 1024 * 1024) throw IOException("фото больше 10 МБ")
+        val part = MultipartBody.Part.createFormData("file", "avatar", bytes.toRequestBody(mime.toMediaType()))
+        val typeField = mime.toRequestBody("text/plain".toMediaType())
+        val up = api.uploadMedia(auth(), part, typeField)
+        if (!up.isSuccessful) throw IOException("загрузка аватара: HTTP ${up.code()}")
+        val mediaId = up.body()?.id ?: throw IOException("пустой ответ при загрузке аватара")
+        api.setAvatar(auth(), SetAvatarRequest(mediaId))
+        session.saveAvatar(mediaId)
+        putUserCache(UserCard(id = session.userId().orEmpty(), username = session.username().orEmpty(),
+            displayName = session.displayName().orEmpty(), lastName = session.lastName().orEmpty(),
+            avatarMediaId = mediaId))
     }
 
-    suspend fun logout() = withContext(Dispatchers.IO) {
-
-            val token = session.token()
-            _activeCall.value = null
-            stopRealtime()
-            try { withTimeout(4000) { token?.let { api.logout("Bearer " + it) } } }
-            catch (_: Exception) { }
-            session.clear()
-            db.clearAllTables()
-            _phase.value = SessionPhase.LOGGED_OUT
-    
+    suspend fun logout() {
+        val token = session.token()
+        _activeCall.value = null
+        stopRealtime()
+        try { withTimeout(4000) { token?.let { api.logout("Bearer " + it) } } }
+        catch (_: Exception) { }
+        session.clear()
+        withContext(Dispatchers.IO) { db.clearAllTables() }
+        _phase.value = SessionPhase.LOGGED_OUT
     }
 
-    suspend fun deleteAccount() = withContext(Dispatchers.IO) {
-
-            val token = session.token()
-            stopRealtime()
-            try { withTimeout(5000) { token?.let { api.burnAccount("Bearer " + it) } } }
-            catch (_: Exception) { }
-            session.clear()
-            db.clearAllTables()
-            _phase.value = SessionPhase.LOGGED_OUT
-    
+    suspend fun deleteAccount() {
+        val token = session.token()
+        stopRealtime()
+        try { withTimeout(5000) { token?.let { api.burnAccount("Bearer " + it) } } }
+        catch (_: Exception) { }
+        session.clear()
+        withContext(Dispatchers.IO) { db.clearAllTables() }
+        _phase.value = SessionPhase.LOGGED_OUT
     }
 
     // ---------------- кэш пользователей ----------------
@@ -209,13 +202,11 @@ class ChatRepository(
         db.cryptoDao().put(CryptoRecord(session.userId().orEmpty(), "user", card.id, json.encodeToString(card)))
     }
 
-    suspend fun resolveUser(id: String): UserCard? = withContext(Dispatchers.IO) {
-
-            _userCache.value[id]?.let { return it }
-            val card = try { api.user(auth(), id) } catch (e: CancellationException) { throw e } catch (_: Exception) { return null }
-            putUserCache(card)
-            return card
-    
+    suspend fun resolveUser(id: String): UserCard? {
+        _userCache.value[id]?.let { return it }
+        val card = try { api.user(auth(), id) } catch (e: CancellationException) { throw e } catch (_: Exception) { return null }
+        putUserCache(card)
+        return card
     }
 
     suspend fun resolveByUsername(username: String): UserCard? = try {
@@ -433,23 +424,19 @@ class ChatRepository(
         }.flowOn(Dispatchers.IO)
 
     /** Создать/получить личный чат с пользователем. */
-    suspend fun openDm(peerUserId: String) = withContext(Dispatchers.IO) {
-
-            db.chatDao().get(peerUserId) ?: run {
-                val card = resolveUser(peerUserId)
-                db.chatDao().upsert(ChatEntity(peerUserId, "dm", card?.fullName() ?: peerUserId.take(12)))
-            }
-    
+    suspend fun openDm(peerUserId: String) {
+        db.chatDao().get(peerUserId) ?: run {
+            val card = resolveUser(peerUserId)
+            db.chatDao().upsert(ChatEntity(peerUserId, "dm", card?.fullName() ?: peerUserId.take(12)))
+        }
     }
 
-    suspend fun createGroup(title: String, memberIds: List<String>) = withContext(Dispatchers.IO) {
-
-            val chat = api.createGroup(auth(), CreateChatRequest(title))
-            db.chatDao().upsert(ChatEntity(chat.id, "group", chat.title))
-            for (id in memberIds) if (id != session.userId()) {
-                try { api.addMember(auth(), chat.id, AddMemberRequest(id)) } catch (_: Exception) { }
-            }
-    
+    suspend fun createGroup(title: String, memberIds: List<String>) {
+        val chat = api.createGroup(auth(), CreateChatRequest(title))
+        db.chatDao().upsert(ChatEntity(chat.id, "group", chat.title))
+        for (id in memberIds) if (id != session.userId()) {
+            try { api.addMember(auth(), chat.id, AddMemberRequest(id)) } catch (_: Exception) { }
+        }
     }
 
     suspend fun groupMembers(chatId: String): List<UserCard> {
@@ -460,24 +447,22 @@ class ChatRepository(
     }
 
     /** Отправка текста: в ЛС или группу; локальная запись → outbox. */
-    suspend fun sendText(chatId: String, text: String) = withContext(Dispatchers.IO) {
-
-            val owner = session.userId() ?: return
-            val trimmed = text.trim()
-            if (trimmed.isEmpty()) return
-            val id = UUID.randomUUID().toString()
-            val content = MessageContent(kind = MessageContent.KIND_TEXT, text = trimmed)
-            val envelope = MessageCodec.encode(content)
-            val now = Instant.now().toEpochMilli()
-            val chat = db.chatDao().get(chatId)
-            db.messageDao().upsert(MessageEntity(
-                id = "local:$id", senderId = owner, recipientId = if (chat?.type == "dm") chatId else "",
-                chatId = chatId, ciphertext = envelope, createdAt = Instant.now().toString(),
-                expiresAt = null, ownerId = owner, createdAtMillis = now,
-                deliveryState = "pending", clientId = id,
-            ))
-            scope.launch { flushOutbox() }
-    
+    suspend fun sendText(chatId: String, text: String) {
+        val owner = session.userId() ?: return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        val id = UUID.randomUUID().toString()
+        val content = MessageContent(kind = MessageContent.KIND_TEXT, text = trimmed)
+        val envelope = MessageCodec.encode(content)
+        val now = Instant.now().toEpochMilli()
+        val chat = db.chatDao().get(chatId)
+        db.messageDao().upsert(MessageEntity(
+            id = "local:$id", senderId = owner, recipientId = if (chat?.type == "dm") chatId else "",
+            chatId = chatId, ciphertext = envelope, createdAt = Instant.now().toString(),
+            expiresAt = null, ownerId = owner, createdAtMillis = now,
+            deliveryState = "pending", clientId = id,
+        ))
+        scope.launch { flushOutbox() }
     }
 
     private suspend fun flushOutbox() = sendMutex.withLock {

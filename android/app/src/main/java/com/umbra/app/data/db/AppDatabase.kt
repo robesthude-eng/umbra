@@ -56,22 +56,22 @@ data class CryptoRecord(val owner: String, val kind: String, val recordKey: Stri
 @Dao
 interface CryptoDao {
     @Query("SELECT * FROM crypto_records WHERE owner = :owner AND kind = :kind AND recordKey = :key")
-    fun get(owner: String, kind: String, key: String): CryptoRecord?
+    suspend fun get(owner: String, kind: String, key: String): CryptoRecord?
 
     @Query("SELECT * FROM crypto_records WHERE owner = :owner AND kind = :kind")
-    fun all(owner: String, kind: String): List<CryptoRecord>
+    suspend fun all(owner: String, kind: String): List<CryptoRecord>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun put(record: CryptoRecord)
+    suspend fun put(record: CryptoRecord)
 
     @Query("DELETE FROM crypto_records WHERE owner = :owner AND kind = :kind AND recordKey = :key")
-    fun delete(owner: String, kind: String, key: String)
+    suspend fun delete(owner: String, kind: String, key: String)
 }
 
 @Dao
 interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun upsert(message: MessageEntity)
+    suspend fun upsert(message: MessageEntity)
 
     @Query("SELECT * FROM messages WHERE ownerId = :owner ORDER BY createdAtMillis, id")
     fun all(owner: String): Flow<List<MessageEntity>>
@@ -80,34 +80,34 @@ interface MessageDao {
     fun messagesFor(owner: String, chatId: String): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE id = :id")
-    fun get(id: String): MessageEntity?
+    suspend fun get(id: String): MessageEntity?
 
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND deliveryState = 'pending' ORDER BY createdAtMillis, id LIMIT 50")
-    fun pending(owner: String): List<MessageEntity>
+    suspend fun pending(owner: String): List<MessageEntity>
 
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND localBody IS NULL AND deliveryState = 'sent' ORDER BY createdAtMillis, id LIMIT 100")
-    fun unreadCiphertexts(owner: String): List<MessageEntity>
+    suspend fun unreadCiphertexts(owner: String): List<MessageEntity>
 
     @Query("SELECT MAX(createdAtMillis) FROM messages WHERE ownerId = :owner")
-    fun maxCreatedAtMillis(owner: String): Long?
+    suspend fun maxCreatedAtMillis(owner: String): Long?
 
     @Query("DELETE FROM messages WHERE id = :id")
-    fun delete(id: String)
+    suspend fun delete(id: String)
 
     @Query("DELETE FROM messages WHERE expiresAtMillis IS NOT NULL AND expiresAtMillis <= :now")
-    fun deleteExpired(now: Long)
+    suspend fun deleteExpired(now: Long)
 
     @Query("SELECT * FROM messages WHERE ownerId = ''")
-    fun legacyMessages(): List<MessageEntity>
+    suspend fun legacyMessages(): List<MessageEntity>
 }
 
 @Dao
 interface ChatDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun upsert(chat: ChatEntity)
+    suspend fun upsert(chat: ChatEntity)
 
     @Query("SELECT * FROM chats WHERE id = :id")
-    fun get(id: String): ChatEntity?
+    suspend fun get(id: String): ChatEntity?
 
     @Query("SELECT * FROM chats WHERE id = :id")
     fun observe(id: String): Flow<ChatEntity?>
@@ -119,14 +119,14 @@ interface ChatDao {
 @Dao
 interface ContactDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    fun upsertAll(contacts: List<ContactEntity>)
+    suspend fun upsertAll(contacts: List<ContactEntity>)
 
     /** Сначала зарегистрированные в Umbra (по имени), затем остальные. */
     @Query("SELECT * FROM contacts ORDER BY (umbraUserId IS NOT NULL) DESC, name ASC")
     fun all(): Flow<List<ContactEntity>>
 
     @Query("DELETE FROM contacts")
-    fun clear()
+    suspend fun clear()
 }
 
 @Dao
