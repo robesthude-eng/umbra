@@ -47,11 +47,15 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
-      - name: Install compile SDK
-        run: sdkmanager "platforms;android-35" "build-tools;34.0.0"
+      - name: Accept SDK licenses and install compile SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;34.0.0"
       - name: Build and lint
         working-directory: android
-        run: ./gradlew assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
       - name: Enable KVM in CI
         run: sudo chmod a+rw /dev/kvm
       - uses: reactivecircus/android-emulator-runner@v2

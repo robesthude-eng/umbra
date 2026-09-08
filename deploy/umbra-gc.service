@@ -1,0 +1,23 @@
+# systemd-юнит GC осиротевших блобов (oneshot, запускается umbra-gc.timer).
+# Кладётся в /etc/systemd/system/umbra-gc.service
+#
+# umbra-gc v0.2.0: без флага — dry-run (только отчёт), -delete — реальное
+# удаление. Льготный период 24 ч встроен: сироты младше 24 ч не удаляются,
+# чтобы не удалить blob незавершённой загрузки (blob публикуется раньше
+# метаданных). Флаг -min-age из v1 больше не существует.
+# GC требует STORE=postgres: тот же EnvironmentFile, что и у umbra.service.
+[Unit]
+Description=Umbra — GC осиротевших блобов
+After=postgresql.service umbra.service
+
+[Service]
+Type=oneshot
+User=umbra
+Group=umbra
+EnvironmentFile=/opt/umbra/.env
+ExecStart=/usr/local/bin/umbra-gc -delete
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/umbra/data

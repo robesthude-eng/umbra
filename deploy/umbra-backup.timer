@@ -1,0 +1,13 @@
+# Ежедневный бэкап БД Umbra.
+# Кладётся в /etc/systemd/system/umbra-backup.timer
+#   systemctl enable --now umbra-backup.timer
+[Unit]
+Description=Ежедневный бэкап БД Umbra
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,70 @@
+name: Android APK (debug)
+
+on:
+  push:
+    branches: [integrity-0.2.0, main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+    inputs:
+      serverUrl:
+        description: 'Адрес сервера Umbra, вшиваемый в APK (BuildConfig.SERVER_URL)'
+        required: false
+        default: 'http://194.226.126.253:8081'
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: android
+        env:
+          UMBRA_SERVER_URL: ${{ inputs.serverUrl || 'http://194.226.126.253:8081' }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug -Pumbra.serverUrl="$UMBRA_SERVER_URL" --stacktrace
+
+      - name: Prepare artifact
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk umbra-debug.apk
+          sha256sum umbra-debug.apk | tee umbra-debug.apk.sha256
+          ls -la umbra-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: umbra-apk-debug
+          path: |
+            umbra-debug.apk
+            umbra-debug.apk.sha256
+          retention-days: 60
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-debug
+          name: 'Umbra debug APK (автосборка)'
+          body: |
+            Debug-APK из ветки `${{ github.ref_name }}`, коммит `${{ github.sha }}`.
+            Сервер, вшитый в APK: `${{ inputs.serverUrl || 'http://194.226.126.253:8081' }}`
+            Прямая ссылка: https://github.com/robesthude-eng/umbra/releases/download/apk-debug/umbra-debug.apk
+          files: |
+            umbra-debug.apk
+            umbra-debug.apk.sha256
+          fail_on_unmatched_files: true

@@ -1,0 +1,17 @@
+# systemd-юнит ежедневного бэкапа PostgreSQL (pg_dump -Fc).
+# Кладётся в /etc/systemd/system/umbra-backup.service
+# Скрипт: deploy/umbra-backup.sh → /usr/local/bin/umbra-backup.sh (root:postgres, 750)
+# Запуск от postgres: peer-аутентификация pg_dump без пароля.
+[Unit]
+Description=Umbra — ежедневный бэкап PostgreSQL
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/local/bin/umbra-backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/umbra
