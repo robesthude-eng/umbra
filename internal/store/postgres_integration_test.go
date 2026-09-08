@@ -48,7 +48,7 @@ func TestPostgresReliability(t *testing.T) {
 	}
 	defer pool.Close()
 	paths, err := filepath.Glob("../../migrations/*.sql")
-	if err != nil || len(paths) != 9 {
+	if err != nil || len(paths) != 10 {
 		t.Fatalf("migration files: %v %v", paths, err)
 	}
 	for _, path := range paths {
@@ -269,18 +269,18 @@ func TestPostgresV04Storage(t *testing.T) {
 	}
 
 	// Профиль: смена имени и @username; занятый username -> ErrConflict.
-	if err := st.UpdateAccountProfile(ctx, "u1", "dad", "Папа"); err != nil {
+	if err := st.UpdateAccountProfile(ctx, "u1", "dad", "Папа", "Петров"); err != nil {
 		t.Fatal(err)
 	}
 	// u2 не может занять @dad, пока он у u1.
-	if err := st.UpdateAccountProfile(ctx, "u2", "dad", "Мама"); !errors.Is(err, ErrConflict) {
+	if err := st.UpdateAccountProfile(ctx, "u2", "dad", "Мама", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("занятый username: ожидался ErrConflict, got %v", err)
 	}
 	// u1 переименовывается (освобождает @dad), затем возвращает его.
-	if err := st.UpdateAccountProfile(ctx, "u1", "other", "Папа"); err != nil {
+	if err := st.UpdateAccountProfile(ctx, "u1", "other", "Папа", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpdateAccountProfile(ctx, "u1", "dad", "Папа"); err != nil {
+	if err := st.UpdateAccountProfile(ctx, "u1", "dad", "Папа", "Петров"); err != nil {
 		t.Fatal(err)
 	}
 	u, err := st.GetUserByID(ctx, "u1")

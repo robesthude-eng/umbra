@@ -47,9 +47,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO users (id, username, phone, phone_hash, display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, key_version, registration_id, signed_prekey_id, key_bundle_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		u.ID, u.Username, nullIfEmpty(u.Phone), nullIfEmpty(u.PhoneHash), nullIfEmpty(u.DisplayName), u.IdentityEd25519, u.IdentityX25519, u.SignedPrekey, u.SignedPrekeySig, u.KeyVersion, u.RegistrationID, u.SignedPrekeyID, u.KeyBundleID)
+		`INSERT INTO users (id, username, phone, phone_hash, display_name, last_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, key_version, registration_id, signed_prekey_id, key_bundle_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		u.ID, u.Username, nullIfEmpty(u.Phone), nullIfEmpty(u.PhoneHash), nullIfEmpty(u.DisplayName), nullIfEmpty(u.LastName), u.IdentityEd25519, u.IdentityX25519, u.SignedPrekey, u.SignedPrekeySig, u.KeyVersion, u.RegistrationID, u.SignedPrekeyID, u.KeyBundleID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -65,9 +65,9 @@ func (p *PostgresStore) CreateUser(ctx context.Context, u *model.User) error {
 func (p *PostgresStore) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, COALESCE(last_name,'') last_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE username = $1`, username).
-		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
+		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.LastName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -77,9 +77,9 @@ func (p *PostgresStore) GetUserByUsername(ctx context.Context, username string) 
 func (p *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, COALESCE(last_name,'') last_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE id = $1`, id).
-		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
+		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.LastName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -89,9 +89,9 @@ func (p *PostgresStore) GetUserByID(ctx context.Context, id string) (*model.User
 func (p *PostgresStore) GetUserByPhone(ctx context.Context, phone string) (*model.User, error) {
 	var u model.User
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, COALESCE(last_name,'') last_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE phone = $1`, phone).
-		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
+		Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.LastName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -103,7 +103,7 @@ func (p *PostgresStore) FindUsersByPhoneHashes(ctx context.Context, hashes []str
 		return []*model.User{}, nil
 	}
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
+		`SELECT id, username, COALESCE(phone,'') phone, COALESCE(phone_hash,'') phone_hash, COALESCE(display_name,'') display_name, COALESCE(last_name,'') last_name, identity_ed25519, identity_x25519, signed_prekey, signed_prekey_sig, created_at, key_version, registration_id, signed_prekey_id, key_bundle_id
 		 FROM users WHERE phone_hash = ANY($1) ORDER BY id`, hashes)
 	if err != nil {
 		return nil, mapErr(err)
@@ -112,7 +112,7 @@ func (p *PostgresStore) FindUsersByPhoneHashes(ctx context.Context, hashes []str
 	out := make([]*model.User, 0)
 	for rows.Next() {
 		var u model.User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Phone, &u.PhoneHash, &u.DisplayName, &u.LastName, &u.IdentityEd25519, &u.IdentityX25519, &u.SignedPrekey, &u.SignedPrekeySig, &u.CreatedAt, &u.KeyVersion, &u.RegistrationID, &u.SignedPrekeyID, &u.KeyBundleID); err != nil {
 			return nil, err
 		}
 		out = append(out, &u)

@@ -125,13 +125,11 @@ func (s *Server) handleRequestCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "подтверждение по коду не настроено")
 		return
 	}
-	chatID, err := s.store.TelegramChatForPhone(r.Context(), phone)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "номер не привязан к Telegram: напишите боту этот номер")
-			return
-		}
-		writeError(w, http.StatusServiceUnavailable, "service unavailable")
+	// Универсальная схема: код с ЛЮБОГО номера уходит в чат владельца
+	// (TELEGRAM_CHAT_ID) — он озвучивает код тому, кто регистрируется.
+	chatID := s.cfg.TelegramChatID
+	if chatID == 0 {
+		writeError(w, http.StatusServiceUnavailable, "получатель кодов не настроен")
 		return
 	}
 	code, err := randomOTPCode()
@@ -141,7 +139,7 @@ func (s *Server) handleRequestCode(w http.ResponseWriter, r *http.Request) {
 	}
 	s.otp.put(phone, code, otpTTL)
 	if err := s.otpSender.SendCode(r.Context(), phone, chatID, code); err != nil {
-		log.Printf("otp: не удалось отправить код на %s: %v", phone, err)
+		log.Printf("otp: не удалось отправить код для %s: %v", phone, err)
 		writeError(w, http.StatusBadGateway, "не удалось отправить код")
 		return
 	}
@@ -166,6 +164,7 @@ type accountView struct {
 	Username    string `json:"username"`
 	Phone       string `json:"phone"`
 	DisplayName string `json:"display_name"`
+	LastName    string `json:"last_name,omitempty"`
 }
 
 // handleVerifyCode — POST /v1/auth/verify_code. При верном коде: если аккаунт
@@ -244,6 +243,7 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 			Username:    u.Username,
 			Phone:       u.Phone,
 			DisplayName: u.DisplayName,
+			LastName:    u.LastName,
 		},
 	})
 }
@@ -280,6 +280,7 @@ func (s *Server) createCloudUser(ctx context.Context, phone string) (*model.User
 type updateProfileRequest struct {
 	Username string `json:"username"`
 	Name     string `json:"name"`
+	LastName string `json:"last_name"`
 }
 
 // handleUpdateProfile — POST /v1/account/profile. Завершение регистрации:
@@ -293,6 +294,7 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(req.Username)
 	name := strings.TrimSpace(req.Name)
+	lastName := strings.TrimSpace(req.LastName)
 
 	cur, err := s.store.GetUserByID(r.Context(), userID)
 	if err != nil {
@@ -313,13 +315,19 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid name")
 		return
 	}
+	if lastName == "" {
+		lastName = cur.LastName // необязательная фамилия сохраняется
+	} else if len([]rune(lastName)) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid last_name")
+		return
+	}
 	if username == "" {
 		username = cur.Username
 	} else if !validUsername(username) {
 		writeError(w, http.StatusBadRequest, "invalid username")
 		return
 	}
-	if err := s.store.UpdateAccountProfile(r.Context(), userID, username, name); err != nil {
+	if err := s.store.UpdateAccountProfile(r.Context(), userID, username, name, lastName); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "username already taken")
 			return
@@ -331,7 +339,7 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": userID, "username": username, "display_name": name})
+	writeJSON(w, http.StatusOK, map[string]any{"id": userID, "username": username, "display_name": name, "last_name": lastName})
 }
 
 type setAvatarRequest struct {

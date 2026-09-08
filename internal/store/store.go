@@ -81,9 +81,10 @@ type Store interface {
 	// TelegramChatForPhone возвращает chat_id бота, привязанный к номеру.
 	TelegramChatForPhone(ctx context.Context, phone string) (int64, error)
 
-	// Профиль аккаунта (имя, @username, аватар).
-	// UpdateAccountProfile меняет username/display_name; конфликт по username -> ErrConflict.
-	UpdateAccountProfile(ctx context.Context, userID, username, displayName string) error
+	// Профиль аккаунта (имя, фамилия, @username, аватар).
+	// UpdateAccountProfile меняет username/имя(firstName)/фамилию(lastName);
+	// конфликт по username -> ErrConflict.
+	UpdateAccountProfile(ctx context.Context, userID, username, firstName, lastName string) error
 	SetAvatar(ctx context.Context, userID, mediaID string) error
 	// GetAvatar возвращает id медиа-аватара; ErrNotFound, если аватара нет.
 	GetAvatar(ctx context.Context, userID string) (string, error)

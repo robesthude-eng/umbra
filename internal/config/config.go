@@ -40,6 +40,13 @@ type Config struct {
 	MaxUserMediaBytes int64
 	// TelegramBotToken — токен бота для доставки OTP-кодов (пусто = коды отключены).
 	TelegramBotToken string
+	// TelegramAPIBase — если задан, все вызовы Bot API идут через этот base URL
+	// (например, Cloudflare Worker-релей), а не напрямую в api.telegram.org.
+	TelegramAPIBase string
+	// TelegramAPIKey — секрет для релея (заголовок x-umbra-key).
+	TelegramAPIKey string
+	// TelegramChatID — чат, в который приходят OTP-коды с любых номеров (владелец).
+	TelegramChatID int64
 }
 
 func Load() *Config {
@@ -60,6 +67,9 @@ func Load() *Config {
 		S3UseSSL:          getenvBool("S3_USE_SSL", true),
 		MaxUserMediaBytes: int64(getenvInt("MAX_USER_MEDIA_BYTES", 0)),
 		TelegramBotToken:  getenv("TELEGRAM_BOT_TOKEN", ""),
+		TelegramAPIBase:   getenv("TELEGRAM_API_BASE", ""),
+		TelegramAPIKey:    getenv("TELEGRAM_API_KEY", ""),
+		TelegramChatID:    int64(getenvInt("TELEGRAM_CHAT_ID", 0)),
 	}
 }
 

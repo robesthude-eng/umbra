@@ -1,6 +1,8 @@
-// Package telegram — минимальный клиент Bot API для доставки OTP-кодов Umbra
-// и привязки «номер телефона ↔ Telegram-чат» (члены семьи один раз пишут боту
-// свой номер, и коды приходят именно им).
+// Package telegram — минимальный клиент Bot API для доставки OTP-кодов Umbra.
+//
+// Сеть сервера может блокировать прямой доступ к api.telegram.org, поэтому клиент
+// умеет ходить через Cloudflare Worker-релей: тогда base = https://<worker>.workers.dev,
+// а каждый вызов сопровождается заголовком x-umbra-key (секрет релея).
 package telegram
 
 import (
@@ -18,13 +20,20 @@ import (
 type Client struct {
 	token string
 	base  string
+	key   string
 	http  *http.Client
 }
 
-func NewClient(token string) *Client {
+// NewClient создаёт клиент. При base=="" используется прямой api.telegram.org.
+// При base != "" (Worker-релей) во все запросы добавляется x-umbra-key.
+func NewClient(token, base, key string) *Client {
+	if base == "" {
+		base = "https://api.telegram.org/bot" + token
+	}
 	return &Client{
 		token: token,
-		base:  "https://api.telegram.org/bot" + token,
+		base:  strings.TrimSuffix(base, "/"),
+		key:   key,
 		http:  &http.Client{Timeout: 60 * time.Second},
 	}
 }
@@ -39,6 +48,9 @@ func (c *Client) post(ctx context.Context, method string, payload any) ([]byte, 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.key != "" {
+		req.Header.Set("x-umbra-key", c.key)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -70,7 +82,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 	return err
 }
 
-// update — часть схемы getUpdates (достаточная для привязки номеров).
+// update — минимальная схема getUpdates.
 type update struct {
 	UpdateID int64 `json:"update_id"`
 	Message  *struct {
@@ -81,15 +93,14 @@ type update struct {
 	} `json:"message"`
 }
 
-// HandlePhoneBinding вызывается для каждого текстового сообщения, похожего на
-// номер телефона (не команда). handle возвращает true, если номер принят —
-// тогда бот ответит подтверждением.
-type HandlePhoneBinding func(ctx context.Context, rawPhone string, chatID int64) (bool, error)
+// HandleMessage вызывается на каждое текстовое сообщение боту. Возвращает
+// ответное сообщение ("" = не отвечать).
+type HandleMessage func(ctx context.Context, chatID int64, text string) (reply string)
 
 // StartPolling крутит getUpdates (long polling). Для одного бота должен быть
-// ровно один слушатель: если номер/чат опрашивает ещё что-то (например, n8n),
-// Telegram отдаёт конфликт — второй слушатель не должен запускаться.
-func (c *Client) StartPolling(ctx context.Context, handle HandlePhoneBinding, senderName string) {
+// ровно один слушатель: если его опрашивает что-то ещё (например, n8n того же
+// бота), Telegram вернёт конфликт — лишние опросы нужно отключить.
+func (c *Client) StartPolling(ctx context.Context, handle HandleMessage, name string) {
 	offset := int64(0)
 	greeted := make(map[int64]bool)
 	for {
@@ -104,7 +115,7 @@ func (c *Client) StartPolling(ctx context.Context, handle HandlePhoneBinding, se
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("telegram (%s): getUpdates: %v", senderName, err)
+			log.Printf("telegram (%s): getUpdates: %v", name, err)
 			select {
 			case <-ctx.Done():
 				return
@@ -116,7 +127,7 @@ func (c *Client) StartPolling(ctx context.Context, handle HandlePhoneBinding, se
 			Result []update `json:"result"`
 		}
 		if err := json.Unmarshal(body, &resp); err != nil {
-			log.Printf("telegram (%s): bad update payload: %v", senderName, err)
+			log.Printf("telegram (%s): bad update payload: %v", name, err)
 			continue
 		}
 		for _, u := range resp.Result {
@@ -126,21 +137,19 @@ func (c *Client) StartPolling(ctx context.Context, handle HandlePhoneBinding, se
 			}
 			chatID := u.Message.Chat.ID
 			text := strings.TrimSpace(u.Message.Text)
-			if text == "" || strings.HasPrefix(text, "/") {
-				if text == "/start" && !greeted[chatID] {
-					greeted[chatID] = true
-					_ = c.SendMessage(ctx, chatID, "Привет! Это бот Umbra — код подтверждения при регистрации и входе.\n\nОтправьте ваш номер телефона (например 79991234567), чтобы привязать его к этому чату.")
+			if text == "" {
+				continue
+			}
+			reply := handle(ctx, chatID, text)
+			if reply == "" && !greeted[chatID] {
+				// Незнакомый чат: короткое приветствие, чтобы владелец понял бота.
+				reply = "Umbra — код подтверждения. Напишите владельцу, если ждали код."
+				greeted[chatID] = true
+			}
+			if reply != "" {
+				if err := c.SendMessage(ctx, chatID, reply); err != nil {
+					log.Printf("telegram (%s): send reply: %v", name, err)
 				}
-				continue
-			}
-			ok, err := handle(ctx, text, chatID)
-			if err != nil {
-				log.Printf("telegram (%s): binding error: %v", senderName, err)
-				_ = c.SendMessage(ctx, chatID, "Не получилось привязать номер. Попробуйте ещё раз.")
-				continue
-			}
-			if ok {
-				_ = c.SendMessage(ctx, chatID, "Номер привязан ✅ Теперь можно регистрироваться/входить в Umbra с этого номера.")
 			}
 		}
 	}

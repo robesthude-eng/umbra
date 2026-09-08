@@ -64,6 +64,7 @@ func newTestServerWith(t *testing.T, sender OTPSender) (http.Handler, *store.Mem
 		Store:           "memory",
 		TokenTTL:        time.Hour,
 		MaxMessageBytes: 1 << 20,
+		TelegramChatID:  424242, // тестовая доставка кодов в «чат владельца»
 	}
 	st := store.NewMemoryStore()
 	hub := ws.NewHub()

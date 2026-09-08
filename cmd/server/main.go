@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -78,18 +79,16 @@ func main() {
 	// (n8n), второй getUpdates-цикл получит конфликт; отключите другой опрос.
 	var otpSender httpapi.OTPSender
 	if cfg.TelegramBotToken != "" {
-		tg := telegram.NewClient(cfg.TelegramBotToken)
+		tg := telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramAPIBase, cfg.TelegramAPIKey)
 		otpSender = tgOTPSender{cl: tg}
-		go tg.StartPolling(background, func(ctx context.Context, raw string, chatID int64) (bool, error) {
-			phone, err := httpapi.NormalizePhone(raw)
-			if err != nil {
-				return false, nil // сообщение не похоже на номер — игнорируем
+		go tg.StartPolling(background, func(ctx context.Context, chatID int64, text string) string {
+			log.Printf("telegram: сообщение от chat %d: %q", chatID, text)
+			// Пока не задан TELEGRAM_CHAT_ID — любой /start сообщает свой chat_id,
+			// чтобы владелец мог прописать его и включить приём кодов.
+			if cfg.TelegramChatID == 0 && (text == "/start" || strings.HasPrefix(text, "/start")) {
+				return fmt.Sprintf("Привет! Это бот Umbra. Ваш chat_id: %d. Передайте его владельцу сервера, чтобы включить доставку кодов.", chatID)
 			}
-			if err := st.BindTelegram(ctx, phone, chatID); err != nil {
-				return false, err
-			}
-			log.Printf("telegram: номер %s привязан к chat %d", phone, chatID)
-			return true, nil
+			return ""
 		}, "umbra")
 		log.Printf("Telegram-бот для OTP-кодов включён")
 	} else {

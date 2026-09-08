@@ -21,7 +21,7 @@ func (m *MemoryStore) TelegramChatForPhone(_ context.Context, phone string) (int
 	return chatID, nil
 }
 
-func (m *MemoryStore) UpdateAccountProfile(_ context.Context, userID, username, displayName string) error {
+func (m *MemoryStore) UpdateAccountProfile(_ context.Context, userID, username, firstName, lastName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u, ok := m.users[userID]
@@ -33,7 +33,8 @@ func (m *MemoryStore) UpdateAccountProfile(_ context.Context, userID, username, 
 	}
 	delete(m.byName, u.Username)
 	u.Username = username
-	u.DisplayName = displayName
+	u.DisplayName = firstName
+	u.LastName = lastName
 	m.byName[username] = userID
 	return nil
 }

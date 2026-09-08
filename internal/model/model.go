@@ -8,8 +8,8 @@ import "time"
 // User — учётная запись. IdentityEd25519 используется для подписи (аутентификация),
 // IdentityX25519 и pre-keys — для end-to-end шифрования на стороне клиентов (X3DH).
 type User struct {
-	ID              string    `json:"id"`
-	Username        string    `json:"username"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
 	// Phone — нормализованный номер E.164 (например "+79991234567"); у legacy-
 	// аккаунтов, зарегистрированных только по username, может быть пустым.
 	Phone string `json:"phone"`
@@ -17,13 +17,15 @@ type User struct {
 	// приватного поиска контактов: клиент присылает хэши телефонной книги.
 	PhoneHash string `json:"phone_hash"`
 	// DisplayName — имя, указанное при регистрации (как человек представляется).
-	DisplayName     string    `json:"display_name"`
+	DisplayName string `json:"display_name"`
+	// LastName — фамилия (необязательно при регистрации).
+	LastName        string    `json:"last_name,omitempty"`
 	IdentityEd25519 []byte    `json:"identity_ed25519"`        // открытый ключ подписи (32 байта)
 	IdentityX25519  []byte    `json:"identity_x25519"`         // raw 32 байта (legacy) или Signal 33 байта
 	SignedPrekey    []byte    `json:"signed_prekey"`           // подписанный pre-key X25519
 	SignedPrekeySig []byte    `json:"signed_prekey_signature"` // v1: Ed25519, v2: подпись identity-ключом Signal
 	OneTimePrekeys  [][]byte  `json:"one_time_prekeys"`        // одноразовые pre-keys
-	KeyVersion      int       `json:"key_version"` // 1: legacy, 2: Signal + явные id
+	KeyVersion      int       `json:"key_version"`             // 1: legacy, 2: Signal + явные id
 	RegistrationID  int       `json:"registration_id"`
 	SignedPrekeyID  int       `json:"signed_prekey_id"`
 	KeyBundleID     string    `json:"key_bundle_id"`

@@ -33,10 +33,10 @@ func (p *PostgresStore) TelegramChatForPhone(ctx context.Context, phone string) 
 
 // Профиль аккаунта (v0.4, облачная модель).
 
-func (p *PostgresStore) UpdateAccountProfile(ctx context.Context, userID, username, displayName string) error {
+func (p *PostgresStore) UpdateAccountProfile(ctx context.Context, userID, username, firstName, lastName string) error {
 	tag, err := p.pool.Exec(ctx,
-		`UPDATE users SET username = $2, display_name = $3 WHERE id = $1`,
-		userID, username, displayName)
+		`UPDATE users SET username = $2, display_name = $3, last_name = $4 WHERE id = $1`,
+		userID, username, firstName, lastName)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {

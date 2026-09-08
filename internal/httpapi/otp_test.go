@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"sync"
 	"testing"
-
-	"umbra/server/internal/store"
 )
 
 // fakeOTPSender запоминает отправленные коды (тест достаёт код из него).
@@ -31,18 +29,11 @@ func (f *fakeOTPSender) code(phone string) string {
 	return f.sent[phone]
 }
 
-func bindPhone(t *testing.T, st *store.MemoryStore, phone string) {
-	t.Helper()
-	if err := st.BindTelegram(context.Background(), phone, 12345); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestOTPRegisterAndLoginByPhone(t *testing.T) {
 	sender := &fakeOTPSender{}
 	h, st := newTestServerWith(t, sender)
 	const phone = "+79001112233"
-	bindPhone(t, st, phone)
+	_ = st
 
 	// Регистрация: запрос кода, затем verify создаёт аккаунт.
 	if code, m := doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": phone}, ""); code != http.StatusOK {
@@ -72,7 +63,7 @@ func TestOTPRegisterAndLoginByPhone(t *testing.T) {
 	if code, _ := doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": ""}, token); code != http.StatusBadRequest {
 		t.Fatalf("пустое имя должно отклоняться: %d", code)
 	}
-	if code, m := doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": "Иван", "username": "test"}, token); code != http.StatusOK {
+	if code, m := doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": "Иван", "username": "test", "last_name": "Петров"}, token); code != http.StatusOK {
 		t.Fatalf("заполнение профиля: %d %v", code, m)
 	}
 
@@ -89,7 +80,7 @@ func TestOTPRegisterAndLoginByPhone(t *testing.T) {
 		t.Fatalf("профиль должен быть заполнен: %v", m)
 	}
 	acct = m["account"].(map[string]any)
-	if acct["username"] != "test" || acct["display_name"] != "Иван" {
+	if acct["username"] != "test" || acct["display_name"] != "Иван" || acct["last_name"] != "Петров" {
 		t.Fatalf("профиль не восстановился: %v", acct)
 	}
 }
@@ -98,7 +89,7 @@ func TestOTPWrongCodeAndOneTime(t *testing.T) {
 	sender := &fakeOTPSender{}
 	h, st := newTestServerWith(t, sender)
 	const phone = "+79002223344"
-	bindPhone(t, st, phone)
+	_ = st
 
 	doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": phone}, "")
 	otp := sender.code(phone)
@@ -115,12 +106,15 @@ func TestOTPWrongCodeAndOneTime(t *testing.T) {
 	}
 }
 
-func TestOTPRequiresTelegramBinding(t *testing.T) {
+func TestOTPAnyPhoneSendsCodeWithoutBinding(t *testing.T) {
 	sender := &fakeOTPSender{}
 	h, _ := newTestServerWith(t, sender)
-	// Номер не привязан к Telegram — понятная ошибка.
-	if code, m := doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": "+79003334455"}, ""); code != http.StatusNotFound {
-		t.Fatalf("непривязанный номер: ожидался 404, получен %d %v", code, m)
+	// Универсальная схема: привязка номера не нужна, код уходит владельцу.
+	if code, m := doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": "+79003334455"}, ""); code != http.StatusOK {
+		t.Fatalf("код с любого номера: ожидался 200, получен %d %v", code, m)
+	}
+	if sender.code("+79003334455") == "" {
+		t.Fatal("код не отправлен владельцу")
 	}
 }
 
@@ -134,9 +128,7 @@ func TestOTPUnavailableWithoutSender(t *testing.T) {
 func TestOTPUsernameConflict(t *testing.T) {
 	sender := &fakeOTPSender{}
 	h, st := newTestServerWith(t, sender)
-	bindPhone(t, st, "+79005556677")
-	bindPhone(t, st, "+79006667788")
-
+	_ = st
 	// Первый регистрируется как @dad.
 	for _, phone := range []string{"+79005556677", "+79006667788"} {
 		doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": phone}, "")
