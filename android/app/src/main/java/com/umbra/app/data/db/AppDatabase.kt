@@ -73,6 +73,9 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun upsert(message: MessageEntity)
 
+    @Query("SELECT * FROM messages WHERE ownerId = :owner ORDER BY createdAtMillis, id")
+    fun all(owner: String): Flow<List<MessageEntity>>
+
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND chatId = :chatId ORDER BY createdAtMillis, id")
     fun messagesFor(owner: String, chatId: String): Flow<List<MessageEntity>>
 
@@ -84,6 +87,9 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND localBody IS NULL AND deliveryState = 'sent' ORDER BY createdAtMillis, id LIMIT 100")
     fun unreadCiphertexts(owner: String): List<MessageEntity>
+
+    @Query("SELECT MAX(createdAtMillis) FROM messages WHERE ownerId = :owner")
+    fun maxCreatedAtMillis(owner: String): Long?
 
     @Query("DELETE FROM messages WHERE id = :id")
     fun delete(id: String)

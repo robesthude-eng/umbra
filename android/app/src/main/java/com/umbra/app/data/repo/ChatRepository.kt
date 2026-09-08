@@ -2,24 +2,23 @@ package com.umbra.app.data.repo
 
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
-import android.util.Base64
-import android.webkit.MimeTypeMap
 import androidx.room.withTransaction
-import com.umbra.app.crypto.CryptoManager
 import com.umbra.app.data.api.*
-import com.umbra.app.data.contacts.PhoneNumbers
-import com.umbra.app.data.db.*
-import com.umbra.app.data.media.MediaInfo
-import com.umbra.app.data.media.MessagePayload
+import com.umbra.app.data.db.AppDatabase
+import com.umbra.app.data.db.ChatEntity
+import com.umbra.app.data.db.CryptoRecord
+import com.umbra.app.data.db.MessageEntity
+import com.umbra.app.data.msg.MessageCodec
+import com.umbra.app.data.msg.MessageContent
+import com.umbra.app.data.session.SessionStore
 import com.umbra.app.data.ws.WebSocketClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -30,20 +29,58 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 
-data class UiMessage(
-    val id: String, val senderId: String, val text: String, val createdAt: String,
-    val expiresAt: String?, val outgoing: Boolean, val deliveryState: String = "sent",
-    val error: String? = null,
-    /** Метаданные вложения из E2E-конверта (ключ, nonce, имя — сервер их не видит). */
-    val media: MediaInfo? = null,
+/** Фаза приложения относительно сессии. */
+enum class SessionPhase { LOGGED_OUT, NEEDS_PROFILE, READY }
+
+/** Строка диалога в списке «Чаты». */
+data class Conversation(
+    val chatId: String,
+    val isGroup: Boolean,
+    val title: String,
+    val subtitle: String,
+    val lastAtMillis: Long,
 )
 
-/** Room хранит ciphertext транспорта и отдельно локальную AEAD-копию истории. */
+/** Сообщение для UI. */
+data class UiMessage(
+    val id: String,
+    val senderId: String,
+    val text: String,
+    val createdAtMillis: Long,
+    val outgoing: Boolean,
+    val failed: Boolean = false,
+    val pending: Boolean = false,
+)
+
+/** Запись о звонке (история/активный). */
+data class CallUi(
+    val id: String,
+    val peerUserId: String,
+    val peerName: String,
+    val incoming: Boolean,
+    val status: String, // ringing | active | ended | declined | missed
+    val createdAtMillis: Long,
+)
+
+/** Текущий звонок (входящий/исходящий) — оверлей поверх приложения. */
+data class ActiveCall(
+    val callId: String,
+    val peerUserId: String,
+    val peerName: String,
+    val incoming: Boolean,
+    val ringing: Boolean,
+)
+
+/**
+ * Репозиторий T1 (v0.4): вход по номеру с кодом из Telegram, облачная история,
+ * личные сообщения и группы, звонки (сигналинг). Без Signal: шифрования нет,
+ * приватность — «доверяй серверу» (TLS).
+ */
 class ChatRepository(
     private val context: Context,
     private val api: UmbraApi,
     private val db: AppDatabase,
-    private val crypto: CryptoManager,
+    private val session: SessionStore,
     private val ws: WebSocketClient,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -51,576 +88,455 @@ class ChatRepository(
     private val syncMutex = Mutex()
     private val sendMutex = Mutex()
     private val authMutex = Mutex()
-    private var eventJob: Job? = null
     private var pollJob: Job? = null
-    private val logged = MutableStateFlow(crypto.currentToken() != null)
-    val loggedIn = logged.asStateFlow()
-    val connected = ws.connected
-    private val syncProblem = MutableStateFlow<String?>(null)
-    val syncError = syncProblem.asStateFlow()
+    private var eventJob: Job? = null
     private var lastFullSyncMillis = 0L
 
-    init {
-        scope.launch {
-            while (isActive) {
-                try { db.messageDao().deleteExpired(System.currentTimeMillis()) }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { syncProblem.value = "Не удалось обновить локальную историю" }
-                delay(1000)
-            }
-        }
+    // ---- состояние сессии ----
+    private val _phase = MutableStateFlow(currentPhase())
+    val phase: StateFlow<SessionPhase> = _phase
+
+    private val _connected = MutableStateFlow(false)
+    val connected: StateFlow<Boolean> = _connected
+
+    private val _syncProblem = MutableStateFlow<String?>(null)
+    val syncError: StateFlow<String?> = _syncProblem
+
+    /** Кэш карточек пользователей (имя/аватар), ключ — user id. */
+    private val _userCache = MutableStateFlow<Map<String, UserCard>>(emptyMap())
+    val userCache: StateFlow<Map<String, UserCard>> = _userCache
+
+    /** Текущий (входящий/исходящий) звонок для оверлея. */
+    private val _activeCall = MutableStateFlow<ActiveCall?>(null)
+    val activeCall: StateFlow<ActiveCall?> = _activeCall
+
+    // ---------------- сессия ----------------
+
+    private fun currentPhase(): SessionPhase = when {
+        !session.isLoggedIn() -> SessionPhase.LOGGED_OUT
+        !session.profileComplete() -> SessionPhase.NEEDS_PROFILE
+        else -> SessionPhase.READY
     }
 
-    private fun auth() = "Bearer " + requireNotNull(crypto.currentToken()) { "Войдите в аккаунт" }
-    fun isLoggedIn() = logged.value
+    fun me(): String? = session.userId()
 
-    /**
-     * Регистрация по имени и номеру телефона. Без SMS и писем: владение номером
-     * подтверждает не код, а ключи устройства (Ed25519 challenge-response).
-     * Поэтому восстановление аккаунта возможно только на устройстве, где ключи
-     * уже сохранены, — на новом устройстве регистрируется новый аккаунт.
-     */
-    suspend fun register(name: String, phoneRaw: String) = withContext(Dispatchers.IO) {
-        val displayName = name.trim()
-        require(displayName.isNotEmpty() && displayName.length <= 64) { "Введите имя (1–64 символа)" }
-        val phone = PhoneNumbers.normalize(phoneRaw)
-            ?: throw IllegalArgumentException("Некорректный номер телефона. Пример: +7 999 123-45-67")
-        check(crypto.userId() == null) { "На устройстве уже есть аккаунт. Используйте вход; ключи сохранены." }
-        crypto.ensureIdentity()
-        // username оставляем пустым: сервер сгенерирует служебный из номера.
-        val request = db.withTransaction { crypto.buildRegisterRequest("", phone, displayName) }
-        try {
-            val registered = api.register(request)
-            crypto.saveUser(registered.username, registered.id)
-            crypto.savePhone(registered.phone.ifEmpty { phone })
-            db.withTransaction { crypto.markKeysPublished() }
-        } catch (e: HttpException) {
-            if (e.code() != 409) throw e
-            // Регистрация могла завершиться на сервере до обрыва HTTP-ответа.
-            try { login(phone); return@withContext }
-            catch (loginError: HttpException) {
-                if (loginError.code() != 401) throw loginError
-                error("Номер уже зарегистрирован на другом устройстве. Без переноса ключей войти нельзя; локальные ключи сохранены.")
-            }
-        }
-        login(phone)
+    fun accountInfo(): AccountView = AccountView(
+        id = session.userId().orEmpty(),
+        username = session.username().orEmpty(),
+        phone = session.phone().orEmpty(),
+        displayName = session.displayName().orEmpty(),
+        lastName = session.lastName().orEmpty(),
+        avatarMediaId = session.avatarMediaId().orEmpty(),
+    )
+
+    private fun auth() = "Bearer " + requireNotNull(session.token()) { "Войдите в аккаунт" }
+
+    /** Шаг 1: запрос 6-значного кода на номер (код уходит владельцу в Telegram). */
+    suspend fun requestCode(phone: String) {
+        val normalized = requireNotNull(normalizePhone(phone)) { "Некорректный номер. Пример: +7 999 123-45-67" }
+        api.requestCode(RequestCodeRequest(normalized))
     }
 
-    /** Вход по номеру телефона (основной путь). Требует ключей аккаунта на устройстве. */
-    suspend fun login(phoneRaw: String) {
-        val phone = PhoneNumbers.normalize(phoneRaw)
-            ?: throw IllegalArgumentException("Некорректный номер телефона. Пример: +7 999 123-45-67")
-        loginInternal(username = "", phone = phone)
-    }
-
-    /** Вход по имени пользователя — для аккаунтов старого формата (без номера). */
-    suspend fun loginLegacy(username: String) {
-        require(username.isNotBlank()) { "Введите имя пользователя" }
-        loginInternal(username = username.trim(), phone = "")
-    }
-
-    private suspend fun loginInternal(username: String, phone: String) = withContext(Dispatchers.IO) {
+    /** Шаг 2: проверка кода. Создаёт/находит облачный аккаунт и сохраняет сессию. */
+    suspend fun verifyCode(phone: String, code: String): VerifyCodeResponse =
         authMutex.withLock {
-            check(crypto.hasIdentity()) {
-                "На устройстве нет ключей аккаунта. Без SMS-кодов вход возможен только с сохранёнными ключами."
-            }
-            val challenge = api.challenge(ChallengeRequest(username = username, phone = phone)).challenge
-            val session = api.verify(VerifyRequest(
-                username = username, phone = phone,
-                challenge = challenge, signature = crypto.signChallenge(challenge),
-            ))
-            try {
-                val account = api.account("Bearer " + session.token)
-                // saveUser сам не даст войти в чужой аккаунт с этими ключами.
-                crypto.saveUser(account.username, account.id)
-                if (account.phone.isNotEmpty()) crypto.savePhone(account.phone)
-                crypto.saveSession(session.token, session.expires_at)
-                prepareAccount(account)
-                logged.value = true
-            } catch (e: Exception) {
-                crypto.clearSession()
-                logged.value = false
-                throw e
-            }
+            val v = api.verifyCode(VerifyCodeRequest(phone, code.trim()))
+            val a = v.account ?: throw IllegalStateException("Сервер не вернул аккаунт")
+            session.save(v.token, a.id, a.username, a.phone, a.displayName, a.lastName, a.avatarMediaId)
+            db.clearAllTables()
+            _phase.value = currentPhase()
+            v
         }
+
+    /** Заполнение профиля после регистрации. */
+    suspend fun updateProfile(name: String, lastName: String, username: String) {
+        val r = api.updateProfile(auth(), UpdateProfileRequest(name, lastName, username))
+        session.saveProfile(r.username, r.displayName, r.lastName, null)
+        _phase.value = currentPhase()
     }
 
-    private suspend fun prepareAccount(account: AccountResponse) {
-        crypto.saveUser(account.username, account.id)
-        adoptLegacyHistory(account.id)
-        if (db.withTransaction { crypto.needsKeyPublication(account.key_version, account.one_time_prekey_count) }) {
-            val request = db.withTransaction { crypto.buildRegisterRequest(account.username) }
-            api.updateKeys(auth(), request)
-            db.withTransaction { crypto.markKeysPublished() }
-        }
+    /** Загружает выбранное фото как аватар и привязывает к аккаунту. */
+    suspend fun uploadAndSetAvatar(uri: Uri) {
+        val resolver = context.contentResolver
+        val mime = resolver.getType(uri) ?: "image/jpeg"
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IOException("не удалось прочитать фото")
+        if (bytes.size > 10 * 1024 * 1024) throw IOException("фото больше 10 МБ")
+        val part = MultipartBody.Part.createFormData("file", "avatar", bytes.toRequestBody(mime.toMediaType()))
+        val typeField = mime.toRequestBody("text/plain".toMediaType())
+        val up = api.uploadMedia(auth(), part, typeField)
+        if (!up.isSuccessful) throw IOException("загрузка аватара: HTTP ${up.code()}")
+        val mediaId = up.body()?.id ?: throw IOException("пустой ответ при загрузке аватара")
+        api.setAvatar(auth(), SetAvatarRequest(mediaId))
+        session.saveAvatar(mediaId)
+        putUserCache(UserCard(id = session.userId().orEmpty(), username = session.username().orEmpty(),
+            displayName = session.displayName().orEmpty(), lastName = session.lastName().orEmpty(),
+            avatarMediaId = mediaId))
     }
 
-    suspend fun logout() = withContext(Dispatchers.IO) {
-        val token = crypto.currentToken()
-        disconnectRealtime()
-        crypto.clearSession()
-        logged.value = false
-        // Локальный выход гарантирован даже без сети; серверный токен истечёт по TTL,
-        // если отзыв сейчас доставить невозможно.
-        if (token != null) {
-            try { withTimeout(5000) { api.logout("Bearer " + token) } }
-            catch (e: CancellationException) { if (e !is TimeoutCancellationException) throw e }
-            catch (_: Exception) { }
-        }
-        // Расшифрованный кэш медиа не переживает выход.
-        runCatching { File(context.cacheDir, MEDIA_CACHE_DIR).deleteRecursively() }
+    suspend fun logout() {
+        val token = session.token()
+        _activeCall.value = null
+        stopRealtime()
+        try { withTimeout(4000) { token?.let { api.logout("Bearer " + it) } } }
+        catch (_: Exception) { }
+        session.clear()
+        db.clearAllTables()
+        _phase.value = SessionPhase.LOGGED_OUT
     }
 
-    fun connectRealtime() {
-        val token = crypto.currentToken() ?: return
+    suspend fun deleteAccount() {
+        val token = session.token()
+        stopRealtime()
+        try { withTimeout(5000) { token?.let { api.burnAccount("Bearer " + it) } } }
+        catch (_: Exception) { }
+        session.clear()
+        db.clearAllTables()
+        _phase.value = SessionPhase.LOGGED_OUT
+    }
+
+    // ---------------- кэш пользователей ----------------
+
+    private suspend fun putUserCache(card: UserCard) {
+        _userCache.update { it + (card.id to card) }
+        db.cryptoDao().put(CryptoRecord(session.userId().orEmpty(), "user", card.id, json.encodeToString(card)))
+    }
+
+    suspend fun resolveUser(id: String): UserCard? {
+        _userCache.value[id]?.let { return it }
+        val card = try { api.user(auth(), id) } catch (e: CancellationException) { throw e } catch (_: Exception) { return null }
+        putUserCache(card)
+        return card
+    }
+
+    suspend fun resolveByUsername(username: String): UserCard? = try {
+        api.userByUsername(auth(), username.trim().removePrefix("@"))
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+
+    fun titleFor(userId: String): String {
+        val c = _userCache.value[userId]
+        return c?.fullName()?.ifBlank { c.username } ?: userId.take(12)
+    }
+
+    // ---------------- realtime / синхронизация ----------------
+
+    fun startRealtime() {
         if (pollJob?.isActive == true) return
+        val token = session.token() ?: return
         eventJob = scope.launch {
-            ws.eventFlow.collect { event ->
+            ws.eventFlow.collect { ev ->
                 try {
-                    when (event.type) {
-                        "connected" -> syncNow(forceFull = true)
-                        "message" -> persist(json.decodeFromJsonElement<MessageDto>(event.data))
+                    when (ev.type) {
+                        "connected" -> { _connected.value = true; syncNow(forceFull = true) }
+                        "message" -> persist(apiJsonFromMessage(ev.data))
+                        "call" -> handleCallEvent(ev.data)
+                        "call_status" -> handleCallStatusEvent(ev.data)
+                        else -> {}
                     }
                 } catch (e: CancellationException) { throw e }
-                catch (e: Exception) {
-                    syncProblem.value = "Синхронизация не завершена. Повторим при восстановлении связи."
-                    handleAuthFailure(e)
-                }
+                catch (e: Exception) { _syncProblem.value = "Синхронизация не завершена. Повторим при восстановлении связи." }
             }
         }
         pollJob = scope.launch {
-            var accountCheckedAt = 0L
-            while (isActive && logged.value) {
-                if (crypto.currentToken() == null) {
-                    crypto.clearSession(); logged.value = false; ws.disconnect(); break
-                }
+            while (isActive && session.isLoggedIn()) {
+                if (session.token() == null) break
                 try {
-                    if (accountCheckedAt == 0L || System.currentTimeMillis() - accountCheckedAt >= 300_000) {
-                        prepareAccount(api.account(auth()))
-                        accountCheckedAt = System.currentTimeMillis()
-                        ws.connect(token)
-                    }
-                    syncNow(); flushOutbox(); syncProblem.value = null
+                    _connected.value = true
+                    ws.connect(session.token()!!)
+                    syncNow()
+                    flushOutbox()
+                    _syncProblem.value = null
+                } catch (e: CancellationException) { throw e }
+                catch (e: HttpException) {
+                    if (e.code() == 401) { session.clear(); _phase.value = SessionPhase.LOGGED_OUT; break }
+                    _syncProblem.value = "Синхронизация не завершена"
+                } catch (_: Exception) {
+                    _syncProblem.value = "Нет связи с сервером"
                 }
-                catch (e: CancellationException) { throw e }
-                catch (e: Exception) {
-                    syncProblem.value = "Синхронизация не завершена. Повторим при восстановлении связи."
-                    handleAuthFailure(e)
-                }
-                delay(5000)
+                delay(4000)
             }
+            _connected.value = false
+        }
+        scope.launch {
+            ws.connect(token)
+            ws.connected.collect { _connected.value = it }
         }
     }
 
-    fun disconnectRealtime() {
+    fun stopRealtime() {
         eventJob?.cancel(); eventJob = null
         pollJob?.cancel(); pollJob = null
         ws.disconnect()
+        _connected.value = false
     }
 
-    suspend fun close() {
-        disconnectRealtime()
-        scope.coroutineContext[Job]?.cancelAndJoin()
-        ws.close()
-    }
+    private fun apiJsonFromMessage(obj: JsonObject): MessageDto =
+        json.decodeFromJsonElement(MessageDto.serializer(), obj)
 
-    private fun handleAuthFailure(e: Exception) {
-        if (e is HttpException && e.code() == 401) {
-            crypto.clearSession()
-            logged.value = false
-            ws.disconnect()
+    /** Синхронизация истории: полная при старте, дальше инкрементальная по времени. */
+    private suspend fun syncNow(forceFull: Boolean = false) = syncMutex.withLock {
+        val owner = session.userId() ?: return@withLock
+        val token = session.token() ?: return@withLock
+        val newestLocal = db.messageDao().maxCreatedAtMillis(owner) ?: 0L
+        val full = forceFull || newestLocal == 0L
+        var since: String? = null
+        var afterId: String? = null
+        if (!full) {
+            since = Instant.ofEpochMilli(newestLocal - 30_000L)
+                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
         }
+        var pages = 0
+        while (true) {
+            val page = api.messages("Bearer " + token, since, afterId, 200).messages
+            for (dto in page) persist(dto)
+            if (page.size < 200) break
+            val last = page.last()
+            since = Instant.parse(last.createdAt)
+                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
+            afterId = last.id
+            if (++pages > 2000) break
+        }
+        if (full) lastFullSyncMillis = System.currentTimeMillis()
+        db.messageDao().deleteExpired(System.currentTimeMillis())
     }
 
-    suspend fun startChat(username: String, title: String? = null): ChatEntity = withContext(Dispatchers.IO) {
-        val bundle = api.prekeys(username)
-        require(bundle.id != crypto.userId()) { "Диалог с собой пока не поддерживается" }
+    /** Сохраняет сообщение с сервера (DM и группа) в Room. */
+    private suspend fun persist(dto: MessageDto) {
+        val owner = session.userId() ?: return
+        val expiresMillis = dto.expiresAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+        val createdAtMillis = runCatching { Instant.parse(dto.createdAt).toEpochMilli() }.getOrDefault(0L)
+        val chatId = if (dto.chatId.isNotEmpty()) dto.chatId
+        else if (dto.senderId == owner) dto.recipientId else dto.senderId
+        if (chatId.isEmpty()) return
         db.withTransaction {
-            crypto.establishSession(bundle.id, bundle)
-            ChatEntity(bundle.id, "dm", title?.takeIf { it.isNotBlank() } ?: bundle.username)
-                .also { db.chatDao().upsert(it) }
+            val existing = db.messageDao().get(dto.id)
+            if (existing == null) {
+                db.messageDao().upsert(MessageEntity(
+                    id = dto.id, senderId = dto.senderId, recipientId = dto.recipientId, chatId = chatId,
+                    ciphertext = dto.ciphertext, createdAt = dto.createdAt, expiresAt = dto.expiresAt,
+                    ownerId = owner, createdAtMillis = createdAtMillis, expiresAtMillis = expiresMillis,
+                    deliveryState = "sent",
+                ))
+            }
+            val type = if (dto.chatId.isNotEmpty()) "group" else "dm"
+            if (db.chatDao().get(chatId) == null) {
+                db.chatDao().upsert(ChatEntity(chatId, type, if (type == "dm") dto.senderId.take(12) else "Группа"))
+            }
+        }
+        if (chatId != owner && dto.chatId.isEmpty()) {
+            val peer = if (dto.senderId == owner) dto.recipientId else dto.senderId
+            scope.launch { resolveUser(peer); updateDmTitle(peer) }
+        }
+        _ = owner
+    }
+
+    private suspend fun updateDmTitle(peerId: String) {
+        val card = _userCache.value[peerId] ?: return
+        db.chatDao().get(peerId)?.let { db.chatDao().upsert(it.copy(title = card.fullName())) }
+    }
+
+    // ---------------- звонки ----------------
+
+    private suspend fun handleCallEvent(obj: JsonObject) {
+        val call = json.decodeFromJsonElement(CallDto.serializer(), obj)
+        if (call.calleeId == session.userId() && call.status == "ringing") {
+            val peer = resolveUser(call.callerId)
+            _activeCall.value = ActiveCall(call.id, call.callerId, peer?.fullName() ?: "…", incoming = true, ringing = true)
         }
     }
+
+    private suspend fun handleCallStatusEvent(obj: JsonObject) {
+        val callId = obj["call_id"]?.toString()?.trim('"').orEmpty()
+        val status = obj["status"]?.toString()?.trim('"').orEmpty()
+        _activeCall.value?.let { cur ->
+            if (cur.callId == callId && status in listOf("active", "declined", "ended", "missed")) {
+                if (status == "active") _activeCall.value = cur.copy(ringing = false)
+                else if (status != "active") _activeCall.value = null
+            }
+        }
+    }
+
+    /** Совершить звонок (сигналинг: сервер уведомит собеседника). */
+    suspend fun startCall(peerUserId: String) {
+        val call = api.initiateCall(auth(), InitiateCallRequest(peerUserId, video = false))
+        val peer = resolveUser(peerUserId)
+        _activeCall.value = ActiveCall(call.id, peerUserId, peer?.fullName() ?: "…", incoming = false, ringing = true)
+    }
+
+    suspend fun setCallStatus(status: String) {
+        val call = _activeCall.value ?: return
+        try { api.updateCallStatus(auth(), call.callId, CallStatusRequest(status)) } catch (_: Exception) { }
+        if (status in listOf("active")) _activeCall.value = call.copy(ringing = false)
+        else _activeCall.value = null
+    }
+
+    /** История звонков (для вкладки «Звонки»). */
+    suspend fun fetchCalls(): List<CallUi> {
+        val me = session.userId() ?: return emptyList()
+        return try {
+            api.calls(auth()).calls.map { c ->
+                val peerId = if (c.callerId == me) c.calleeId else c.callerId
+                CallUi(c.id, peerId, titleFor(peerId), c.callerId != me, c.status,
+                    runCatching { Instant.parse(c.createdAt).toEpochMilli() }.getOrDefault(0L))
+            }.sortedByDescending { it.createdAtMillis }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    // ---------------- чаты и сообщения ----------------
+
+    fun conversations(): Flow<List<Conversation>> = combine(
+        db.chatDao().all(),
+        db.messageDao().all(session.userId().orEmpty()),
+        _userCache,
+    ) { chats, msgs, _ ->
+        val lastByChat = HashMap<String, MessageEntity>()
+        for (m in msgs) {
+            val cur = lastByChat[m.chatId]
+            if (cur == null || m.createdAtMillis >= cur.createdAtMillis) lastByChat[m.chatId] = m
+        }
+        val byId = chats.associateBy { it.id }
+        val result = ArrayList<Conversation>()
+        val seen = HashSet<String>()
+        for ((chatId, last) in lastByChat) {
+            seen.add(chatId)
+            val chat = byId[chatId]
+            val group = chat?.type == "group"
+            val title = if (group) chat.title else titleFor(chatId)
+            val subtitle = MessageCodec.plainText(last.ciphertext).ifBlank { "⦙" }
+            result.add(Conversation(chatId, group, title, subtitle, last.createdAtMillis))
+        }
+        // группы без сообщений тоже показываем
+        for (chat in chats) if (chat.type == "group" && !seen.contains(chat.id)) {
+            result.add(Conversation(chat.id, true, chat.title, "Группа создана", 0L))
+        }
+        result.sortedByDescending { it.lastAtMillis }
+    }.flowOn(Dispatchers.IO)
 
     fun chats(): Flow<List<ChatEntity>> = db.chatDao().all()
 
-    /** Карточка чата (заголовок для экрана диалога). */
-    fun chat(chatId: String): Flow<ChatEntity?> = db.chatDao().observe(chatId)
-
-    /** Телефонная книга, сопоставленная с пользователями Umbra (см. syncContacts). */
-    fun contacts(): Flow<List<ContactEntity>> = db.contactDao().all()
-
-    /**
-     * Синхронизация контактов: читает телефонную книгу (READ_CONTACTS),
-     * нормализует номера и отправляет на сервер ТОЛЬКО их SHA-256-хэши.
-     * Совпадения (люди уже в Umbra) сохраняются локально и добавляются
-     * в серверный список контактов. Возвращает число найденных в Umbra.
-     */
-    suspend fun syncContacts(): Int = withContext(Dispatchers.IO) {
-        check(logged.value) { "Войдите в аккаунт" }
-        val device = PhoneNumbers.readAll(context.contentResolver)
-        val me = crypto.userId()
-        val byHash = device.associateBy { PhoneNumbers.hash(it.phone) }
-        val matches = if (byHash.isEmpty()) emptyList() else
-            api.discoverContacts(auth(), DiscoverRequest(byHash.keys.toList())).matches
-        val now = System.currentTimeMillis()
-        val matchedHashes = matches.map { it.phone_hash }.toSet()
-        val entities = ArrayList<ContactEntity>(device.size)
-        for (m in matches) {
-            if (m.id == me) continue // себя не показываем в списке контактов
-            val local = byHash[m.phone_hash]
-            entities.add(ContactEntity(
-                phoneHash = m.phone_hash,
-                phone = local?.phone ?: m.phone,
-                name = local?.name?.takeIf { it.isNotBlank() } ?: m.display_name.ifEmpty { m.phone },
-                umbraUserId = m.id,
-                umbraUsername = m.username,
-                umbraDisplayName = m.display_name,
-                syncedAt = now,
-            ))
-        }
-        for ((hash, c) in byHash) {
-            if (hash !in matchedHashes) {
-                entities.add(ContactEntity(phoneHash = hash, phone = c.phone, name = c.name, syncedAt = now))
-            }
-        }
-        // Таблица отражает текущую телефонную книгу: удалённые из неё пропадают и здесь.
-        db.withTransaction {
-            db.contactDao().clear()
-            db.contactDao().upsertAll(entities)
-        }
-        // Серверный список контактов — для будущих устройств; ошибки не критичны.
-        for (m in matches) {
-            if (m.id == me) continue
-            try { api.addContact(auth(), ContactRequest(m.id)) }
-            catch (e: CancellationException) { throw e }
-            catch (_: Exception) { }
-        }
-        entities.count { it.umbraUserId != null }
-    }
-
-    /**
-     * Полное удаление аккаунта («сжечь»): сервер удаляет ключи, сообщения,
-     * медиа, чаты и контакты. Локально стираются история, контакты и ключи —
-     * восстановление невозможно.
-     */
-    suspend fun deleteAccount() = withContext(Dispatchers.IO) {
-        val token = crypto.currentToken()
-        disconnectRealtime()
-        if (token != null) {
-            try { withTimeout(5000) { api.burnAccount("Bearer " + token) } }
-            catch (e: CancellationException) { if (e !is TimeoutCancellationException) throw e }
-            catch (_: Exception) { }
-        }
-        crypto.wipeAll()
-        logged.value = false
-        db.clearAllTables()
-        runCatching { File(context.cacheDir, MEDIA_CACHE_DIR).deleteRecursively() }
-    }
-
-    suspend fun refreshChats() = withContext(Dispatchers.IO) {
-        api.chats(auth()).chats.forEach { db.chatDao().upsert(ChatEntity(it.id, it.type, it.title)) }
-    }
-
     fun messagesFor(chatId: String): Flow<List<UiMessage>> =
-        db.messageDao().messagesFor(crypto.userId().orEmpty(), chatId).map { list ->
+        db.messageDao().messagesFor(session.userId().orEmpty(), chatId).map { list ->
             list.map { e ->
-                val outgoing = e.senderId == e.ownerId
-                // В localBody лежит AEAD-копия открытого текста: для медиа это JSON-конверт
-                // MessagePayload, для текстовых — сырая строка (обратная совместимость).
-                val plain = e.localBody?.let {
-                    runCatching { crypto.openHistory(e.ownerId, e.id, it) }.getOrNull()
-                }
-                val payload = plain?.let(::parsePayload)
-                val fallback = if (outgoing) "[старая локальная копия отсутствует]" else "[не удалось расшифровать]"
-                UiMessage(
-                    id = e.id,
-                    senderId = e.senderId,
-                    text = payload?.text ?: fallback,
-                    createdAt = e.createdAt,
-                    expiresAt = e.expiresAt,
-                    outgoing = outgoing,
-                    deliveryState = e.deliveryState,
-                    error = e.error,
-                    media = payload?.media,
-                )
+                val text = MessageCodec.plainText(e.ciphertext).ifBlank { "[пустое сообщение]" }
+                UiMessage(e.id, e.senderId, text, e.createdAtMillis,
+                    outgoing = e.senderId == session.userId() && e.ownerId == e.senderId,
+                    failed = e.deliveryState == "failed", pending = e.deliveryState == "pending")
             }
         }.flowOn(Dispatchers.IO)
 
-    /** Отправляет текстовое сообщение: шифруется ровно один раз, уходит через outbox. */
-    suspend fun sendMessage(recipientId: String, plaintext: String, expiresIn: Long? = null) =
-        enqueueMessage(recipientId, plaintext, expiresIn)
-
-    /** Encrypt ровно один раз; outbox и новое состояние ratchet коммитятся вместе. */
-    private suspend fun enqueueMessage(recipientId: String, plaintext: String, expiresIn: Long? = null) =
-        withContext(Dispatchers.IO) {
-            require(plaintext.isNotBlank() && plaintext.toByteArray(Charsets.UTF_8).size <= 64 * 1024) { "Сообщение пустое или слишком длинное" }
-            val ttl = expiresIn ?: 0
-            require(ttl in 0..2_592_000) { "Некорректный срок сообщения" }
-            val owner = requireNotNull(crypto.userId())
-            check(logged.value) { "Войдите в аккаунт" }
-            db.withTransaction {
-                val chat = db.chatDao().get(recipientId) ?: error("Сначала создайте диалог")
-                check(chat.type == "dm") { "Групповое E2E на Android ещё не реализовано. Отправка отключена." }
-                val id = UUID.randomUUID().toString()
-                val now = Instant.now()
-                val expires = if (ttl > 0) now.plusSeconds(ttl) else null
-                val ciphertext = crypto.encrypt(recipientId, plaintext)
-                db.messageDao().upsert(MessageEntity(
-                    id = "local:" + id, senderId = owner, recipientId = recipientId, chatId = recipientId,
-                    ciphertext = ciphertext, createdAt = now.toString(), expiresAt = expires?.toString(),
-                    ownerId = owner, localBody = crypto.sealHistory(owner, "local:" + id, plaintext),
-                    createdAtMillis = now.toEpochMilli(), expiresAtMillis = expires?.toEpochMilli(),
-                    deliveryState = "pending", clientId = id, expiresInSeconds = ttl,
-                ))
-            }
-            scope.launch { flushOutbox() }
+    /** Создать/получить личный чат с пользователем. */
+    suspend fun openDm(peerUserId: String) {
+        db.chatDao().get(peerUserId) ?: run {
+            val card = resolveUser(peerUserId)
+            db.chatDao().upsert(ChatEntity(peerUserId, "dm", card?.fullName() ?: peerUserId.take(12)))
         }
-
-    /**
-     * Отправляет файл/фото как E2E-медиа: читает Uri (SAF/Photo Picker), шифрует файл
-     * AES-256-GCM, загружает ciphertext на сервер и ставит сообщение в outbox с E2E-конвертом
-     * (ключ, nonce, настоящее имя и MIME — внутри, сервер их не видит).
-     */
-    suspend fun sendMedia(chatId: String, uri: Uri, caption: String = "", expiresIn: Long? = null) =
-        withContext(Dispatchers.IO) {
-            check(logged.value) { "Войдите в аккаунт" }
-            val resolver = context.contentResolver
-            val displayName: String? = resolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) c.getString(idx) else null
-                } else null
-            }
-            val mime = resolver.getType(uri) ?: "application/octet-stream"
-            val plain = resolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: throw IOException("не удалось прочитать файл")
-            if (plain.isEmpty()) throw IOException("пустой файл")
-            if (plain.size.toLong() > MAX_MEDIA_BYTES) {
-                throw IOException("файл больше ${MAX_MEDIA_BYTES / MIB} MiB (лимит сервера)")
-            }
-
-            val key = crypto.newFileKey()
-            val nonce = crypto.newFileNonce()
-            val ciphertext = crypto.encryptFileBytes(key, nonce, plain)
-
-            // Серверу всё непрозрачно: generic-имя и generic-MIME, без утечки метаданных.
-            val part = MultipartBody.Part.createFormData(
-                "file", "blob.bin",
-                ciphertext.toRequestBody("application/octet-stream".toMediaType()),
-            )
-            val contentTypeField = "application/octet-stream".toRequestBody("text/plain".toMediaType())
-            val upload = api.uploadMedia(auth(), part, contentTypeField)
-            if (!upload.isSuccessful) throw IOException("загрузка медиа: HTTP ${upload.code()}")
-            val mediaId = upload.body()?.id ?: throw IOException("загрузка медиа: пустой ответ")
-
-            val payload = MessagePayload(
-                text = caption,
-                media = MediaInfo(
-                    id = mediaId,
-                    kind = if (mime.startsWith("image/")) MediaInfo.KIND_PHOTO else MediaInfo.KIND_FILE,
-                    contentType = mime,
-                    size = plain.size.toLong(),
-                    name = displayName,
-                    key = b64(key),
-                    nonce = b64(nonce),
-                ),
-            )
-            val envelope = json.encodeToString(payload)
-            enqueueMessage(chatId, envelope, expiresIn)
-        }
-
-    /**
-     * Скачивает ciphertext медиа с сервера и расшифровывает в приватный кэш
-     * приложения (cacheDir/media). Повторный вызов для того же медиа отдаёт
-     * готовый файл без сети. Кэш удаляется при logout().
-     */
-    suspend fun fetchMediaFile(info: MediaInfo): File = withContext(Dispatchers.IO) {
-        val dir = File(context.cacheDir, MEDIA_CACHE_DIR).apply { mkdirs() }
-        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(info.contentType) ?: "bin"
-        val out = File(dir, "${info.id}.$ext")
-        if (out.isFile && out.length() == info.size) return@withContext out
-
-        val response = api.downloadMedia(auth(), info.id)
-        if (!response.isSuccessful) throw IOException("скачивание медиа: HTTP ${response.code()}")
-        val body = response.body() ?: throw IOException("скачивание медиа: пустой ответ")
-        val ciphertext = body.use { it.bytes() }
-        val plain = crypto.decryptFileBytes(fromB64(info.key), fromB64(info.nonce), ciphertext)
-        if (plain.size.toLong() != info.size) {
-            throw IOException("размер расшифрованного файла не совпадает с конвертом")
-        }
-        // Атомарная публикация: читатель не увидит частичный файл.
-        val tmp = File(dir, out.name + ".tmp")
-        tmp.writeBytes(plain)
-        if (!tmp.renameTo(out)) {
-            out.writeBytes(plain)
-            tmp.delete()
-        }
-        out
     }
 
-    suspend fun retry(id: String) = withContext(Dispatchers.IO) {
-        db.withTransaction {
-            val message = db.messageDao().get(id) ?: return@withTransaction
-            require(message.ownerId == crypto.userId() && message.senderId == message.ownerId && message.clientId != null)
-            check(System.currentTimeMillis() - message.createdAtMillis < 29L * 86_400_000) {
-                "Срок безопасного повтора истёк. Уточните у собеседника, получено ли сообщение."
-            }
-            if (message.expiresAtMillis?.let { it <= System.currentTimeMillis() } == true) {
-                db.messageDao().delete(id); return@withTransaction
-            }
-            db.messageDao().upsert(message.copy(deliveryState = "pending", error = null))
+    suspend fun createGroup(title: String, memberIds: List<String>) {
+        val chat = api.createGroup(auth(), CreateChatRequest(title))
+        db.chatDao().upsert(ChatEntity(chat.id, "group", chat.title))
+        for (id in memberIds) if (id != session.userId()) {
+            try { api.addMember(auth(), chat.id, AddMemberRequest(id)) } catch (_: Exception) { }
         }
-        flushOutbox()
+    }
+
+    suspend fun groupMembers(chatId: String): List<UserCard> {
+        val members = try { api.chatMembers(auth(), chatId).members } catch (_: Exception) { return emptyList() }
+        val cards = ArrayList<UserCard>()
+        for (m in members) resolveUser(m.userId)?.let { cards.add(it) }
+        return cards
+    }
+
+    /** Отправка текста: в ЛС или группу; локальная запись → outbox. */
+    suspend fun sendText(chatId: String, text: String) {
+        val owner = session.userId() ?: return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        val id = UUID.randomUUID().toString()
+        val content = MessageContent(kind = MessageContent.KIND_TEXT, text = trimmed)
+        val envelope = MessageCodec.encode(content)
+        val now = Instant.now().toEpochMilli()
+        val chat = db.chatDao().get(chatId)
+        db.messageDao().upsert(MessageEntity(
+            id = "local:$id", senderId = owner, recipientId = if (chat?.type == "dm") chatId else "",
+            chatId = chatId, ciphertext = envelope, createdAt = Instant.now().toString(),
+            ownerId = owner, createdAtMillis = now, deliveryState = "pending", clientId = id,
+        ))
+        scope.launch { flushOutbox() }
     }
 
     private suspend fun flushOutbox() = sendMutex.withLock {
-        if (!logged.value || crypto.currentToken() == null) return@withLock
-        val owner = requireNotNull(crypto.userId())
-        for (message in db.messageDao().pending(owner)) {
-            if (System.currentTimeMillis() - message.createdAtMillis >= 29L * 86_400_000) {
-                db.withTransaction {
-                    db.messageDao().get(message.id)?.let {
-                        db.messageDao().upsert(it.copy(deliveryState = "failed", error =
-                            "Срок безопасного повтора истёк. Уточните доставку у собеседника."))
-                    }
-                }
-                continue
-            }
-            if (message.expiresAtMillis?.let { it <= System.currentTimeMillis() } == true) {
-                db.messageDao().delete(message.id); continue
-            }
+        val owner = session.userId() ?: return@withLock
+        val token = session.token() ?: return@withLock
+        for (m in db.messageDao().pending(owner)) {
+            val clientId = m.clientId ?: continue
             try {
-                val sent = api.sendMessage(auth(), SendMessageRequest(message.recipientId, message.ciphertext,
-                    message.expiresInSeconds.takeIf { it > 0 }, message.clientId))
-                require(sent.id.isNotEmpty() && !sent.id.startsWith("local:") && sent.chat_id.isEmpty() &&
-                    sent.sender_id == owner && sent.recipient_id == message.recipientId &&
-                    sent.ciphertext == message.ciphertext && sent.client_message_id == message.clientId) { "Некорректное подтверждение сервера" }
+                val chat = db.chatDao().get(m.chatId)
+                val sent = if (chat?.type == "group") {
+                    api.sendChatMessage("Bearer " + token, m.chatId, SendChatMessageRequest(m.ciphertext, clientId))
+                } else {
+                    api.sendMessage("Bearer " + token, SendMessageRequest(m.recipientId, m.ciphertext, clientId))
+                }
+                val newMillis = runCatching { Instant.parse(sent.createdAt).toEpochMilli() }.getOrDefault(m.createdAtMillis)
                 db.withTransaction {
-                    val current = db.messageDao().get(message.id) ?: return@withTransaction
-                    val expires = sent.expires_at?.let(Instant::parse)
-                    if (expires == null || expires.isAfter(Instant.now())) {
-                        val text = crypto.openHistory(owner, current.id, requireNotNull(current.localBody))
-                        db.messageDao().upsert(current.copy(id = sent.id, createdAt = sent.created_at,
-                            createdAtMillis = Instant.parse(sent.created_at).toEpochMilli(),
-                            expiresAt = sent.expires_at, expiresAtMillis = expires?.toEpochMilli(),
-                            localBody = crypto.sealHistory(owner, sent.id, text), deliveryState = "sent", error = null))
-                    }
-                    db.messageDao().delete(message.id)
+                    db.messageDao().upsert(m.copy(id = sent.id, createdAtMillis = newMillis,
+                        deliveryState = "sent", error = null, clientId = null))
+                    db.messageDao().delete(m.id) // удалить локальный дубль
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                val retryable = e is IOException || e is HttpException && (e.code() >= 500 || e.code() == 429 || e.code() == 401)
+                val retryable = e is IOException || (e is HttpException && (e.code() >= 500 || e.code() == 429 || e.code() == 401))
                 db.withTransaction {
-                    db.messageDao().get(message.id)?.let {
-                        db.messageDao().upsert(it.copy(deliveryState = if (retryable) "pending" else "failed",
-                            error = if (retryable) "Ожидает связи с сервером" else "Не отправлено. Проверьте соединение и повторите."))
+                    db.messageDao().get(m.id)?.let { cur ->
+                        db.messageDao().upsert(cur.copy(deliveryState = if (retryable) "pending" else "failed",
+                            error = if (retryable) null else "Не отправлено. Проверьте сеть."))
                     }
                 }
-                handleAuthFailure(e)
-                if (retryable) break
+                if (e is HttpException && e.code() == 401) { session.clear(); _phase.value = SessionPhase.LOGGED_OUT }
             }
         }
     }
 
-    private suspend fun syncNow(forceFull: Boolean = false) = syncMutex.withLock {
-        val started = System.currentTimeMillis()
-        val full = forceFull || lastFullSyncMillis == 0L || started - lastFullSyncMillis >= 900_000
-        var newest = db.withTransaction {
-            crypto.store().read("meta", "last_sync")?.let { Instant.parse(String(it, Charsets.UTF_8)) } ?: Instant.EPOCH
-        }
-        var since = if (full) Instant.EPOCH else newest.minusSeconds(30)
-        var afterId: String? = null
-        var pages = 0
-        while (true) {
-            val messages = api.messages(auth(), since.toString(), afterId, 200).messages
-            for (dto in messages) {
-                persist(dto)
-                val timestamp = Instant.parse(dto.created_at)
-                if (timestamp > newest) newest = timestamp
-            }
-            if (messages.size < 200) break
-            val last = messages.last()
-            val nextTime = Instant.parse(last.created_at)
-            check(nextTime > since || nextTime == since && last.id != afterId) { "Курсор синхронизации не продвинулся" }
-            since = nextTime
-            afterId = last.id
-            check(++pages <= 10000) { "Слишком большая история для одной синхронизации" }
-        }
-        // Курсор основан на времени сервера. Полная сверка также подбирает поздние коммиты.
-        db.withTransaction { crypto.store().write("meta", "last_sync", newest.toString().toByteArray(Charsets.UTF_8)) }
-        refreshChats()
-        if (full) lastFullSyncMillis = started
+    // ---------------- утилиты ----------------
+
+    /** Держит приложение живым при пересоздании Activity. */
+    fun close() {
+        stopRealtime()
+        scope.coroutineContext[Job]?.cancel()
+        ws.close()
     }
 
-    private suspend fun persist(dto: MessageDto) {
-        val owner = crypto.userId() ?: return
-        require(dto.chat_id.isNotEmpty() || dto.recipient_id == owner) { "Сообщение адресовано другому аккаунту" }
-        val chatId = dto.chat_id.ifEmpty { if (dto.sender_id == owner) dto.recipient_id else dto.sender_id }
-        val expires = dto.expires_at?.let(Instant::parse)
-        if (expires != null && !expires.isAfter(Instant.now())) { db.messageDao().delete(dto.id); return }
-        val row = MessageEntity(dto.id, dto.sender_id, dto.recipient_id, chatId, dto.ciphertext,
-            dto.created_at, dto.expires_at, ownerId = owner,
-            createdAtMillis = Instant.parse(dto.created_at).toEpochMilli(), expiresAtMillis = expires?.toEpochMilli())
-        try {
-            db.withTransaction {
-                val previous = db.messageDao().get(dto.id)
-                if (previous != null) {
-                    require(previous.ciphertext == dto.ciphertext && previous.senderId == dto.sender_id && previous.chatId == chatId)
-                    if (previous.localBody != null) return@withTransaction
-                }
-                check(dto.chat_id.isEmpty()) { "Групповое E2E на клиенте ещё не поддерживается" }
-                val text = crypto.decrypt(dto.sender_id, dto.ciphertext)
-                db.messageDao().upsert(row.copy(localBody = crypto.sealHistory(owner, dto.id, text)))
-                if (db.chatDao().get(chatId) == null) db.chatDao().upsert(ChatEntity(chatId, "dm", dto.sender_id.take(12)))
-            }
-        } catch (e: CancellationException) { throw e }
-        catch (_: Exception) {
-            // Транзакция Signal уже откатилась; ciphertext остаётся доступен для диагностики/восстановления.
-            db.withTransaction {
-                val previous = db.messageDao().get(dto.id)
-                if (previous == null || previous.localBody == null && previous.ciphertext == dto.ciphertext &&
-                    previous.senderId == dto.sender_id && previous.chatId == chatId) {
-                    db.messageDao().upsert(row.copy(error = if (dto.chat_id.isEmpty())
-                        "Не удалось расшифровать: проверьте ключи собеседника" else "Групповое E2E ещё не поддерживается"))
-                    if (db.chatDao().get(chatId) == null) db.chatDao().upsert(ChatEntity(chatId,
-                        if (dto.chat_id.isEmpty()) "dm" else "group", chatId.take(12)))
+    private fun normalizePhone(raw: String): String? {
+        val s = raw.trim()
+        if (s.isEmpty()) return null
+        var hasPlus = s[0] == '+'
+        var digits = buildString {
+            for ((i, c) in s.withIndex()) {
+                when {
+                    c in '0'..'9' -> append(c)
+                    i == 0 && c == '+' -> Unit
+                    c == ' ' || c == '-' || c == '(' || c == ')' || c == '.' -> Unit
+                    else -> return null
                 }
             }
         }
-    }
-
-    private suspend fun adoptLegacyHistory(owner: String) = db.withTransaction {
-        for (old in db.messageDao().legacyMessages()) {
-            val dm = old.recipientId.isNotEmpty()
-            val chat = if (dm) { if (old.senderId == owner) old.recipientId else old.senderId } else old.chatId
-            db.messageDao().upsert(old.copy(ownerId = owner, chatId = chat,
-                createdAtMillis = Instant.parse(old.createdAt).toEpochMilli(),
-                expiresAtMillis = old.expiresAt?.let { Instant.parse(it).toEpochMilli() }))
-            if (db.chatDao().get(chat) == null) db.chatDao().upsert(ChatEntity(chat, if (dm) "dm" else "group", chat.take(12)))
+        if (digits.startsWith("00")) { digits = digits.substring(2); hasPlus = true }
+        if (!hasPlus) {
+            when {
+                digits.length == 11 && digits[0] == '8' -> digits = "7" + digits.substring(1)
+                digits.length == 10 -> digits = "7" + digits
+            }
         }
+        if (digits.length < 7 || digits.length > 15 || digits[0] == '0') return null
+        return "+$digits"
     }
 
-    /**
-     * Разбирает открытый текст сообщения: JSON-конверт [MessagePayload] считается
-     * конвертом, только если содержит вложение; иначе (включая валидный JSON без
-     * поля media) сообщение показывается как обычный текст (обратная совместимость).
-     */
-    private fun parsePayload(plain: String): MessagePayload {
-        if (!plain.startsWith("{")) return MessagePayload(text = plain)
-        return runCatching { json.decodeFromString<MessagePayload>(plain) }
-            .getOrNull()?.takeIf { it.media != null } ?: MessagePayload(text = plain)
-    }
-
-    private fun b64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
-    private fun fromB64(s: String): ByteArray = Base64.decode(s, Base64.NO_WRAP)
+    suspend fun avatarBytes(mediaId: String): ByteArray? = try {
+        val r = api.downloadMedia(auth(), mediaId)
+        if (!r.isSuccessful) null else r.body()?.use { it.bytes() }
+    } catch (_: Exception) { null }
 
     companion object {
-        /** Приватный кэш расшифрованных медиа внутри cacheDir приложения. */
         const val MEDIA_CACHE_DIR = "media"
-
-        /** Лимит сервера MAX_MEDIA_BYTES по умолчанию (50 MiB) для открытого файла. */
-        const val MAX_MEDIA_BYTES = 50L * 1024 * 1024
-        private const val MIB = 1024 * 1024
     }
 }

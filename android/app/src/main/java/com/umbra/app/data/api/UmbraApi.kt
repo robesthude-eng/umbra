@@ -1,5 +1,6 @@
 package com.umbra.app.data.api
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -12,11 +13,11 @@ import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.POST
-import retrofit2.http.PUT
 import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -24,166 +25,211 @@ import retrofit2.http.Streaming
 import com.umbra.app.BuildConfig
 import java.util.concurrent.TimeUnit
 
-// ---------- DTO (зеркало контракта сервера, см. docs/api.md) ----------
+// ---------- DTO: вход по номеру с кодом из Telegram (v0.4, T1) ----------
 
 @Serializable
-data class RegisterRequest(
+data class RequestCodeRequest(val phone: String)
+
+@Serializable
+data class RequestCodeResponse(val status: String = "", @SerialName("expires_in") val expiresIn: String = "")
+
+@Serializable
+data class VerifyCodeRequest(val phone: String, val code: String)
+
+@Serializable
+data class AccountView(
+    val id: String,
     val username: String = "",
     val phone: String = "",
-    val name: String = "",
-    val identity_ed25519: String,
-    val identity_x25519: String,
-    val signed_prekey: String,
-    val signed_prekey_signature: String,
-    val one_time_prekeys: List<String>,
-    val key_version: Int = 1,
-    val registration_id: Int = 1,
-    val signed_prekey_id: Int = 1,
-    val one_time_prekey_ids: List<Int> = emptyList(),
-    val key_bundle_id: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("last_name") val lastName: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("avatar_media_id") val avatarMediaId: String = "",
 )
 
 @Serializable
-data class RegisterResponse(val id: String, val username: String,
-    val phone: String = "", val display_name: String = "")
-
-@Serializable
-data class ChallengeRequest(val username: String = "", val phone: String = "")
-
-@Serializable
-data class ChallengeResponse(val challenge: String)
-
-@Serializable
-data class VerifyRequest(val username: String = "", val phone: String = "",
-    val challenge: String, val signature: String)
-
-@Serializable
-data class VerifyResponse(val token: String, val expires_at: String)
-
-@Serializable
-data class AccountResponse(val id: String, val username: String, val created_at: String = "",
-    val phone: String = "", val display_name: String = "",
-    val key_version: Int = 1, val one_time_prekey_count: Int = 100)
-
-@Serializable
-data class PreKeyBundle(
-    val id: String,
-    val username: String,
-    val identity_ed25519: String,
-    val identity_x25519: String,
-    val signed_prekey: String,
-    val signed_prekey_signature: String,
-    val one_time_prekey: String,
-    val key_version: Int = 1,
-    val registration_id: Int = 1,
-    val signed_prekey_id: Int = 1,
-    val one_time_prekey_id: Int = 0,
-    val device_id: Int = 1,
+data class VerifyCodeResponse(
+    val token: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+    @SerialName("new_account") val newAccount: Boolean = false,
+    @SerialName("profile_complete") val profileComplete: Boolean = false,
+    val account: AccountView? = null,
 )
 
 @Serializable
-data class SendMessageRequest(
-    val recipient_id: String,
-    val ciphertext: String,
-    val expires_in: Long? = null,
-    val client_message_id: String? = null,
+data class UpdateProfileRequest(
+    val name: String,
+    @SerialName("last_name") val lastName: String = "",
+    val username: String = "",
 )
+
+@Serializable
+data class ProfileResult(
+    val id: String = "",
+    val username: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("last_name") val lastName: String = "",
+)
+
+@Serializable
+data class SetAvatarRequest(@SerialName("media_id") val mediaId: String)
+
+/** Публичная карточка пользователя (GET /v1/users/{id}) — имя/аватар собеседника. */
+@Serializable
+data class UserCard(
+    val id: String = "",
+    val username: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("last_name") val lastName: String = "",
+    @SerialName("avatar_media_id") val avatarMediaId: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+) {
+    fun fullName(): String =
+        listOf(displayName, lastName).filter { it.isNotBlank() }.joinToString(" ").ifBlank { username }
+}
+
+@Serializable
+data class MediaUploadResponse(val id: String = "", @SerialName("content_type") val contentType: String = "", val size: Long = 0)
+
+// ---------- DTO: сообщения (сервер хранит ciphertext-блоб; здесь base64 конверта) ----------
 
 @Serializable
 data class MessageDto(
     val id: String,
-    val sender_id: String,
-    val recipient_id: String = "",
-    val chat_id: String = "",
-    val ciphertext: String,
-    val created_at: String,
-    val expires_at: String? = null,
-    val client_message_id: String? = null,
+    @SerialName("sender_id") val senderId: String,
+    @SerialName("recipient_id") val recipientId: String = "",
+    @SerialName("chat_id") val chatId: String = "",
+    val ciphertext: String = "",
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("expires_at") val expiresAt: String? = null,
+    @SerialName("client_message_id") val clientMessageId: String? = null,
 )
 
 @Serializable
-data class MessagesResponse(val messages: List<MessageDto>)
+data class MessagesResponse(val messages: List<MessageDto> = emptyList())
+
+@Serializable
+data class SendMessageRequest(
+    @SerialName("recipient_id") val recipientId: String,
+    val ciphertext: String,
+    @SerialName("client_id") val clientId: String? = null,
+    @SerialName("expires_in") val expiresIn: Long? = null,
+)
+
+// ---------- DTO: чаты/группы ----------
 
 @Serializable
 data class ChatDto(
     val id: String,
-    val type: String,
-    val title: String,
-    val created_by: String,
-    val created_at: String,
+    val type: String = "",
+    val title: String = "",
+    @SerialName("created_by") val createdBy: String = "",
+    @SerialName("created_at") val createdAt: String = "",
 )
 
 @Serializable
-data class ChatsResponse(val chats: List<ChatDto>)
+data class ChatsResponse(val chats: List<ChatDto> = emptyList())
 
 @Serializable
 data class CreateChatRequest(val title: String)
 
 @Serializable
-data class SendChatMessageRequest(val ciphertext: String, val expires_in: Long? = null)
+data class MemberDto(
+    @SerialName("user_id") val userId: String,
+    val role: String = "",
+    @SerialName("joined_at") val joinedAt: String = "",
+)
 
 @Serializable
-data class AddMemberRequest(val user_id: String)
+data class MembersResponse(val members: List<MemberDto> = emptyList())
 
 @Serializable
-data class InitiateCallRequest(val callee_id: String, val video: Boolean = false)
+data class AddMemberRequest(@SerialName("user_id") val userId: String)
 
 @Serializable
-data class CallStatusRequest(val status: String)
+data class SendChatMessageRequest(
+    val ciphertext: String,
+    @SerialName("client_id") val clientId: String? = null,
+    @SerialName("expires_in") val expiresIn: Long? = null,
+)
+
+// ---------- DTO: контакты ----------
 
 @Serializable
-data class ContactRequest(val contact_id: String)
+data class ContactRequest(@SerialName("contact_id") val contactId: String)
 
 @Serializable
-data class ContactsResponse(val contacts: List<String>)
+data class ContactsResponse(val contacts: List<String> = emptyList())
 
-/** Хэши номеров телефонной книги (SHA-256, см. PhoneNumbers); номера в открытом виде не уходят. */
 @Serializable
 data class DiscoverRequest(val hashes: List<String>)
 
 @Serializable
 data class DiscoveredUser(
     val id: String,
-    val username: String,
-    val display_name: String = "",
+    val username: String = "",
+    @SerialName("display_name") val displayName: String = "",
     val phone: String = "",
-    val phone_hash: String = "",
+    @SerialName("phone_hash") val phoneHash: String = "",
 )
 
 @Serializable
-data class DiscoverResponse(val matches: List<DiscoveredUser>)
+data class DiscoverResponse(val matches: List<DiscoveredUser> = emptyList())
+
+// ---------- DTO: звонки (сигналинг; статусный автомат) ----------
 
 @Serializable
-data class MediaUploadResponse(
+data class InitiateCallRequest(@SerialName("callee_id") val calleeId: String, val video: Boolean = false)
+
+@Serializable
+data class CallDto(
     val id: String,
-    val content_type: String = "",
-    val size: Long = 0,
+    @SerialName("caller_id") val callerId: String = "",
+    @SerialName("callee_id") val calleeId: String = "",
+    val video: Boolean = false,
+    val status: String = "ringing",
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("ended_at") val endedAt: String? = null,
 )
 
-// ---------- Retrofit-интерфейс ----------
+@Serializable
+data class CallsResponse(val calls: List<CallDto> = emptyList())
+
+@Serializable
+data class CallStatusRequest(val status: String)
+
+// ---------- Retrofit ----------
 
 interface UmbraApi {
+    // Вход по номеру (OTP).
+    @POST("/v1/auth/request_code")
+    suspend fun requestCode(@Body body: RequestCodeRequest): RequestCodeResponse
+
+    @POST("/v1/auth/verify_code")
+    suspend fun verifyCode(@Body body: VerifyCodeRequest): VerifyCodeResponse
+
+    @GET("/v1/account")
+    suspend fun account(@Header("Authorization") auth: String): AccountView
+
+    @POST("/v1/account/profile")
+    suspend fun updateProfile(@Header("Authorization") auth: String, @Body body: UpdateProfileRequest): ProfileResult
+
+    @POST("/v1/account/avatar")
+    suspend fun setAvatar(@Header("Authorization") auth: String, @Body body: SetAvatarRequest): Unit
+
     @POST("/v1/auth/logout")
     suspend fun logout(@Header("Authorization") auth: String): Unit
 
-    @PUT("/v1/account/keys")
-    suspend fun updateKeys(@Header("Authorization") auth: String, @Body body: RegisterRequest): Unit
+    @POST("/v1/account/burn")
+    suspend fun burnAccount(@Header("Authorization") auth: String): Unit
 
-    @POST("/v1/register")
-    suspend fun register(@Body body: RegisterRequest): RegisterResponse
+    @GET("/v1/users/{id}")
+    suspend fun user(@Header("Authorization") auth: String, @Path("id") id: String): UserCard
 
-    @POST("/v1/auth/challenge")
-    suspend fun challenge(@Body body: ChallengeRequest): ChallengeResponse
+    @GET("/v1/by-username/{username}")
+    suspend fun userByUsername(@Header("Authorization") auth: String, @Path("username") username: String): UserCard
 
-    @POST("/v1/auth/verify")
-    suspend fun verify(@Body body: VerifyRequest): VerifyResponse
-
-    @GET("/v1/account")
-    suspend fun account(@Header("Authorization") auth: String): AccountResponse
-
-    @GET("/v1/users/{username}/prekeys")
-    suspend fun prekeys(@Path("username") username: String): PreKeyBundle
-
+    // Сообщения.
     @POST("/v1/messages")
     suspend fun sendMessage(@Header("Authorization") auth: String, @Body body: SendMessageRequest): MessageDto
 
@@ -191,45 +237,33 @@ interface UmbraApi {
     suspend fun messages(@Header("Authorization") auth: String, @Query("since") since: String? = null,
         @Query("after_id") afterId: String? = null, @Query("limit") limit: Int = 200): MessagesResponse
 
-    @GET("/v1/chats")
-    suspend fun chats(@Header("Authorization") auth: String): ChatsResponse
-
+    // Чаты и группы.
     @POST("/v1/groups")
     suspend fun createGroup(@Header("Authorization") auth: String, @Body body: CreateChatRequest): ChatDto
 
-    @POST("/v1/channels")
-    suspend fun createChannel(@Header("Authorization") auth: String, @Body body: CreateChatRequest): ChatDto
+    @GET("/v1/chats")
+    suspend fun chats(@Header("Authorization") auth: String): ChatsResponse
 
     @POST("/v1/chats/{id}/members")
-    suspend fun addMember(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: AddMemberRequest): Unit
+    suspend fun addMember(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: AddMemberRequest): MemberDto
+
+    @GET("/v1/chats/{id}/members")
+    suspend fun chatMembers(@Header("Authorization") auth: String, @Path("id") id: String): MembersResponse
 
     @POST("/v1/chats/{id}/messages")
     suspend fun sendChatMessage(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: SendChatMessageRequest): MessageDto
 
-    @POST("/v1/calls")
-    suspend fun initiateCall(@Header("Authorization") auth: String, @Body body: InitiateCallRequest): CallDto
-
-    @POST("/v1/calls/{id}/status")
-    suspend fun updateCallStatus(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: CallStatusRequest): Unit
-
+    // Контакты (приватный поиск по хэшам).
     @POST("/v1/contacts")
     suspend fun addContact(@Header("Authorization") auth: String, @Body body: ContactRequest): Unit
 
     @GET("/v1/contacts")
     suspend fun contacts(@Header("Authorization") auth: String): ContactsResponse
 
-    /** Приватный поиск контактов: какие номера из телефонной книги уже в Umbra. */
     @POST("/v1/contacts/discover")
     suspend fun discoverContacts(@Header("Authorization") auth: String, @Body body: DiscoverRequest): DiscoverResponse
 
-    @POST("/v1/account/burn")
-    suspend fun burnAccount(@Header("Authorization") auth: String): Unit
-
-    /**
-     * Загружает зашифрованный медиа-блоб (multipart: file + content_type).
-     * Клиент отправляет generic content_type «application/octet-stream» —
-     * настоящий MIME остаётся внутри E2E-конверта сообщения.
-     */
+    // Медиа (аватар, фото/файлы; файл хранится как есть — модель T1).
     @Multipart
     @POST("/v1/media")
     suspend fun uploadMedia(
@@ -238,27 +272,22 @@ interface UmbraApi {
         @Part("content_type") contentType: RequestBody,
     ): Response<MediaUploadResponse>
 
-    /** Скачивает сырой ciphertext медиа по id (расшифровка — на клиенте). */
     @Streaming
     @GET("/v1/media/{id}")
-    suspend fun downloadMedia(
-        @Header("Authorization") auth: String,
-        @Path("id") id: String,
-    ): Response<ResponseBody>
+    suspend fun downloadMedia(@Header("Authorization") auth: String, @Path("id") id: String): Response<ResponseBody>
+
+    // Звонки (статусный автомат).
+    @POST("/v1/calls")
+    suspend fun initiateCall(@Header("Authorization") auth: String, @Body body: InitiateCallRequest): CallDto
+
+    @POST("/v1/calls/{id}/status")
+    suspend fun updateCallStatus(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: CallStatusRequest): CallDto
+
+    @GET("/v1/calls")
+    suspend fun calls(@Header("Authorization") auth: String): CallsResponse
 }
 
-@Serializable
-data class CallDto(
-    val id: String,
-    val caller_id: String,
-    val callee_id: String,
-    val video: Boolean,
-    val status: String,
-    val created_at: String,
-    val ended_at: String? = null,
-)
-
-// ---------- фабрика Retrofit ----------
+// ---------- фабрика ----------
 
 private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -268,7 +297,6 @@ fun createUmbraApi(baseUrl: String): UmbraApi {
     }
     val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        // Медиа: ciphertext до 50 MiB может идти долго по мобильной сети.
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(300, TimeUnit.SECONDS)
         .addInterceptor(logging)
