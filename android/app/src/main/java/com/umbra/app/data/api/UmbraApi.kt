@@ -3,18 +3,26 @@ package com.umbra.app.data.api
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody
+import okhttp3.ResponseBody
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.Multipart
 import retrofit2.http.POST
+import retrofit2.http.PUT
+import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
-import retrofit2.http.PUT
+import retrofit2.http.Streaming
 import com.umbra.app.BuildConfig
+import java.util.concurrent.TimeUnit
 
 // ---------- DTO (зеркало контракта сервера, см. docs/api.md) ----------
 
@@ -124,6 +132,13 @@ data class ContactRequest(val contact_id: String)
 @Serializable
 data class ContactsResponse(val contacts: List<String>)
 
+@Serializable
+data class MediaUploadResponse(
+    val id: String,
+    val content_type: String = "",
+    val size: Long = 0,
+)
+
 // ---------- Retrofit-интерфейс ----------
 
 interface UmbraApi {
@@ -184,6 +199,27 @@ interface UmbraApi {
 
     @POST("/v1/account/burn")
     suspend fun burnAccount(@Header("Authorization") auth: String): Unit
+
+    /**
+     * Загружает зашифрованный медиа-блоб (multipart: file + content_type).
+     * Клиент отправляет generic content_type «application/octet-stream» —
+     * настоящий MIME остаётся внутри E2E-конверта сообщения.
+     */
+    @Multipart
+    @POST("/v1/media")
+    suspend fun uploadMedia(
+        @Header("Authorization") auth: String,
+        @Part file: MultipartBody.Part,
+        @Part("content_type") contentType: RequestBody,
+    ): Response<MediaUploadResponse>
+
+    /** Скачивает сырой ciphertext медиа по id (расшифровка — на клиенте). */
+    @Streaming
+    @GET("/v1/media/{id}")
+    suspend fun downloadMedia(
+        @Header("Authorization") auth: String,
+        @Path("id") id: String,
+    ): Response<ResponseBody>
 }
 
 @Serializable
@@ -206,6 +242,10 @@ fun createUmbraApi(baseUrl: String): UmbraApi {
         level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
     }
     val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        // Медиа: ciphertext до 50 MiB может идти долго по мобильной сети.
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(300, TimeUnit.SECONDS)
         .addInterceptor(logging)
         .build()
     return Retrofit.Builder()

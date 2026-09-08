@@ -18,6 +18,9 @@ import org.signal.libsignal.protocol.state.SignedPreKeyRecord
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /** Все операции Signal и запись результата выполняются внутри одной Room-транзакции. */
 class CryptoManager(
@@ -148,6 +151,31 @@ class CryptoManager(
     fun openHistory(owner: String, id: String, value: String) =
         String(vault.open("history:" + owner + ":" + id, value), Charsets.UTF_8)
 
+    // ---------- шифрование медиа (AES-256-GCM на файл) ----------
+    //
+    // Каждый файл шифруется одноразовым ключом; ключ и nonce вкладываются
+    // в E2E-конверт сообщения (Signal-сессия), на сервер уходит только ciphertext.
+
+    /** Новый AES-256 ключ файла (32 байта, SecureRandom). */
+    fun newFileKey(): ByteArray = ByteArray(FILE_KEY_BYTES).also { random.nextBytes(it) }
+
+    /** Новый GCM-nonce (12 байт); НИКОГДА не переиспользовать с тем же ключом. */
+    fun newFileNonce(): ByteArray = ByteArray(GCM_NONCE_BYTES).also { random.nextBytes(it) }
+
+    /** Шифрует байты файла: ciphertext = plaintext || GCM-тег (16 байт). */
+    fun encryptFileBytes(key: ByteArray, nonce: ByteArray, plaintext: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(AES_GCM)
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+        return cipher.doFinal(plaintext)
+    }
+
+    /** Расшифровывает байты файла; при подмене ciphertext бросает AEADBadTagException. */
+    fun decryptFileBytes(key: ByteArray, nonce: ByteArray, ciphertext: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance(AES_GCM)
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+        return cipher.doFinal(ciphertext)
+    }
+
     private fun nextId(used: (Int) -> Boolean): Int {
         var id: Int
         do { id = random.nextInt(0xffffff) + 1 } while (used(id))
@@ -155,4 +183,11 @@ class CryptoManager(
     }
     private fun b64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.NO_WRAP)
     private fun unb64(value: String) = Base64.decode(value, Base64.NO_WRAP)
+
+    companion object {
+        private const val AES_GCM = "AES/GCM/NoPadding"
+        private const val GCM_TAG_BITS = 128
+        private const val FILE_KEY_BYTES = 32
+        private const val GCM_NONCE_BYTES = 12
+    }
 }

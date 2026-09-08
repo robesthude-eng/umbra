@@ -80,7 +80,7 @@ class RepositoryRecoveryTest {
             server.start()
             val url = server.url("/").toString()
             fun repository(profile: CryptoPersistenceTest.Profile) =
-                ChatRepository(createUmbraApi(url), profile.db, profile.crypto, WebSocketClient(url))
+                ChatRepository(context, createUmbraApi(url), profile.db, profile.crypto, WebSocketClient(url))
             var sender = repository(alice)
             var receiver: ChatRepository? = null
             try {

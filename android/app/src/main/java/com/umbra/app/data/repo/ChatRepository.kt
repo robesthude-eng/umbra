@@ -1,17 +1,30 @@
 package com.umbra.app.data.repo
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
+import android.webkit.MimeTypeMap
 import androidx.room.withTransaction
 import com.umbra.app.crypto.CryptoManager
 import com.umbra.app.data.api.*
 import com.umbra.app.data.db.*
+import com.umbra.app.data.media.MediaInfo
+import com.umbra.app.data.media.MessagePayload
 import com.umbra.app.data.ws.WebSocketClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.decodeFromString
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.HttpException
+import java.io.File
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
@@ -20,10 +33,13 @@ data class UiMessage(
     val id: String, val senderId: String, val text: String, val createdAt: String,
     val expiresAt: String?, val outgoing: Boolean, val deliveryState: String = "sent",
     val error: String? = null,
+    /** Метаданные вложения из E2E-конверта (ключ, nonce, имя — сервер их не видит). */
+    val media: MediaInfo? = null,
 )
 
 /** Room хранит ciphertext транспорта и отдельно локальную AEAD-копию истории. */
 class ChatRepository(
+    private val context: Context,
     private val api: UmbraApi,
     private val db: AppDatabase,
     private val crypto: CryptoManager,
@@ -120,6 +136,8 @@ class ChatRepository(
             catch (e: CancellationException) { if (e !is TimeoutCancellationException) throw e }
             catch (_: Exception) { }
         }
+        // Расшифрованный кэш медиа не переживает выход.
+        runCatching { File(context.cacheDir, MEDIA_CACHE_DIR).deleteRecursively() }
     }
 
     fun connectRealtime() {
@@ -201,38 +219,138 @@ class ChatRepository(
     fun messagesFor(chatId: String): Flow<List<UiMessage>> =
         db.messageDao().messagesFor(crypto.userId().orEmpty(), chatId).map { list ->
             list.map { e ->
-                val text = e.localBody?.let {
-                    try { crypto.openHistory(e.ownerId, e.id, it) }
-                    catch (_: Exception) { "[локальная запись недоступна]" }
-                } ?: if (e.senderId == e.ownerId) "[старая локальная копия отсутствует]" else "[не удалось расшифровать]"
-                UiMessage(e.id, e.senderId, text, e.createdAt, e.expiresAt,
-                    e.senderId == e.ownerId, e.deliveryState, e.error)
+                val outgoing = e.senderId == e.ownerId
+                // В localBody лежит AEAD-копия открытого текста: для медиа это JSON-конверт
+                // MessagePayload, для текстовых — сырая строка (обратная совместимость).
+                val plain = e.localBody?.let {
+                    runCatching { crypto.openHistory(e.ownerId, e.id, it) }.getOrNull()
+                }
+                val payload = plain?.let(::parsePayload)
+                val fallback = if (outgoing) "[старая локальная копия отсутствует]" else "[не удалось расшифровать]"
+                UiMessage(
+                    id = e.id,
+                    senderId = e.senderId,
+                    text = payload?.text ?: fallback,
+                    createdAt = e.createdAt,
+                    expiresAt = e.expiresAt,
+                    outgoing = outgoing,
+                    deliveryState = e.deliveryState,
+                    error = e.error,
+                    media = payload?.media,
+                )
             }
         }.flowOn(Dispatchers.IO)
 
+    /** Отправляет текстовое сообщение: шифруется ровно один раз, уходит через outbox. */
+    suspend fun sendMessage(recipientId: String, plaintext: String, expiresIn: Long? = null) =
+        enqueueMessage(recipientId, plaintext, expiresIn)
+
     /** Encrypt ровно один раз; outbox и новое состояние ratchet коммитятся вместе. */
-    suspend fun sendMessage(recipientId: String, plaintext: String, expiresIn: Long? = null) = withContext(Dispatchers.IO) {
-        require(plaintext.isNotBlank() && plaintext.toByteArray(Charsets.UTF_8).size <= 64 * 1024) { "Сообщение пустое или слишком длинное" }
-        val ttl = expiresIn ?: 0
-        require(ttl in 0..2_592_000) { "Некорректный срок сообщения" }
-        val owner = requireNotNull(crypto.userId())
-        check(logged.value) { "Войдите в аккаунт" }
-        db.withTransaction {
-            val chat = db.chatDao().get(recipientId) ?: error("Сначала создайте диалог")
-            check(chat.type == "dm") { "Групповое E2E на Android ещё не реализовано. Отправка отключена." }
-            val id = UUID.randomUUID().toString()
-            val now = Instant.now()
-            val expires = if (ttl > 0) now.plusSeconds(ttl) else null
-            val ciphertext = crypto.encrypt(recipientId, plaintext)
-            db.messageDao().upsert(MessageEntity(
-                id = "local:" + id, senderId = owner, recipientId = recipientId, chatId = recipientId,
-                ciphertext = ciphertext, createdAt = now.toString(), expiresAt = expires?.toString(),
-                ownerId = owner, localBody = crypto.sealHistory(owner, "local:" + id, plaintext),
-                createdAtMillis = now.toEpochMilli(), expiresAtMillis = expires?.toEpochMilli(),
-                deliveryState = "pending", clientId = id, expiresInSeconds = ttl,
-            ))
+    private suspend fun enqueueMessage(recipientId: String, plaintext: String, expiresIn: Long? = null) =
+        withContext(Dispatchers.IO) {
+            require(plaintext.isNotBlank() && plaintext.toByteArray(Charsets.UTF_8).size <= 64 * 1024) { "Сообщение пустое или слишком длинное" }
+            val ttl = expiresIn ?: 0
+            require(ttl in 0..2_592_000) { "Некорректный срок сообщения" }
+            val owner = requireNotNull(crypto.userId())
+            check(logged.value) { "Войдите в аккаунт" }
+            db.withTransaction {
+                val chat = db.chatDao().get(recipientId) ?: error("Сначала создайте диалог")
+                check(chat.type == "dm") { "Групповое E2E на Android ещё не реализовано. Отправка отключена." }
+                val id = UUID.randomUUID().toString()
+                val now = Instant.now()
+                val expires = if (ttl > 0) now.plusSeconds(ttl) else null
+                val ciphertext = crypto.encrypt(recipientId, plaintext)
+                db.messageDao().upsert(MessageEntity(
+                    id = "local:" + id, senderId = owner, recipientId = recipientId, chatId = recipientId,
+                    ciphertext = ciphertext, createdAt = now.toString(), expiresAt = expires?.toString(),
+                    ownerId = owner, localBody = crypto.sealHistory(owner, "local:" + id, plaintext),
+                    createdAtMillis = now.toEpochMilli(), expiresAtMillis = expires?.toEpochMilli(),
+                    deliveryState = "pending", clientId = id, expiresInSeconds = ttl,
+                ))
+            }
+            scope.launch { flushOutbox() }
         }
-        scope.launch { flushOutbox() }
+
+    /**
+     * Отправляет файл/фото как E2E-медиа: читает Uri (SAF/Photo Picker), шифрует файл
+     * AES-256-GCM, загружает ciphertext на сервер и ставит сообщение в outbox с E2E-конвертом
+     * (ключ, nonce, настоящее имя и MIME — внутри, сервер их не видит).
+     */
+    suspend fun sendMedia(chatId: String, uri: Uri, caption: String = "", expiresIn: Long? = null) =
+        withContext(Dispatchers.IO) {
+            check(logged.value) { "Войдите в аккаунт" }
+            val resolver = context.contentResolver
+            val displayName: String? = resolver.query(uri, null, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) c.getString(idx) else null
+                } else null
+            }
+            val mime = resolver.getType(uri) ?: "application/octet-stream"
+            val plain = resolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: throw IOException("не удалось прочитать файл")
+            if (plain.isEmpty()) throw IOException("пустой файл")
+            if (plain.size.toLong() > MAX_MEDIA_BYTES) {
+                throw IOException("файл больше ${MAX_MEDIA_BYTES / MIB} MiB (лимит сервера)")
+            }
+
+            val key = crypto.newFileKey()
+            val nonce = crypto.newFileNonce()
+            val ciphertext = crypto.encryptFileBytes(key, nonce, plain)
+
+            // Серверу всё непрозрачно: generic-имя и generic-MIME, без утечки метаданных.
+            val part = MultipartBody.Part.createFormData(
+                "file", "blob.bin",
+                ciphertext.toRequestBody("application/octet-stream".toMediaType()),
+            )
+            val contentTypeField = "application/octet-stream".toRequestBody("text/plain".toMediaType())
+            val upload = api.uploadMedia(auth(), part, contentTypeField)
+            if (!upload.isSuccessful) throw IOException("загрузка медиа: HTTP ${upload.code()}")
+            val mediaId = upload.body()?.id ?: throw IOException("загрузка медиа: пустой ответ")
+
+            val payload = MessagePayload(
+                text = caption,
+                media = MediaInfo(
+                    id = mediaId,
+                    kind = if (mime.startsWith("image/")) MediaInfo.KIND_PHOTO else MediaInfo.KIND_FILE,
+                    contentType = mime,
+                    size = plain.size.toLong(),
+                    name = displayName,
+                    key = b64(key),
+                    nonce = b64(nonce),
+                ),
+            )
+            val envelope = json.encodeToString(payload)
+            enqueueMessage(chatId, envelope, expiresIn)
+        }
+
+    /**
+     * Скачивает ciphertext медиа с сервера и расшифровывает в приватный кэш
+     * приложения (cacheDir/media). Повторный вызов для того же медиа отдаёт
+     * готовый файл без сети. Кэш удаляется при logout().
+     */
+    suspend fun fetchMediaFile(info: MediaInfo): File = withContext(Dispatchers.IO) {
+        val dir = File(context.cacheDir, MEDIA_CACHE_DIR).apply { mkdirs() }
+        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(info.contentType) ?: "bin"
+        val out = File(dir, "${info.id}.$ext")
+        if (out.isFile && out.length() == info.size) return@withContext out
+
+        val response = api.downloadMedia(auth(), info.id)
+        if (!response.isSuccessful) throw IOException("скачивание медиа: HTTP ${response.code()}")
+        val body = response.body() ?: throw IOException("скачивание медиа: пустой ответ")
+        val ciphertext = body.use { it.bytes() }
+        val plain = crypto.decryptFileBytes(fromB64(info.key), fromB64(info.nonce), ciphertext)
+        if (plain.size.toLong() != info.size) {
+            throw IOException("размер расшифрованного файла не совпадает с конвертом")
+        }
+        // Атомарная публикация: читатель не увидит частичный файл.
+        val tmp = File(dir, out.name + ".tmp")
+        tmp.writeBytes(plain)
+        if (!tmp.renameTo(out)) {
+            out.writeBytes(plain)
+            tmp.delete()
+        }
+        out
     }
 
     suspend fun retry(id: String) = withContext(Dispatchers.IO) {
@@ -375,5 +493,28 @@ class ChatRepository(
                 expiresAtMillis = old.expiresAt?.let { Instant.parse(it).toEpochMilli() }))
             if (db.chatDao().get(chat) == null) db.chatDao().upsert(ChatEntity(chat, if (dm) "dm" else "group", chat.take(12)))
         }
+    }
+
+    /**
+     * Разбирает открытый текст сообщения: JSON-конверт [MessagePayload] считается
+     * конвертом, только если содержит вложение; иначе (включая валидный JSON без
+     * поля media) сообщение показывается как обычный текст (обратная совместимость).
+     */
+    private fun parsePayload(plain: String): MessagePayload {
+        if (!plain.startsWith("{")) return MessagePayload(text = plain)
+        return runCatching { json.decodeFromString<MessagePayload>(plain) }
+            .getOrNull()?.takeIf { it.media != null } ?: MessagePayload(text = plain)
+    }
+
+    private fun b64(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    private fun fromB64(s: String): ByteArray = Base64.decode(s, Base64.NO_WRAP)
+
+    companion object {
+        /** Приватный кэш расшифрованных медиа внутри cacheDir приложения. */
+        const val MEDIA_CACHE_DIR = "media"
+
+        /** Лимит сервера MAX_MEDIA_BYTES по умолчанию (50 MiB) для открытого файла. */
+        const val MAX_MEDIA_BYTES = 50L * 1024 * 1024
+        private const val MIB = 1024 * 1024
     }
 }
