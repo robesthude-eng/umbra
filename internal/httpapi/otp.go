@@ -165,6 +165,7 @@ type accountView struct {
 	Phone       string `json:"phone"`
 	DisplayName string `json:"display_name"`
 	LastName    string `json:"last_name,omitempty"`
+	AvatarMediaID string `json:"avatar_media_id,omitempty"`
 }
 
 // handleVerifyCode — POST /v1/auth/verify_code. При верном коде: если аккаунт
@@ -233,6 +234,7 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	avatar, _ := s.store.GetAvatar(r.Context(), u.ID)
 	writeJSON(w, http.StatusOK, verifyCodeResponse{
 		Token:           token,
 		ExpiresAt:       expires.UTC().Format(time.RFC3339),
@@ -244,6 +246,7 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 			Phone:       u.Phone,
 			DisplayName: u.DisplayName,
 			LastName:    u.LastName,
+			AvatarMediaID: avatar,
 		},
 	})
 }
@@ -280,7 +283,7 @@ func (s *Server) createCloudUser(ctx context.Context, phone string) (*model.User
 type updateProfileRequest struct {
 	Username string `json:"username"`
 	Name     string `json:"name"`
-	LastName string `json:"last_name"`
+	LastName *string `json:"last_name"`
 }
 
 // handleUpdateProfile — POST /v1/account/profile. Завершение регистрации:
@@ -294,7 +297,6 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(req.Username)
 	name := strings.TrimSpace(req.Name)
-	lastName := strings.TrimSpace(req.LastName)
 
 	cur, err := s.store.GetUserByID(r.Context(), userID)
 	if err != nil {
@@ -304,6 +306,10 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "account temporarily unavailable")
 		}
 		return
+	}
+	lastName := cur.LastName
+	if req.LastName != nil {
+		lastName = strings.TrimSpace(*req.LastName)
 	}
 	if name == "" {
 		if cur.DisplayName == "" {
@@ -315,9 +321,7 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid name")
 		return
 	}
-	if lastName == "" {
-		lastName = cur.LastName // необязательная фамилия сохраняется
-	} else if len([]rune(lastName)) > 64 {
+	if len([]rune(lastName)) > 64 {
 		writeError(w, http.StatusBadRequest, "invalid last_name")
 		return
 	}

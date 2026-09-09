@@ -59,7 +59,13 @@ object MessageCodec {
 
     /** Показывает сообщение: текст конверта (медиа-подпись). */
     fun plainText(ciphertextB64: String): String {
-        val c = decode(ciphertextB64) ?: return ciphertextB64.take(300)
-        return c.text
+        val c = decode(ciphertextB64) ?: return "Сообщение из другой версии приложения: содержимое недоступно"
+        if (c.v != 1) return "Обновите приложение, чтобы прочитать это сообщение"
+        if (c.kind == MessageContent.KIND_MEDIA) {
+            return listOf(c.text, c.media?.name?.let { "Вложение: $it" } ?: "Вложение")
+                .filter { it.isNotBlank() }.joinToString("\n") + "\nПросмотр вложений в этой версии пока недоступен."
+        }
+        if (c.kind != MessageContent.KIND_TEXT) return "Этот тип сообщения пока не поддерживается"
+        return c.text.ifBlank { "Пустое сообщение" }
     }
 }

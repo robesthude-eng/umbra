@@ -170,11 +170,13 @@ func (p *PostgresStore) PurgeExpired(ctx context.Context, now time.Time) error {
 }
 
 func (p *PostgresStore) ListMessagesPage(ctx context.Context, userID string, since time.Time, afterID string, limit int) ([]*model.Message, error) {
-	rows, err := p.pool.Query(ctx, `SELECT id,sender_id,recipient_id,chat_id,ciphertext,created_at,expires_at
-	 FROM messages WHERE (created_at > $2 OR ($3 <> '' AND created_at=$2 AND id > $3))
-	 AND (expires_at IS NULL OR expires_at > now())
-	 AND (recipient_id=$1 OR sender_id=$1 OR chat_id IN (SELECT chat_id FROM chat_members WHERE user_id=$1))
-	 ORDER BY created_at,id LIMIT $4`, userID, since, afterID, limit)
+	rows, err := p.pool.Query(ctx, `SELECT m.id,m.sender_id,m.recipient_id,m.chat_id,m.ciphertext,m.created_at,m.expires_at,COALESCE(receipt.client_id,'')
+     FROM messages m LEFT JOIN message_receipts receipt
+       ON receipt.sender_id=m.sender_id AND receipt.message_id=m.id
+     WHERE (m.created_at > $2 OR ($3 <> '' AND m.created_at=$2 AND m.id > $3))
+     AND (m.expires_at IS NULL OR m.expires_at > now())
+     AND (m.recipient_id=$1 OR m.sender_id=$1 OR m.chat_id IN (SELECT chat_id FROM chat_members WHERE user_id=$1))
+     ORDER BY m.created_at,m.id LIMIT $4`, userID, since, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +185,7 @@ func (p *PostgresStore) ListMessagesPage(ctx context.Context, userID string, sin
 	for rows.Next() {
 		var m model.Message
 		var recipient, chat *string
-		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chat, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chat, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt, &m.ClientID); err != nil {
 			return nil, err
 		}
 		if recipient != nil {

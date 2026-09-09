@@ -112,7 +112,7 @@ data class MessagesResponse(val messages: List<MessageDto> = emptyList())
 data class SendMessageRequest(
     @SerialName("recipient_id") val recipientId: String,
     val ciphertext: String,
-    @SerialName("client_id") val clientId: String? = null,
+    @SerialName("client_message_id") val clientId: String? = null,
     @SerialName("expires_in") val expiresIn: Long? = null,
 )
 
@@ -149,7 +149,7 @@ data class AddMemberRequest(@SerialName("user_id") val userId: String)
 @Serializable
 data class SendChatMessageRequest(
     val ciphertext: String,
-    @SerialName("client_id") val clientId: String? = null,
+    @SerialName("client_message_id") val clientId: String? = null,
     @SerialName("expires_in") val expiresIn: Long? = null,
 )
 
@@ -281,7 +281,7 @@ interface UmbraApi {
     suspend fun initiateCall(@Header("Authorization") auth: String, @Body body: InitiateCallRequest): CallDto
 
     @POST("/v1/calls/{id}/status")
-    suspend fun updateCallStatus(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: CallStatusRequest): CallDto
+    suspend fun updateCallStatus(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: CallStatusRequest): CallStatusRequest
 
     @GET("/v1/calls")
     suspend fun calls(@Header("Authorization") auth: String): CallsResponse
@@ -296,6 +296,7 @@ fun createUmbraApi(baseUrl: String): UmbraApi {
         level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
     }
     val client = OkHttpClient.Builder()
+        .callTimeout(120, TimeUnit.SECONDS)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(300, TimeUnit.SECONDS)

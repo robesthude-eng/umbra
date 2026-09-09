@@ -75,6 +75,9 @@ func TestSendRetryAndValidation(t *testing.T) {
 	if code != 201 || retry["id"] != first["id"] || retry["created_at"] != first["created_at"] || retry["expires_at"] != first["expires_at"] { t.Fatalf("retry differs: %v %v", first, retry) }
 	_, inbox := doReq(t, h, "GET", "/v1/messages", nil, b)
 	if len(inbox["messages"].([]any)) != 1 { t.Fatal("duplicate message persisted") }
+	if got := inbox["messages"].([]any)[0].(map[string]any)["client_message_id"]; got != "client-1" {
+		t.Fatalf("REST history must retain the acknowledgement id: %v", got)
+	}
 	req["ciphertext"] = b64e([]byte("different"))
 	if code, _ := doReq(t, h, "POST", "/v1/messages", req, a); code != 409 { t.Fatal("client id conflict not rejected") }
 	for _, ttl := range []int64{-1, 2_592_001, 1<<62} {

@@ -34,11 +34,11 @@ object UmbraColors {
 }
 
 val UmbraLightColors = lightColorScheme(
-    primary = Color(0xFF1E96E8),
+    primary = Color(0xFF006496),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFC9E8FF),
     onPrimaryContainer = UmbraColors.Ink,
-    secondary = UmbraColors.Mint,
+    secondary = Color(0xFF006B58),
     onSecondary = Color(0xFF00382E),
     background = UmbraColors.Day,
     onBackground = UmbraColors.Ink,
@@ -47,7 +47,7 @@ val UmbraLightColors = lightColorScheme(
     surfaceVariant = Color(0xFFE2EFFA),
     onSurfaceVariant = Color(0xFF4A6B84),
     outline = Color(0xFFB7D0E2),
-    error = UmbraColors.Danger,
+    error = Color(0xFFB3261E),
     onError = Color.White,
 )
 

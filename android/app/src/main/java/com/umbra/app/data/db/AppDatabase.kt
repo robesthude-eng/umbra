@@ -49,7 +49,7 @@ data class ContactEntity(
 @Entity(tableName = "identity_keys")
 data class IdentityKeyEntity(@PrimaryKey val id: String, val identityKey: String, val verified: Boolean)
 
-/** Все value зашифрованы LocalVault; ключи записи включены в AEAD associated data. */
+/** Legacy table name retained for migration compatibility. Current user-card values are plain JSON. */
 @Entity(tableName = "crypto_records", primaryKeys = ["owner", "kind", "recordKey"])
 data class CryptoRecord(val owner: String, val kind: String, val recordKey: String, val value: String)
 
@@ -88,8 +88,11 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND localBody IS NULL AND deliveryState = 'sent' ORDER BY createdAtMillis, id LIMIT 100")
     suspend fun unreadCiphertexts(owner: String): List<MessageEntity>
 
-    @Query("SELECT MAX(createdAtMillis) FROM messages WHERE ownerId = :owner")
+    @Query("SELECT MAX(createdAtMillis) FROM messages WHERE ownerId = :owner AND deliveryState = 'sent'")
     suspend fun maxCreatedAtMillis(owner: String): Long?
+
+    @Query("SELECT * FROM messages WHERE ownerId = :owner AND senderId = :owner AND clientId = :clientId LIMIT 1")
+    suspend fun byClientId(owner: String, clientId: String): MessageEntity?
 
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun delete(id: String)
@@ -114,6 +117,9 @@ interface ChatDao {
 
     @Query("SELECT * FROM chats ORDER BY title ASC")
     fun all(): Flow<List<ChatEntity>>
+
+    @Query("SELECT * FROM chats")
+    suspend fun snapshot(): List<ChatEntity>
 }
 
 @Dao

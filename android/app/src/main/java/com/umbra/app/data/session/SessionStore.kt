@@ -10,13 +10,13 @@ import androidx.security.crypto.MasterKey
  * Signal-ключей больше нет — аккаунт подтверждается кодом из Telegram, история
  * и профиль подтягиваются из облака при входе с любого телефона.
  */
-class SessionStore(context: Context) {
+class SessionStore(context: Context, preferenceName: String = "umbra_session") {
     private val prefs: SharedPreferences = run {
         val key = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
         EncryptedSharedPreferences.create(
-            context, "umbra_session", key,
+            context, preferenceName, key,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
@@ -63,6 +63,11 @@ class SessionStore(context: Context) {
 
     fun clear() {
         prefs.edit().clear().apply()
+    }
+
+    /** Keep the cache owner so reauthentication does not discard the outbox. */
+    fun clearToken() {
+        prefs.edit().remove(KEY_TOKEN).apply()
     }
 
     companion object {

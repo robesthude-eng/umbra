@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -74,5 +75,46 @@ func TestGetUserByUsername(t *testing.T) {
 	}
 	if code, m := doReq(t, h, http.MethodGet, "/v1/by-username/nobody", nil, tok); code != http.StatusNotFound {
 		t.Fatalf("неизвестный username: %d %v", code, m)
+	}
+}
+
+func TestProfileRoundTripClearsLastNameAndRetainsAvatar(t *testing.T) {
+	sender := &fakeOTPSender{}
+	h, st := newTestServerWith(t, sender)
+	const phone = "+79992223344"
+	login := func() (string, map[string]any) {
+		t.Helper()
+		if code, body := doReq(t, h, "POST", "/v1/auth/request_code", map[string]any{"phone": phone}, ""); code != 200 {
+			t.Fatalf("request code: %d %v", code, body)
+		}
+		code, body := doReq(t, h, "POST", "/v1/auth/verify_code", map[string]any{"phone": phone, "code": sender.code(phone)}, "")
+		if code != 200 {
+			t.Fatalf("login: %d %v", code, body)
+		}
+		return body["token"].(string), body["account"].(map[string]any)
+	}
+	token, account := login()
+	if code, body := doReq(t, h, "POST", "/v1/account/profile", map[string]any{"name": "Иван", "username": "ivan_name", "last_name": "Петров"}, token); code != 200 {
+		t.Fatalf("profile: %d %v", code, body)
+	}
+	if err := st.SetAvatar(context.Background(), account["id"].(string), "avatar-id"); err != nil {
+		t.Fatal(err)
+	}
+	// Older callers that omit last_name retain it; Android explicitly sends "" to remove it.
+	if code, body := doReq(t, h, "POST", "/v1/account/profile", map[string]any{"name": "Иван"}, token); code != 200 || body["last_name"] != "Петров" {
+		t.Fatalf("omitted surname changed: %d %v", code, body)
+	}
+	if code, body := doReq(t, h, "GET", "/v1/account", nil, token); code != 200 || body["last_name"] != "Петров" || body["avatar_media_id"] != "avatar-id" {
+		t.Fatalf("account omitted profile data: %d %v", code, body)
+	}
+	if code, body := doReq(t, h, "POST", "/v1/account/profile", map[string]any{"name": "Иван", "last_name": ""}, token); code != 200 || body["last_name"] != "" {
+		t.Fatalf("surname was not cleared: %d %v", code, body)
+	}
+	_, restored := login()
+	if restored["avatar_media_id"] != "avatar-id" {
+		t.Fatalf("login lost avatar: %v", restored)
+	}
+	if last, ok := restored["last_name"]; ok && last != "" {
+		t.Fatalf("login restored a removed surname: %v", restored)
 	}
 }

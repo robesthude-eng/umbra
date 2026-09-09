@@ -444,6 +444,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			Ciphertext:  b64e(m.Ciphertext),
 			CreatedAt:   m.CreatedAt.Format(time.RFC3339Nano),
 			ExpiresAt:   formatTime(m.ExpiresAt),
+			ClientID:    m.ClientID,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": out})

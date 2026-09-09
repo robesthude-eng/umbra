@@ -54,6 +54,10 @@ func reliabilityContract(t *testing.T, st Store) {
 		request := model.Message{ID: "original", ClientID: "request-1", SenderID: "id-owner", RecipientID: "id-peer",
 			Ciphertext: []byte("opaque"), CreatedAt: now, ExpiresAt: &expires, ExpiresIn: 60}
 		mustStore(t, st.SaveMessage(ctx, &request))
+		page, err := st.ListMessagesPage(ctx, "id-peer", now.Add(-time.Second), "", 200)
+		if err != nil || len(page) != 1 || page[0].ClientID != "request-1" {
+			t.Fatalf("history lost client acknowledgement: %v %v", page, err)
+		}
 		var wg sync.WaitGroup
 		for i := 0; i < 16; i++ {
 			wg.Add(1)

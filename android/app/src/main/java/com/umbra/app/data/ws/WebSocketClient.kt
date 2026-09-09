@@ -13,15 +13,15 @@ import kotlin.coroutines.resumeWithException
 
 /** Reconnect с backoff; токен передаётся в заголовке, не в URL. */
 class WebSocketClient(private val baseUrl: String) {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder().pingInterval(25, java.util.concurrent.TimeUnit.SECONDS).build()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val events = Channel<Event>(128)
     private var job: Job? = null
-    private var activeToken: String? = null
+    @Volatile private var activeToken: String? = null
     private val connectedState = MutableStateFlow(false)
     val connected = connectedState.asStateFlow()
     val eventFlow = events.receiveAsFlow()
-    data class Event(val type: String, val data: JsonObject)
+    data class Event(val type: String, val data: JsonObject, val token: String)
 
     @Synchronized
     fun connect(token: String) {
@@ -36,7 +36,7 @@ class WebSocketClient(private val baseUrl: String) {
                     waitMs = 1000
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { /* REST восстановит пропущенное. */ }
-                connectedState.value = false
+                if (activeToken == token) connectedState.value = false
                 delay(waitMs)
                 waitMs = (waitMs * 2).coerceAtMost(30_000)
             }
@@ -65,15 +65,15 @@ class WebSocketClient(private val baseUrl: String) {
             .header("Authorization", "Bearer " + token).build()
         val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (!continuation.isActive) { webSocket.cancel(); return }
+                if (!continuation.isActive || activeToken != token) { webSocket.cancel(); return }
                 connectedState.value = true
-                if (events.trySend(Event("connected", JsonObject(emptyMap()))).isFailure) webSocket.cancel()
+                if (events.trySend(Event("connected", JsonObject(emptyMap()), token)).isFailure) webSocket.cancel()
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (!continuation.isActive) return
+                if (!continuation.isActive || activeToken != token) return
                 try {
                     val obj = Json.parseToJsonElement(text).jsonObject
-                    val event = Event(obj.getValue("type").jsonPrimitive.content, obj.getValue("data").jsonObject)
+                    val event = Event(obj.getValue("type").jsonPrimitive.content, obj.getValue("data").jsonObject, token)
                     if (events.trySend(event).isFailure) webSocket.cancel()
                 } catch (_: Exception) { webSocket.cancel() }
             }

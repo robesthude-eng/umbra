@@ -2,7 +2,10 @@ package com.umbra.app.data.repo
 
 import android.content.Context
 import android.net.Uri
+import android.util.LruCache
 import androidx.room.withTransaction
+import com.umbra.app.data.AvatarImages
+import com.umbra.app.data.InputRules
 import com.umbra.app.data.api.*
 import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.db.ChatEntity
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -24,11 +28,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.HttpException
-import java.io.File
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /** Фаза приложения относительно сессии. */
 enum class SessionPhase { LOGGED_OUT, NEEDS_PROFILE, READY }
@@ -51,6 +53,8 @@ data class UiMessage(
     val outgoing: Boolean,
     val failed: Boolean = false,
     val pending: Boolean = false,
+    val error: String? = null,
+    val stableId: String = id,
 )
 
 /** Запись о звонке (история/активный). */
@@ -72,11 +76,7 @@ data class ActiveCall(
     val ringing: Boolean,
 )
 
-/**
- * Репозиторий T1 (v0.4): вход по номеру с кодом из Telegram, облачная история,
- * личные сообщения и группы, звонки (сигналинг). Без Signal: шифрования нет,
- * приватность — «доверяй серверу» (TLS).
- */
+/** Cloud messenger repository. Message envelopes are not end-to-end encrypted. */
 class ChatRepository(
     private val context: Context,
     private val api: UmbraApi,
@@ -86,468 +86,543 @@ class ChatRepository(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
+    private val authMutex = Mutex()
     private val syncMutex = Mutex()
     private val sendMutex = Mutex()
-    /** Кэш скачанных аватаров (медиа-id → байты), в памяти. */
-    private val avatarCache = ConcurrentHashMap<String, ByteArray>()
-    private val authMutex = Mutex()
+    private val profileMutex = Mutex()
+    private val callMutex = Mutex()
     private var pollJob: Job? = null
     private var eventJob: Job? = null
+    private var outboxJob: Job? = null
     private var lastFullSyncMillis = 0L
+    private val avatarCache = object : LruCache<String, ByteArray>(20 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
 
-    // ---- состояние сессии ----
-    private val _phase = MutableStateFlow(currentPhase())
-    val phase: StateFlow<SessionPhase> = _phase
+    private data class SessionKey(val owner: String, val token: String) {
+        val auth get() = "Bearer $token"
+    }
+    private fun key() = SessionKey(
+        requireNotNull(session.userId()) { "Войдите в аккаунт" },
+        requireNotNull(session.token()) { "Войдите в аккаунт" },
+    )
+    private fun isCurrent(key: SessionKey) = session.userId() == key.owner && session.token() == key.token
 
-    private val _connected = MutableStateFlow(false)
-    val connected: StateFlow<Boolean> = _connected
-
-    private val _syncProblem = MutableStateFlow<String?>(null)
-    val syncError: StateFlow<String?> = _syncProblem
-
-    /** Кэш карточек пользователей (имя/аватар), ключ — user id. */
-    private val _userCache = MutableStateFlow<Map<String, UserCard>>(emptyMap())
-    val userCache: StateFlow<Map<String, UserCard>> = _userCache
-
-    /** Текущий (входящий/исходящий) звонок для оверлея. */
-    private val _activeCall = MutableStateFlow<ActiveCall?>(null)
-    val activeCall: StateFlow<ActiveCall?> = _activeCall
-
-    // ---------------- сессия ----------------
-
-    private fun currentPhase(): SessionPhase = when {
+    private fun currentPhase() = when {
         !session.isLoggedIn() -> SessionPhase.LOGGED_OUT
         !session.profileComplete() -> SessionPhase.NEEDS_PROFILE
         else -> SessionPhase.READY
     }
+    private val _phase = MutableStateFlow(currentPhase())
+    val phase: StateFlow<SessionPhase> = _phase.asStateFlow()
+    val connected = ws.connected
+    private val _syncProblem = MutableStateFlow<String?>(null)
+    val syncError = _syncProblem.asStateFlow()
+    private val _syncing = MutableStateFlow(false)
+    val syncing = _syncing.asStateFlow()
+    private val _userCache = MutableStateFlow<Map<String, UserCard>>(emptyMap())
+    val userCache = _userCache.asStateFlow()
+    private val _activeCall = MutableStateFlow<ActiveCall?>(null)
+    val activeCall = _activeCall.asStateFlow()
+    private val _calls = MutableStateFlow<List<CallUi>>(emptyList())
+    val calls = _calls.asStateFlow()
+    private val _account = MutableStateFlow(accountInfo())
+    val account = _account.asStateFlow()
 
     fun me(): String? = session.userId()
-
-    fun accountInfo(): AccountView = AccountView(
-        id = session.userId().orEmpty(),
-        username = session.username().orEmpty(),
-        phone = session.phone().orEmpty(),
-        displayName = session.displayName().orEmpty(),
-        lastName = session.lastName().orEmpty(),
-        avatarMediaId = session.avatarMediaId().orEmpty(),
+    fun accountInfo() = AccountView(
+        id = session.userId().orEmpty(), username = session.username().orEmpty(),
+        phone = session.phone().orEmpty(), displayName = session.displayName().orEmpty(),
+        lastName = session.lastName().orEmpty(), avatarMediaId = session.avatarMediaId().orEmpty(),
     )
 
-    private fun auth() = "Bearer " + requireNotNull(session.token()) { "Войдите в аккаунт" }
+    /** Serialize local commits with sign-out/account switching; stale responses cannot leak into another account. */
+    private suspend fun <T> commit(key: SessionKey, block: suspend () -> T): T = authMutex.withLock {
+        if (!isCurrent(key)) throw CancellationException("Session changed")
+        block()
+    }
 
-    /** Шаг 1: запрос 6-значного кода на номер (код уходит владельцу в Telegram). */
+    private suspend fun <T> request(key: SessionKey, block: suspend (String) -> T): T {
+        if (!isCurrent(key)) throw CancellationException("Session changed")
+        try { return block(key.auth) }
+        catch (e: HttpException) {
+            if (e.code() == 401) withContext(NonCancellable) {
+                authMutex.withLock { if (isCurrent(key)) clearSessionLocally() }
+            }
+            throw e
+        }
+    }
+
+    private fun clearSessionLocally() {
+        session.clearToken()
+        stopRealtime()
+        _activeCall.value = null
+        _calls.value = emptyList()
+        _userCache.value = emptyMap()
+        avatarCache.evictAll()
+        _syncProblem.value = null
+        lastFullSyncMillis = 0L
+        _phase.value = SessionPhase.LOGGED_OUT
+    }
+
     suspend fun requestCode(phone: String) {
-        val normalized = requireNotNull(normalizePhone(phone)) { "Некорректный номер. Пример: +7 999 123-45-67" }
+        val normalized = requireNotNull(InputRules.normalizePhone(phone)) { "Проверьте номер телефона. Пример: +7 999 123-45-67" }
         api.requestCode(RequestCodeRequest(normalized))
     }
 
-    /** Шаг 2: проверка кода. Создаёт/находит облачный аккаунт и сохраняет сессию. */
-    suspend fun verifyCode(phone: String, code: String): VerifyCodeResponse =
-        authMutex.withLock {
-            val v = api.verifyCode(VerifyCodeRequest(phone, code.trim()))
-            val a = v.account ?: throw IllegalStateException("Сервер не вернул аккаунт")
-            session.save(v.token, a.id, a.username, a.phone, a.displayName, a.lastName, a.avatarMediaId)
-            withContext(Dispatchers.IO) { db.clearAllTables() }
-            _phase.value = currentPhase()
-            v
+    suspend fun verifyCode(phone: String, code: String): VerifyCodeResponse = scope.async {
+        val normalized = requireNotNull(InputRules.normalizePhone(phone)) { "Проверьте номер телефона" }
+        require(code.matches(Regex("[0-9]{6}"))) { "Введите код из 6 цифр" }
+        val result = api.verifyCode(VerifyCodeRequest(normalized, code))
+        val a = requireNotNull(result.account) { "Сервер не вернул аккаунт. Запросите новый код." }
+        check(result.token.isNotBlank() && a.id.isNotBlank()) { "Сервер не завершил вход. Запросите новый код." }
+        withContext(NonCancellable) {
+            authMutex.withLock {
+                stopRealtime()
+                // Reauthentication to the same account must preserve unsent messages.
+                if (session.userId() != a.id) db.clearAllTables()
+                _userCache.value = emptyMap()
+                avatarCache.evictAll()
+                session.save(result.token, a.id, a.username, a.phone, a.displayName, a.lastName, a.avatarMediaId)
+                _account.value = accountInfo()
+                lastFullSyncMillis = 0L
+                _phase.value = currentPhase()
+            }
         }
+        result
+    }.await()
 
-    /** Заполнение профиля после регистрации. */
     suspend fun updateProfile(name: String, lastName: String, username: String) {
-        val r = api.updateProfile(auth(), UpdateProfileRequest(name, lastName, username))
-        session.saveProfile(r.username, r.displayName, r.lastName, null)
-        _phase.value = currentPhase()
+        require(name.trim().isNotEmpty() && name.trim().codePointCount(0, name.trim().length) <= 64) { "Имя должно содержать от 1 до 64 символов" }
+        require(lastName.trim().codePointCount(0, lastName.trim().length) <= 64) { "Фамилия — не более 64 символов" }
+        require(InputRules.validUsername(username)) { "Никнейм: 3–32 латинские буквы, цифры или знак _" }
+        val key = key()
+        scope.async {
+            profileMutex.withLock {
+                val r = request(key) { api.updateProfile(it, UpdateProfileRequest(name.trim(), lastName.trim(), InputRules.username(username))) }
+                commit(key) {
+                    session.saveProfile(r.username, r.displayName, r.lastName, session.avatarMediaId())
+                    _account.value = accountInfo()
+                    putUserCacheLocked(key, UserCard(key.owner, r.username, r.displayName, r.lastName, session.avatarMediaId().orEmpty()))
+                    _phase.value = currentPhase()
+                }
+            }
+        }.await()
     }
 
-    /** Загружает выбранное фото как аватар и привязывает к аккаунту. */
     suspend fun uploadAndSetAvatar(uri: Uri) {
-        val resolver = context.contentResolver
-        val mime = resolver.getType(uri) ?: "image/jpeg"
-        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IOException("не удалось прочитать фото")
-        if (bytes.size > 10 * 1024 * 1024) throw IOException("фото больше 10 МБ")
-        val part = MultipartBody.Part.createFormData("file", "avatar", bytes.toRequestBody(mime.toMediaType()))
-        val typeField = mime.toRequestBody("text/plain".toMediaType())
-        val up = api.uploadMedia(auth(), part, typeField)
-        if (!up.isSuccessful) throw IOException("загрузка аватара: HTTP ${up.code()}")
-        val mediaId = up.body()?.id ?: throw IOException("пустой ответ при загрузке аватара")
-        api.setAvatar(auth(), SetAvatarRequest(mediaId))
-        session.saveAvatar(mediaId)
-        putUserCache(UserCard(id = session.userId().orEmpty(), username = session.username().orEmpty(),
-            displayName = session.displayName().orEmpty(), lastName = session.lastName().orEmpty(),
-            avatarMediaId = mediaId))
+        val key = key()
+        val bytes = AvatarImages.read(context, uri)
+        val bitmap = AvatarImages.decode(bytes) ?: throw IllegalArgumentException("Не удалось прочитать изображение. Выберите другое фото.")
+        bitmap.recycle()
+        val mime = context.contentResolver.getType(uri)?.takeIf { it.startsWith("image/") } ?: "image/jpeg"
+        profileMutex.withLock {
+            val part = MultipartBody.Part.createFormData("file", "avatar", bytes.toRequestBody(mime.toMediaType()))
+            val up = request(key) {
+                val response = api.uploadMedia(it, part, mime.toRequestBody("text/plain".toMediaType()))
+                if (!response.isSuccessful) throw HttpException(response)
+                response.body() ?: throw IOException("Empty upload response")
+            }
+            check(up.id.isNotBlank()) { "Сервер не сохранил фото. Попробуйте ещё раз." }
+            request(key) { api.setAvatar(it, SetAvatarRequest(up.id)) }
+            commit(key) {
+                session.saveAvatar(up.id)
+                avatarCache.put(up.id, bytes)
+                _account.value = accountInfo()
+                val a = accountInfo()
+                putUserCacheLocked(key, UserCard(a.id, a.username, a.displayName, a.lastName, a.avatarMediaId))
+            }
+        }
     }
 
     suspend fun logout() {
-        val token = session.token()
-        _activeCall.value = null
-        stopRealtime()
-        try { withTimeout(4000) { token?.let { api.logout("Bearer " + it) } } }
-        catch (_: Exception) { }
-        session.clear()
-        withContext(Dispatchers.IO) { db.clearAllTables() }
-        _phase.value = SessionPhase.LOGGED_OUT
+        val oldToken = session.token()
+        authMutex.withLock { clearSessionLocally() }
+        // Local sign-out is immediate, including when offline. Revocation is best effort.
+        scope.launch {
+            try { withTimeout(4000) { oldToken?.let { api.logout("Bearer $it") } } }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Server token expires according to its TTL. */ }
+        }
     }
 
     suspend fun deleteAccount() {
-        val token = session.token()
-        stopRealtime()
-        try { withTimeout(5000) { token?.let { api.burnAccount("Bearer " + it) } } }
-        catch (_: Exception) { }
-        session.clear()
-        withContext(Dispatchers.IO) { db.clearAllTables() }
-        _phase.value = SessionPhase.LOGGED_OUT
+        val key = key()
+        scope.async {
+            // A failed/ambiguous server response must never be presented as successful deletion.
+            request(key) { api.burnAccount(it) }
+            withContext(NonCancellable) {
+                commit(key) {
+                    clearSessionLocally()
+                    db.clearAllTables()
+                    session.clear()
+                    _account.value = accountInfo()
+                }
+            }
+        }.await()
     }
 
-    // ---------------- кэш пользователей ----------------
-
-    private suspend fun putUserCache(card: UserCard) {
+    private suspend fun putUserCacheLocked(key: SessionKey, card: UserCard) {
         _userCache.update { it + (card.id to card) }
-        db.cryptoDao().put(CryptoRecord(session.userId().orEmpty(), "user", card.id, json.encodeToString(card)))
+        db.cryptoDao().put(CryptoRecord(key.owner, "user", card.id, json.encodeToString(card)))
     }
 
-    suspend fun resolveUser(id: String): UserCard? {
-        _userCache.value[id]?.let { return it }
-        val card = try { api.user(auth(), id) } catch (e: CancellationException) { throw e } catch (_: Exception) { return null }
-        putUserCache(card)
+    suspend fun resolveUser(id: String): UserCard? = resolveUser(key(), id)
+    private suspend fun resolveUser(key: SessionKey, id: String, force: Boolean = false): UserCard? {
+        if (!force) _userCache.value[id]?.let { return it }
+        val card = try { request(key) { api.user(it, id) } }
+        catch (e: HttpException) { if (e.code() == 404) return null else throw e }
+        commit(key) {
+            putUserCacheLocked(key, card)
+            db.chatDao().get(id)?.takeIf { it.type == "dm" }?.let { db.chatDao().upsert(it.copy(title = card.fullName())) }
+        }
         return card
     }
 
-    suspend fun resolveByUsername(username: String): UserCard? = try {
-        api.userByUsername(auth(), username.trim().removePrefix("@"))
-    } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-
-    fun titleFor(userId: String): String {
-        val c = _userCache.value[userId]
-        return c?.fullName()?.ifBlank { c.username } ?: userId.take(12)
+    suspend fun resolveByUsername(username: String): UserCard? {
+        require(InputRules.validUsername(username)) { "Никнейм: 3–32 латинские буквы, цифры или знак _" }
+        val key = key()
+        val card = try { request(key) { api.userByUsername(it, InputRules.username(username)) } }
+        catch (e: HttpException) { if (e.code() == 404) return null else throw e }
+        commit(key) { putUserCacheLocked(key, card) }
+        return card
     }
 
-    // ---------------- realtime / синхронизация ----------------
+    fun titleFor(userId: String): String = _userCache.value[userId]?.fullName()?.ifBlank { "Пользователь" } ?: "Пользователь"
 
     fun startRealtime() {
-        if (pollJob?.isActive == true) return
-        val token = session.token() ?: return
+        if (pollJob?.isActive == true || !session.isLoggedIn()) return
+        val key = key()
         eventJob = scope.launch {
-            ws.eventFlow.collect { ev ->
+            ws.eventFlow.collect { event ->
+                if (!isCurrent(key) || event.token != key.token) return@collect
                 try {
-                    when (ev.type) {
-                        "connected" -> { _connected.value = true; syncNow(forceFull = true) }
-                        "message" -> persist(apiJsonFromMessage(ev.data))
-                        "call" -> handleCallEvent(ev.data)
-                        "call_status" -> handleCallStatusEvent(ev.data)
-                        else -> {}
+                    when (event.type) {
+                        "connected" -> refresh(forceFull = true)
+                        "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
+                        "call" -> handleCallEvent(key, json.decodeFromJsonElement(CallDto.serializer(), event.data))
+                        "call_status" -> {
+                            val callId = event.data["call_id"]?.toString()?.trim('"')
+                            val status = event.data["status"]?.toString()?.trim('"')
+                            commit(key) {
+                                _activeCall.value?.takeIf { it.callId == callId }?.let {
+                                    _activeCall.value = if (status == "active") it.copy(ringing = false) else null
+                                }
+                            }
+                            fetchCalls()
+                        }
                     }
                 } catch (e: CancellationException) { throw e }
-                catch (e: Exception) { _syncProblem.value = "Синхронизация не завершена. Повторим при восстановлении связи." }
+                catch (_: Exception) { if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Повторим при восстановлении связи." }
             }
         }
         pollJob = scope.launch {
-            while (isActive && session.isLoggedIn()) {
-                if (session.token() == null) break
-                try {
-                    _connected.value = true
-                    ws.connect(session.token()!!)
-                    syncNow()
-                    flushOutbox()
-                    _syncProblem.value = null
-                } catch (e: CancellationException) { throw e }
-                catch (e: HttpException) {
-                    if (e.code() == 401) { session.clear(); _phase.value = SessionPhase.LOGGED_OUT; break }
-                    _syncProblem.value = "Синхронизация не завершена"
-                } catch (_: Exception) {
-                    _syncProblem.value = "Нет связи с сервером"
-                }
+            val cached = db.cryptoDao().all(key.owner, "user").mapNotNull {
+                runCatching { json.decodeFromString<UserCard>(it.value) }.getOrNull()
+            }.associateBy { it.id }
+            commit(key) { _userCache.value = cached + _userCache.value }
+            ws.connect(key.token)
+            while (isActive && isCurrent(key)) {
+                try { refresh() }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* refresh publishes the error; polling retries. */ }
                 delay(4000)
             }
-            _connected.value = false
-        }
-        scope.launch {
-            ws.connect(token)
-            ws.connected.collect { _connected.value = it }
         }
     }
 
     fun stopRealtime() {
         eventJob?.cancel(); eventJob = null
         pollJob?.cancel(); pollJob = null
+        outboxJob?.cancel(); outboxJob = null
         ws.disconnect()
-        _connected.value = false
+        _syncing.value = false
     }
 
-    private fun apiJsonFromMessage(obj: JsonObject): MessageDto =
-        json.decodeFromJsonElement(MessageDto.serializer(), obj)
-
-    /** Синхронизация истории: полная при старте, дальше инкрементальная по времени. */
-    private suspend fun syncNow(forceFull: Boolean = false) = syncMutex.withLock {
-        val owner = session.userId() ?: return@withLock
-        val token = session.token() ?: return@withLock
-        val newestLocal = db.messageDao().maxCreatedAtMillis(owner) ?: 0L
-        val full = forceFull || newestLocal == 0L
-        var since: String? = null
-        var afterId: String? = null
-        if (!full) {
-            since = Instant.ofEpochMilli(newestLocal - 30_000L)
-                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
+    suspend fun refresh(forceFull: Boolean = false) {
+        val key = key()
+        try {
+            syncNow(key, forceFull)
+            flushOutbox()
+            commit(key) { _syncProblem.value = null }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Проверьте подключение и повторите."
+            throw e
         }
-        var pages = 0
-        while (true) {
-            val page = api.messages("Bearer " + token, since, afterId, 200).messages
-            for (dto in page) persist(dto)
-            if (page.size < 200) break
-            val last = page.last()
-            since = Instant.parse(last.createdAt)
-                .truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
-            afterId = last.id
-            if (++pages > 2000) break
-        }
-        if (full) lastFullSyncMillis = System.currentTimeMillis()
-        db.messageDao().deleteExpired(System.currentTimeMillis())
     }
 
-    /** Сохраняет сообщение с сервера (DM и группа) в Room. */
-    private suspend fun persist(dto: MessageDto) {
-        val owner = session.userId() ?: return
-        val expiresMillis = dto.expiresAt?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
-        val createdAtMillis = runCatching { Instant.parse(dto.createdAt).toEpochMilli() }.getOrDefault(0L)
-        val chatId = if (dto.chatId.isNotEmpty()) dto.chatId
-        else if (dto.senderId == owner) dto.recipientId else dto.senderId
-        if (chatId.isEmpty()) return
+    private suspend fun syncNow(key: SessionKey, forceFull: Boolean) = syncMutex.withLock {
+        _syncing.value = true
+        try {
+            val newest = db.messageDao().maxCreatedAtMillis(key.owner) ?: 0L
+            val now = System.currentTimeMillis()
+            val full = forceFull || newest == 0L || now - lastFullSyncMillis >= 15 * 60_000L
+            val groups = request(key) { api.chats(it).chats }
+            commit(key) { db.withTransaction {
+                val remoteIds = groups.map { it.id }.toSet()
+                for (old in db.chatDao().snapshot()) {
+                    if (old.type != "dm" && old.id !in remoteIds) db.chatDao().upsert(old.copy(type = "unavailable"))
+                }
+                for (g in groups) db.chatDao().upsert(ChatEntity(g.id, g.type, g.title))
+            } }
+            // Timers continue to work independently of REST connectivity.
+            commit(key) { db.messageDao().deleteExpired(now) }
+            var since: String? = if (full) null else Instant.ofEpochMilli((newest - 30_000L).coerceAtLeast(0L)).toString()
+            var afterId: String? = null
+            var pages = 0
+            val peers = linkedSetOf<String>()
+            while (true) {
+                val page = request(key) { api.messages(it, since, afterId, 200).messages }
+                for (dto in page) {
+                    persist(key, dto)
+                    if (dto.chatId.isEmpty()) peers.add(if (dto.senderId == key.owner) dto.recipientId else dto.senderId)
+                }
+                if (page.size < 200) break
+                val last = page.last()
+                check(last.createdAt != since || last.id != afterId) { "Сервер повторяет страницу истории. Попробуйте позже." }
+                // The API cursor includes fractional seconds. Truncating them repeats the same page forever.
+                since = last.createdAt
+                afterId = last.id
+                check(++pages <= 2000) { "История слишком велика для одного обновления" }
+            }
+            if (full) profileMutex.withLock {
+                val a = request(key) { api.account(it) }
+                commit(key) {
+                    session.saveProfile(a.username, a.displayName, a.lastName, a.avatarMediaId)
+                    _account.value = accountInfo()
+                }
+            }
+            for (peer in peers.filter { it.isNotBlank() && it != key.owner }) {
+                try { resolveUser(key, peer, force = full) }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* Cached messages remain usable if a profile lookup fails. */ }
+            }
+            if (full) commit(key) { lastFullSyncMillis = now }
+        } finally { _syncing.value = false }
+    }
+
+    private suspend fun persist(key: SessionKey, dto: MessageDto) = commit(key) {
+        val expires = dto.expiresAt?.let { Instant.parse(it).toEpochMilli() }
+        val created = Instant.parse(dto.createdAt).toEpochMilli()
+        val chatId = dto.chatId.ifEmpty { if (dto.senderId == key.owner) dto.recipientId else dto.senderId }
+        if (chatId.isBlank()) return@commit
         db.withTransaction {
-            val existing = db.messageDao().get(dto.id)
-            if (existing == null) {
+            val local = dto.clientMessageId?.takeIf { dto.senderId == key.owner && it.isNotBlank() }
+                ?.let { db.messageDao().byClientId(key.owner, it) }
+            if (expires == null || expires > System.currentTimeMillis()) {
                 db.messageDao().upsert(MessageEntity(
-                    id = dto.id, senderId = dto.senderId, recipientId = dto.recipientId, chatId = chatId,
-                    ciphertext = dto.ciphertext, createdAt = dto.createdAt, expiresAt = dto.expiresAt,
-                    ownerId = owner, createdAtMillis = createdAtMillis, expiresAtMillis = expiresMillis,
-                    deliveryState = "sent",
+                    dto.id, dto.senderId, dto.recipientId, chatId, dto.ciphertext, dto.createdAt, dto.expiresAt,
+                    ownerId = key.owner, createdAtMillis = created, expiresAtMillis = expires,
+                    deliveryState = "sent", clientId = dto.clientMessageId ?: local?.clientId,
                 ))
+            } else db.messageDao().delete(dto.id)
+            if (local != null && local.id != dto.id) db.messageDao().delete(local.id)
+            if (db.chatDao().get(chatId) == null) db.chatDao().upsert(ChatEntity(
+                chatId, if (dto.chatId.isEmpty()) "dm" else "group",
+                if (dto.chatId.isEmpty()) titleFor(chatId) else "Группа",
+            ))
+        }
+    }
+
+    private suspend fun handleCallEvent(key: SessionKey, call: CallDto) {
+        if (call.calleeId != key.owner || call.status != "ringing") return
+        if (_activeCall.value?.callId == call.id) return
+        if (_activeCall.value != null) {
+            request(key) { api.updateCallStatus(it, call.id, CallStatusRequest("declined")) }
+            return
+        }
+        commit(key) { _activeCall.value = ActiveCall(call.id, call.callerId, titleFor(call.callerId), true, true) }
+    }
+
+    suspend fun startCall(peerUserId: String) = callMutex.withLock {
+        val key = key()
+        require(peerUserId != key.owner) { "Нельзя позвонить самому себе" }
+        check(_activeCall.value == null) { "Сначала завершите текущий вызов" }
+        val call = request(key) { api.initiateCall(it, InitiateCallRequest(peerUserId)) }
+        commit(key) { _activeCall.value = ActiveCall(call.id, peerUserId, titleFor(peerUserId), false, true) }
+    }
+
+    suspend fun setCallStatus(status: String) = callMutex.withLock {
+        val key = key()
+        val call = _activeCall.value ?: return@withLock
+        val result = request(key) { api.updateCallStatus(it, call.callId, CallStatusRequest(status)) }
+        commit(key) {
+            if (_activeCall.value?.callId == call.callId) {
+                _activeCall.value = if (result.status == "active") call.copy(ringing = false) else null
             }
-            val type = if (dto.chatId.isNotEmpty()) "group" else "dm"
-            if (db.chatDao().get(chatId) == null) {
-                db.chatDao().upsert(ChatEntity(chatId, type, if (type == "dm") dto.senderId.take(12) else "Группа"))
-            }
-        }
-        if (chatId != owner && dto.chatId.isEmpty()) {
-            val peer = if (dto.senderId == owner) dto.recipientId else dto.senderId
-            scope.launch { resolveUser(peer); updateDmTitle(peer) }
         }
     }
 
-    private suspend fun updateDmTitle(peerId: String) {
-        val card = _userCache.value[peerId] ?: return
-        db.chatDao().get(peerId)?.let { db.chatDao().upsert(it.copy(title = card.fullName())) }
-    }
+    fun dismissCallLocally() { _activeCall.value = null }
 
-    // ---------------- звонки ----------------
-
-    private suspend fun handleCallEvent(obj: JsonObject) {
-        val call = json.decodeFromJsonElement(CallDto.serializer(), obj)
-        if (call.calleeId == session.userId() && call.status == "ringing") {
-            val peer = resolveUser(call.callerId)
-            _activeCall.value = ActiveCall(call.id, call.callerId, peer?.fullName() ?: "…", incoming = true, ringing = true)
-        }
-    }
-
-    private suspend fun handleCallStatusEvent(obj: JsonObject) {
-        val callId = obj["call_id"]?.toString()?.trim('"').orEmpty()
-        val status = obj["status"]?.toString()?.trim('"').orEmpty()
-        _activeCall.value?.let { cur ->
-            if (cur.callId == callId && status in listOf("active", "declined", "ended", "missed")) {
-                if (status == "active") _activeCall.value = cur.copy(ringing = false)
-                else if (status != "active") _activeCall.value = null
-            }
-        }
-    }
-
-    /** Совершить звонок (сигналинг: сервер уведомит собеседника). */
-    suspend fun startCall(peerUserId: String) {
-        val call = api.initiateCall(auth(), InitiateCallRequest(peerUserId, video = false))
-        val peer = resolveUser(peerUserId)
-        _activeCall.value = ActiveCall(call.id, peerUserId, peer?.fullName() ?: "…", incoming = false, ringing = true)
-    }
-
-    suspend fun setCallStatus(status: String) {
-        val call = _activeCall.value ?: return
-        try { api.updateCallStatus(auth(), call.callId, CallStatusRequest(status)) } catch (_: Exception) { }
-        if (status in listOf("active")) _activeCall.value = call.copy(ringing = false)
-        else _activeCall.value = null
-    }
-
-    /** История звонков (для вкладки «Звонки»). */
     suspend fun fetchCalls(): List<CallUi> {
-        val me = session.userId() ?: return emptyList()
-        return try {
-            api.calls(auth()).calls.map { c ->
-                val peerId = if (c.callerId == me) c.calleeId else c.callerId
-                CallUi(c.id, peerId, titleFor(peerId), c.callerId != me, c.status,
-                    runCatching { Instant.parse(c.createdAt).toEpochMilli() }.getOrDefault(0L))
-            }.sortedByDescending { it.createdAtMillis }
-        } catch (_: Exception) { emptyList() }
+        val key = key()
+        val remote = request(key) { api.calls(it).calls }
+        for (peer in remote.map { if (it.callerId == key.owner) it.calleeId else it.callerId }.distinct()) {
+            try { resolveUser(key, peer) }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Show a fallback name without hiding the history. */ }
+        }
+        val result = remote.map { c ->
+            val peer = if (c.callerId == key.owner) c.calleeId else c.callerId
+            CallUi(c.id, peer, titleFor(peer), c.callerId != key.owner, c.status, Instant.parse(c.createdAt).toEpochMilli())
+        }.sortedByDescending { it.createdAtMillis }
+        commit(key) {
+            _calls.value = result
+            _activeCall.value?.let { active ->
+                remote.firstOrNull { it.id == active.callId }?.let { c ->
+                    _activeCall.value = when (c.status) {
+                        "ringing" -> active
+                        "active" -> active.copy(ringing = false)
+                        else -> null
+                    }
+                }
+            }
+        }
+        return result
     }
 
-    // ---------------- чаты и сообщения ----------------
-
-    fun conversations(): Flow<List<Conversation>> = combine(
-        db.chatDao().all(),
-        db.messageDao().all(session.userId().orEmpty()),
-        _userCache,
-    ) { chats, msgs, _ ->
-        val lastByChat = HashMap<String, MessageEntity>()
-        for (m in msgs) {
-            val cur = lastByChat[m.chatId]
-            if (cur == null || m.createdAtMillis >= cur.createdAtMillis) lastByChat[m.chatId] = m
-        }
-        val byId = chats.associateBy { it.id }
-        val result = ArrayList<Conversation>()
-        val seen = HashSet<String>()
-        for ((chatId, last) in lastByChat) {
-            seen.add(chatId)
-            val chat = byId[chatId]
-            val group = chat?.type == "group"
-            val title = if (group) chat.title else titleFor(chatId)
-            val subtitle = MessageCodec.plainText(last.ciphertext).ifBlank { "⦙" }
-            result.add(Conversation(chatId, group, title, subtitle, last.createdAtMillis))
-        }
-        // группы без сообщений тоже показываем
-        for (chat in chats) if (chat.type == "group" && !seen.contains(chat.id)) {
-            result.add(Conversation(chat.id, true, chat.title, "Группа создана", 0L))
-        }
-        result.sortedByDescending { it.lastAtMillis }
+    fun conversations(): Flow<List<Conversation>> = combine(db.chatDao().all(), db.messageDao().all(me().orEmpty()), _userCache) { chats, msgs, users ->
+        val last = msgs.groupBy { it.chatId }.mapValues { (_, list) -> list.maxBy { it.createdAtMillis } }
+        chats.map { chat ->
+            val message = last[chat.id]
+            val group = chat.type != "dm"
+            val title = if (group) chat.title else users[chat.id]?.fullName() ?: chat.title
+            val subtitle = if (chat.type == "unavailable") "Нет доступа к группе" else message?.let { MessageCodec.plainText(it.ciphertext) } ?: "Пока нет сообщений"
+            Conversation(chat.id, group, title, subtitle, message?.createdAtMillis ?: 0L)
+        }.sortedByDescending { it.lastAtMillis }
     }.flowOn(Dispatchers.IO)
 
-    fun chats(): Flow<List<ChatEntity>> = db.chatDao().all()
-
-    fun messagesFor(chatId: String): Flow<List<UiMessage>> =
-        db.messageDao().messagesFor(session.userId().orEmpty(), chatId).map { list ->
-            list.map { e ->
-                val text = MessageCodec.plainText(e.ciphertext).ifBlank { "[пустое сообщение]" }
-                UiMessage(e.id, e.senderId, text, e.createdAtMillis,
-                    outgoing = e.senderId == session.userId() && e.ownerId == e.senderId,
-                    failed = e.deliveryState == "failed", pending = e.deliveryState == "pending")
-            }
-        }.flowOn(Dispatchers.IO)
-
-    /** Создать/получить личный чат с пользователем. */
-    suspend fun openDm(peerUserId: String) {
-        db.chatDao().get(peerUserId) ?: run {
-            val card = resolveUser(peerUserId)
-            db.chatDao().upsert(ChatEntity(peerUserId, "dm", card?.fullName() ?: peerUserId.take(12)))
-        }
+    fun chats() = db.chatDao().all()
+    fun messagesFor(chatId: String): Flow<List<UiMessage>> {
+        val owner = me().orEmpty()
+        return db.messageDao().messagesFor(owner, chatId).map { rows -> rows.map { e ->
+            UiMessage(e.id, e.senderId, MessageCodec.plainText(e.ciphertext), e.createdAtMillis,
+                e.senderId == owner && e.ownerId == owner, e.deliveryState == "failed", e.deliveryState == "pending",
+                e.error, e.clientId?.let { "${e.senderId}:$it" } ?: e.id)
+        } }.flowOn(Dispatchers.IO)
     }
 
-    suspend fun createGroup(title: String, memberIds: List<String>) {
-        val chat = api.createGroup(auth(), CreateChatRequest(title))
-        db.chatDao().upsert(ChatEntity(chat.id, "group", chat.title))
-        for (id in memberIds) if (id != session.userId()) {
-            try { api.addMember(auth(), chat.id, AddMemberRequest(id)) } catch (_: Exception) { }
+    suspend fun openDm(peerUserId: String) {
+        val key = key()
+        require(peerUserId != key.owner) { "Вы указали свой никнейм. Введите никнейм собеседника." }
+        val card = resolveUser(key, peerUserId) ?: throw IllegalArgumentException("Пользователь не найден")
+        commit(key) { db.chatDao().upsert(ChatEntity(peerUserId, "dm", card.fullName())) }
+    }
+
+    suspend fun createGroup(title: String): String {
+        require(title.trim().isNotEmpty() && title.trim().toByteArray(Charsets.UTF_8).size <= 200) { "Название группы слишком длинное. Сократите его." }
+        val key = key()
+        val chat = request(key) { api.createGroup(it, CreateChatRequest(title.trim())) }
+        withContext(NonCancellable) { commit(key) { db.chatDao().upsert(ChatEntity(chat.id, "group", chat.title)) } }
+        return chat.id
+    }
+
+    suspend fun addGroupMembers(chatId: String, memberIds: List<String>) {
+        val key = key()
+        for (id in memberIds.distinct().filter { it != key.owner }) {
+            try { request(key) { api.addMember(it, chatId, AddMemberRequest(id)) } }
+            catch (e: HttpException) { if (e.code() != 409) throw e }
         }
     }
 
     suspend fun groupMembers(chatId: String): List<UserCard> {
-        val members = try { api.chatMembers(auth(), chatId).members } catch (_: Exception) { return emptyList() }
-        val cards = ArrayList<UserCard>()
-        for (m in members) resolveUser(m.userId)?.let { cards.add(it) }
-        return cards
+        val key = key()
+        return request(key) { api.chatMembers(it, chatId).members }.map { member ->
+            resolveUser(key, member.userId, force = true) ?: UserCard(member.userId, displayName = "Удалённый пользователь")
+        }
     }
 
-    /** Отправка текста: в ЛС или группу; локальная запись → outbox. */
     suspend fun sendText(chatId: String, text: String) {
-        val owner = session.userId() ?: return
+        val key = key()
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
-        val id = UUID.randomUUID().toString()
-        val content = MessageContent(kind = MessageContent.KIND_TEXT, text = trimmed)
-        val envelope = MessageCodec.encode(content)
-        val now = Instant.now().toEpochMilli()
-        val chat = db.chatDao().get(chatId)
-        db.messageDao().upsert(MessageEntity(
-            id = "local:$id", senderId = owner, recipientId = if (chat?.type == "dm") chatId else "",
-            chatId = chatId, ciphertext = envelope, createdAt = Instant.now().toString(),
-            expiresAt = null, ownerId = owner, createdAtMillis = now,
-            deliveryState = "pending", clientId = id,
-        ))
-        scope.launch { flushOutbox() }
+        require(trimmed.isNotEmpty()) { "Введите сообщение" }
+        require(trimmed.length <= InputRules.MAX_TEXT_LENGTH) { "Сообщение слишком длинное (максимум 16 000 символов)" }
+        commit(key) {
+            val chat = requireNotNull(db.chatDao().get(chatId)) { "Сначала откройте диалог" }
+            check(chat.type != "unavailable") { "Доступ к группе прекращён. Обратитесь к её владельцу." }
+            val id = UUID.randomUUID().toString()
+            val now = Instant.now()
+            db.messageDao().upsert(MessageEntity(
+                "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
+                MessageCodec.encode(MessageContent(text = trimmed)), now.toString(), null,
+                ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+            ))
+        }
+        requestOutbox()
     }
 
-    private suspend fun flushOutbox() = sendMutex.withLock {
-        val owner = session.userId() ?: return@withLock
-        val token = session.token() ?: return@withLock
-        for (m in db.messageDao().pending(owner)) {
-            val clientId = m.clientId ?: continue
-            try {
-                val chat = db.chatDao().get(m.chatId)
-                val sent = if (chat?.type == "group") {
-                    api.sendChatMessage("Bearer " + token, m.chatId, SendChatMessageRequest(m.ciphertext, clientId))
-                } else {
-                    api.sendMessage("Bearer " + token, SendMessageRequest(m.recipientId, m.ciphertext, clientId))
+    suspend fun retryMessage(id: String) {
+        val key = key()
+        commit(key) {
+            val m = db.messageDao().get(id) ?: return@commit
+            if (m.ownerId == key.owner && m.senderId == key.owner && m.deliveryState == "failed")
+                db.messageDao().upsert(m.copy(deliveryState = "pending", error = null))
+        }
+        requestOutbox()
+    }
+
+    private fun requestOutbox() {
+        if (outboxJob?.isActive == true) return
+        outboxJob = scope.launch {
+            try { flushOutbox() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { _syncProblem.value = "Отправка приостановлена. Сообщения сохранены на устройстве." }
+        }
+    }
+
+    internal suspend fun flushOutbox() = sendMutex.withLock {
+        val key = key()
+        while (isCurrent(key)) {
+            val pending = db.messageDao().pending(key.owner)
+            if (pending.isEmpty()) break
+            for (m in pending) {
+                val clientId = m.clientId
+                if (clientId == null) {
+                    commit(key) { db.messageDao().upsert(m.copy(deliveryState = "failed", error = "Не удалось восстановить отправку. Скопируйте текст и отправьте заново.")) }
+                    continue
                 }
-                val newMillis = runCatching { Instant.parse(sent.createdAt).toEpochMilli() }.getOrDefault(m.createdAtMillis)
-                db.withTransaction {
-                    db.messageDao().upsert(m.copy(id = sent.id, createdAtMillis = newMillis,
-                        deliveryState = "sent", error = null, clientId = null))
-                    db.messageDao().delete(m.id) // удалить локальный дубль
-                }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                val retryable = e is IOException || (e is HttpException && (e.code() >= 500 || e.code() == 429 || e.code() == 401))
-                db.withTransaction {
-                    db.messageDao().get(m.id)?.let { cur ->
-                        db.messageDao().upsert(cur.copy(deliveryState = if (retryable) "pending" else "failed",
-                            error = if (retryable) null else "Не отправлено. Проверьте сеть."))
+                try {
+                    val sent = request(key) { auth ->
+                        if (m.recipientId.isEmpty()) api.sendChatMessage(auth, m.chatId, SendChatMessageRequest(m.ciphertext, clientId))
+                        else api.sendMessage(auth, SendMessageRequest(m.recipientId, m.ciphertext, clientId))
                     }
-                }
-                if (e is HttpException && e.code() == 401) { session.clear(); _phase.value = SessionPhase.LOGGED_OUT }
-            }
-        }
-    }
-
-    // ---------------- утилиты ----------------
-
-    /** Держит приложение живым при пересоздании Activity. */
-    fun close() {
-        stopRealtime()
-        scope.coroutineContext[Job]?.cancel()
-        ws.close()
-    }
-
-    private fun normalizePhone(raw: String): String? {
-        val s = raw.trim()
-        if (s.isEmpty()) return null
-        var hasPlus = s[0] == '+'
-        var digits = buildString {
-            for ((i, c) in s.withIndex()) {
-                when {
-                    c in '0'..'9' -> append(c)
-                    i == 0 && c == '+' -> Unit
-                    c == ' ' || c == '-' || c == '(' || c == ')' || c == '.' -> Unit
-                    else -> return null
+                    persist(key, sent.copy(clientMessageId = clientId))
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    val retryable = e is IOException || e is HttpException && (e.code() >= 500 || e.code() in listOf(408, 429))
+                    commit(key) { db.messageDao().get(m.id)?.let { current ->
+                        if (current.deliveryState == "pending") db.messageDao().upsert(current.copy(
+                            deliveryState = if (retryable) "pending" else "failed",
+                            error = if (retryable) null else "Не отправлено. Проверьте доступ к чату и повторите.",
+                        ))
+                    } }
+                    if (retryable) throw e // Preserve ordering and retry later instead of hammering an offline server.
                 }
             }
         }
-        if (digits.startsWith("00")) { digits = digits.substring(2); hasPlus = true }
-        if (!hasPlus) {
-            when {
-                digits.length == 11 && digits[0] == '8' -> digits = "7" + digits.substring(1)
-                digits.length == 10 -> digits = "7" + digits
-            }
-        }
-        if (digits.length < 7 || digits.length > 15 || digits[0] == '0') return null
-        return "+$digits"
     }
 
-    suspend fun avatarBytes(mediaId: String): ByteArray? = try {
-        val r = api.downloadMedia(auth(), mediaId)
-        if (!r.isSuccessful) null else withContext(Dispatchers.IO) { r.body()?.use { it.bytes() } }
-    } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-
-    /** Аватар с кэшем в памяти (для списков и шапок чатов). */
     suspend fun avatarBytesCached(mediaId: String): ByteArray? {
-        avatarCache[mediaId]?.let { return it }
-        val bytes = avatarBytes(mediaId) ?: return null
-        if (bytes.isNotEmpty()) avatarCache[mediaId] = bytes
+        avatarCache.get(mediaId)?.let { return it }
+        val key = key()
+        val bytes = request(key) {
+            val response = api.downloadMedia(it, mediaId)
+            if (response.code() == 404) { response.errorBody()?.close(); return@request null }
+            if (!response.isSuccessful) throw HttpException(response)
+            withContext(Dispatchers.IO) { response.body()?.use { body -> body.byteStream().use(AvatarImages::readLimited) } }
+        } ?: return null
+        commit(key) { avatarCache.put(mediaId, bytes) }
         return bytes
     }
 
-    companion object {
-        const val MEDIA_CACHE_DIR = "media"
+    suspend fun deleteExpiredMessages() {
+        val key = key()
+        commit(key) { db.messageDao().deleteExpired(System.currentTimeMillis()) }
     }
+
+    fun close() { stopRealtime(); scope.cancel(); ws.close() }
+
+    companion object { const val MEDIA_CACHE_DIR = "media" }
 }
