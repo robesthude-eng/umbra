@@ -162,3 +162,14 @@
   убраны). Линт правится через collectAsState вместо StateFlow.value в композиции.
 - Из зависимостей удалены libsignal-client/android/bouncycastle (Signal выпилен),
   androidTest E2EE-тесты удалены.
+
+## Статус (2026-09-09) — продакшен на 0.4.1
+- Пользователь подтвердил: APK 0.4.1 (versionCode 6, run 34314176645) на
+  телефоне работает нормально.
+- Сервер на VPS обновлён из main 20d0b69: /usr/local/bin/umbra-server
+  sha256 35789c8c… (старый 9c83d7…). Бэкап:
+  /root/umbra-deploy-bak/umbra-server.pre-0.4.1.20260909-085857.
+  service umbra active; PostgreSQL, файловые блобы, Telegram-бот OTP включён.
+  Маршруты /v1/account, /v1/by-username/*, /v1/chats отвечают 401 (живы).
+- Миграции БД НЕ требовались: message_receipts уже создана миграцией 006;
+  снапшот не менял migrations/.
