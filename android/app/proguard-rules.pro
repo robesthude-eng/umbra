@@ -6,3 +6,7 @@
 -keep,includedescriptorclasses class com.umbra.app.**$$serializer { *; }
 -keepclassmembers class com.umbra.app.** { *** Companion; }
 -keepclasseswithmembers class com.umbra.app.** { kotlinx.serialization.KSerializer serializer(...); }
+
+# WebRTC: нативный слой ищет классы и методы через JNI — сокращать имена нельзя.
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**

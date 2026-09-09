@@ -10,6 +10,13 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Push-уведомления включает файл google-services.json из консоли Firebase
+// (положите его рядом с этим файлом). Без него плагин не применяется: сборка
+// проходит, просто телефон не будится при закрытом приложении.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 val configuredServerUrl = providers.gradleProperty("umbra.serverUrl")
     .orElse(providers.environmentVariable("UMBRA_SERVER_URL")).getOrElse("").trim()
 fun urlLiteral(value: String): String {
@@ -19,6 +26,29 @@ fun urlLiteral(value: String): String {
         (uri.path.isNullOrEmpty() || uri.path == "/")) { "Umbra URL must be an HTTP(S) origin" }
     return "\"" + value.trimEnd('/') + "/\""
 }
+
+/** Строковый литерал для buildConfigField: экранируем слэши и кавычки. */
+fun stringLiteral(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+// ---------------------------------------------------------------------------
+// ICE-серверы для звонков.
+//
+// STUN нужен почти всегда (узнать свой внешний адрес), TURN — когда оба
+// участника за «серым» NAT (типично для мобильных операторов). Задаётся
+// при сборке: -Pumbra.turnUrl=turn:umbra.example:3478 -Pumbra.turnUser=…
+// -Pumbra.turnPassword=… либо переменными UMBRA_TURN_URL / UMBRA_TURN_USER /
+// UMBRA_TURN_PASSWORD. См. docs/deploy.md, раздел про coturn.
+// ---------------------------------------------------------------------------
+val stunUrl = providers.gradleProperty("umbra.stunUrl")
+    .orElse(providers.environmentVariable("UMBRA_STUN_URL"))
+    .getOrElse("stun:stun.l.google.com:19302").trim()
+val turnUrl = providers.gradleProperty("umbra.turnUrl")
+    .orElse(providers.environmentVariable("UMBRA_TURN_URL")).getOrElse("").trim()
+val turnUser = providers.gradleProperty("umbra.turnUser")
+    .orElse(providers.environmentVariable("UMBRA_TURN_USER")).getOrElse("").trim()
+val turnPassword = providers.gradleProperty("umbra.turnPassword")
+    .orElse(providers.environmentVariable("UMBRA_TURN_PASSWORD")).getOrElse("").trim()
 
 // ---------------------------------------------------------------------------
 // Стабильная подпись APK.
@@ -76,9 +106,18 @@ android {
         targetSdk = 35
         // Перед каждым выпуском увеличивайте versionCode, иначе Android не даст
         // обновить установленное приложение («Приложение не установлено»).
-        versionCode = 9
-        versionName = "0.5.0"
+        versionCode = 12
+        versionName = "0.8.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // С 0.7.0 основной источник ICE — сервер (`GET /v1/turn`), оттуда
+        // приходит временная учётка TURN. Эти четыре поля остались запасным
+        // вариантом на случай недоступного маршрута; если задаёте здесь
+        // постоянный пароль — помните, что он извлекаем из APK.
+        buildConfigField("String", "STUN_URL", stringLiteral(stunUrl))
+        buildConfigField("String", "TURN_URL", stringLiteral(turnUrl))
+        buildConfigField("String", "TURN_USERNAME", stringLiteral(turnUser))
+        buildConfigField("String", "TURN_PASSWORD", stringLiteral(turnPassword))
     }
 
     buildTypes {
@@ -144,6 +183,13 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.androidx.security.crypto)
+
+    // Звонки: нативный WebRTC. Добавляет к APK по ~25 МБ на архитектуру.
+    implementation(libs.libwebrtc)
+
+    // Push-уведомления: только FCM, без Analytics и остального Firebase.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 

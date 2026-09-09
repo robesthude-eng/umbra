@@ -7,6 +7,7 @@ import androidx.room.withTransaction
 import com.umbra.app.data.AvatarImages
 import com.umbra.app.data.InputRules
 import com.umbra.app.data.api.*
+import com.umbra.app.data.call.CallNotifications
 import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.db.ChatEntity
 import com.umbra.app.data.db.CryptoRecord
@@ -14,6 +15,7 @@ import com.umbra.app.data.db.MessageEntity
 import com.umbra.app.data.msg.MediaContent
 import com.umbra.app.data.msg.MessageCodec
 import com.umbra.app.data.msg.MessageContent
+import com.umbra.app.data.push.PushService
 import com.umbra.app.data.session.SessionStore
 import com.umbra.app.data.voice.VoiceRecorder
 import com.umbra.app.data.voice.VoiceRecording
@@ -85,15 +87,18 @@ data class CallUi(
     val incoming: Boolean,
     val status: String, // ringing | active | ended | declined | missed
     val createdAtMillis: Long,
+    val video: Boolean = false,
 )
 
-/** Текущий звонок (входящий/исходящий) — оверлей поверх приложения. */
+/** Текущий звонок (входящий/исходящий) — экран поверх приложения. */
 data class ActiveCall(
     val callId: String,
     val peerUserId: String,
     val peerName: String,
     val incoming: Boolean,
     val ringing: Boolean,
+    /** Видеозвонок: камера включается сразу после соединения. */
+    val video: Boolean = false,
 )
 
 /** Cloud messenger repository. Message envelopes are not end-to-end encrypted. */
@@ -146,6 +151,15 @@ class ChatRepository(
     val activeCall = _activeCall.asStateFlow()
     private val _calls = MutableStateFlow<List<CallUi>>(emptyList())
     val calls = _calls.asStateFlow()
+
+    /**
+     * Сигналы WebRTC текущего звонка (SDP и ICE-кандидаты).
+     *
+     * Буфер нужен, потому что ICE-кандидаты приходят пачкой сразу после
+     * соединения, а движок звонка подписывается чуть позже.
+     */
+    private val _callSignals = MutableSharedFlow<CallSignalEvent>(replay = 0, extraBufferCapacity = 64)
+    val callSignals = _callSignals.asSharedFlow()
     private val _account = MutableStateFlow(accountInfo())
     val account = _account.asStateFlow()
 
@@ -177,6 +191,10 @@ class ChatRepository(
         session.clearToken()
         stopRealtime()
         _activeCall.value = null
+        // Гасим экран входящего и забываем токен: чужие уведомления не нужны.
+        CallNotifications.cancel(context)
+        pushToken = null
+        iceCache = null
         _calls.value = emptyList()
         _userCache.value = emptyMap()
         avatarCache.evictAll()
@@ -257,7 +275,21 @@ class ChatRepository(
 
     suspend fun logout() {
         val oldToken = session.token()
+        val oldPushToken = pushToken
         authMutex.withLock { clearSessionLocally() }
+        // Токен FCM больше не наш: иначе уведомления придут на чужой аккаунт.
+        PushService.dropToken(context)
+        scope.launch {
+            try {
+                withTimeout(4000) {
+                    if (oldToken != null && !oldPushToken.isNullOrBlank()) {
+                        api.deletePushDevice("Bearer $oldToken", PushDeviceRequest(oldPushToken))
+                    }
+                }
+            }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Токен перестанет действовать вместе с сессией. */ }
+        }
         // Local sign-out is immediate, including when offline. Revocation is best effort.
         scope.launch {
             try { withTimeout(4000) { oldToken?.let { api.logout("Bearer $it") } } }
@@ -313,6 +345,8 @@ class ChatRepository(
 
     fun startRealtime() {
         if (pollJob?.isActive == true || !session.isLoggedIn()) return
+        // Сервер должен знать, куда присылать push, пока приложение закрыто.
+        PushService.syncToken(context)
         val key = key()
         eventJob = scope.launch {
             ws.eventFlow.collect { event ->
@@ -322,6 +356,11 @@ class ChatRepository(
                         "connected" -> refresh(forceFull = true)
                         "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
                         "call" -> handleCallEvent(key, json.decodeFromJsonElement(CallDto.serializer(), event.data))
+                        "call_signal" -> {
+                            val signal = json.decodeFromJsonElement(CallSignalEvent.serializer(), event.data)
+                            // Сигналы чужого (уже завершённого) звонка игнорируем.
+                            if (_activeCall.value?.callId == signal.callId) _callSignals.tryEmit(signal)
+                        }
                         "call_status" -> {
                             val callId = event.data["call_id"]?.toString()?.trim('"')
                             val status = event.data["status"]?.toString()?.trim('"')
@@ -476,15 +515,19 @@ class ChatRepository(
             request(key) { api.updateCallStatus(it, call.id, CallStatusRequest("declined")) }
             return
         }
-        commit(key) { _activeCall.value = ActiveCall(call.id, call.callerId, titleFor(call.callerId), true, true) }
+        commit(key) {
+            _activeCall.value = ActiveCall(call.id, call.callerId, titleFor(call.callerId), true, true, call.video)
+        }
     }
 
-    suspend fun startCall(peerUserId: String) = callMutex.withLock {
+    suspend fun startCall(peerUserId: String, video: Boolean = false) = callMutex.withLock {
         val key = key()
         require(peerUserId != key.owner) { "Нельзя позвонить самому себе" }
         check(_activeCall.value == null) { "Сначала завершите текущий вызов" }
-        val call = request(key) { api.initiateCall(it, InitiateCallRequest(peerUserId)) }
-        commit(key) { _activeCall.value = ActiveCall(call.id, peerUserId, titleFor(peerUserId), false, true) }
+        val call = request(key) { api.initiateCall(it, InitiateCallRequest(peerUserId, video)) }
+        commit(key) {
+            _activeCall.value = ActiveCall(call.id, peerUserId, titleFor(peerUserId), false, true, call.video)
+        }
     }
 
     suspend fun setCallStatus(status: String) = callMutex.withLock {
@@ -498,7 +541,85 @@ class ChatRepository(
         }
     }
 
+    /**
+     * Отправка SDP/ICE второму участнику.
+     *
+     * Без callMutex: ICE-кандидатов много, и они не должны ждать смену статуса.
+     */
+    suspend fun sendCallSignal(callId: String, to: String, kind: String, payload: JsonObject) {
+        val key = key()
+        request(key) { api.callSignal(it, callId, CallSignalRequest(to, kind, payload)) }
+    }
+
+    // Кэш ICE-серверов: учётка TURN временная, держим её чуть меньше срока.
+    @Volatile private var iceCache: Pair<List<IceServerDto>, Long>? = null
+
+    /**
+     * ICE-серверы для звонка: STUN и временная учётка TURN.
+     *
+     * Секрет TURN остаётся на сервере: в приложение попадает логин и пароль
+     * на один час, так что из APK утекать нечему.
+     */
+    suspend fun iceServers(): List<IceServerDto> {
+        iceCache?.let { (servers, expiresAt) ->
+            if (System.currentTimeMillis() < expiresAt) return servers
+        }
+        val key = key()
+        val config = request(key) { api.iceConfig(it) }
+        val ttlMillis = (config.ttl.coerceAtLeast(120) - 60) * 1000L
+        iceCache = config.iceServers to (System.currentTimeMillis() + ttlMillis)
+        return config.iceServers
+    }
+
     fun dismissCallLocally() { _activeCall.value = null }
+
+    // ---------- Push-уведомления ----------
+
+    /** Последний токен FCM, отданный серверу: нужен, чтобы отвязать при выходе. */
+    @Volatile private var pushToken: String? = null
+
+    /**
+     * Регистрирует токен устройства. Вызов идемпотентен: сервер перезапишет
+     * запись, поэтому его можно звать при каждом запуске.
+     */
+    suspend fun registerPushToken(token: String) {
+        if (token.isBlank() || pushToken == token) return
+        val key = key()
+        request(key) { api.registerPushDevice(it, PushDeviceRequest(token)) }
+        pushToken = token
+    }
+
+    /**
+     * Показывает входящий звонок, пришедший push-уведомлением: приложение
+     * было закрыто, и событие WebSocket мы пропустили.
+     */
+    fun showIncomingCallFromPush(callId: String, peerId: String, peerName: String, video: Boolean) {
+        if (callId.isBlank() || !session.isLoggedIn()) return
+        if (_activeCall.value != null) return
+        _activeCall.value = ActiveCall(callId, peerId, peerName.ifBlank { titleFor(peerId) }, true, true, video)
+        scope.launch {
+            // Имя собеседника и актуальный статус: звонок мог уже завершиться.
+            runCatching { resolveUser(peerId) }
+            runCatching { fetchCalls() }
+        }
+    }
+
+    /** Звонящий бросил трубку, пока телефон звонил: убираем экран входящего. */
+    fun dismissCallFromPush(callId: String) {
+        if (callId.isNotBlank() && _activeCall.value?.callId == callId) _activeCall.value = null
+    }
+
+    /**
+     * Отклонение кнопкой в уведомлении. Отдельный метод, потому что
+     * [setCallStatus] работает с вызовом в памяти, а здесь процесс запустился
+     * ради одного нажатия.
+     */
+    suspend fun declineCall(callId: String) {
+        if (callId.isBlank()) return
+        val key = key()
+        request(key) { api.updateCallStatus(it, callId, CallStatusRequest("declined")) }
+        commit(key) { if (_activeCall.value?.callId == callId) _activeCall.value = null }
+    }
 
     suspend fun fetchCalls(): List<CallUi> {
         val key = key()
@@ -510,7 +631,10 @@ class ChatRepository(
         }
         val result = remote.map { c ->
             val peer = if (c.callerId == key.owner) c.calleeId else c.callerId
-            CallUi(c.id, peer, titleFor(peer), c.callerId != key.owner, c.status, Instant.parse(c.createdAt).toEpochMilli())
+            CallUi(
+                c.id, peer, titleFor(peer), c.callerId != key.owner, c.status,
+                Instant.parse(c.createdAt).toEpochMilli(), c.video,
+            )
         }.sortedByDescending { it.createdAtMillis }
         commit(key) {
             _calls.value = result

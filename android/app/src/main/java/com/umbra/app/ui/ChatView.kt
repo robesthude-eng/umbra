@@ -19,7 +19,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Mic
@@ -119,6 +121,14 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         error = null
         scope.launch { runCatching { recorder.cancel() } }
     }
+    fun startCall(video: Boolean) {
+        error = null
+        scope.launch {
+            // В личном чате chatId совпадает с id собеседника.
+            try { repo.startCall(chatId, video) }
+            catch (e: Exception) { error = e.userMessage() }
+        }
+    }
 
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Color.Transparent, modifier = Modifier.imePadding(), topBar = {
@@ -129,6 +139,11 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                 Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }, navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } }, actions = {
+            // Звонки только в личных чатах: групповая конференция требует SFU на сервере.
+            if (!isGroup && available) {
+                IconButton({ startCall(false) }) { Icon(Icons.Filled.Call, "Позвонить") }
+                IconButton({ startCall(true) }) { Icon(Icons.Filled.Videocam, "Видеозвонок") }
+            }
             if (isGroup && available) IconButton({ showMembers = true }) { Icon(Icons.Filled.Groups, "Участники группы") }
         })
     }) { padding ->
@@ -146,6 +161,18 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                                 val voice = message.voice
                                 if (voice != null) scope.launch {
                                     try { player.toggle(message.stableId, voice.mediaId, voice.localPath, voice.durationMs) }
+                                    catch (e: Exception) { error = e.userMessage() }
+                                }
+                            },
+                            onSeek = { positionMs ->
+                                scope.launch {
+                                    try { player.seekTo(message.stableId, positionMs) }
+                                    catch (e: Exception) { error = e.userMessage() }
+                                }
+                            },
+                            onSpeed = {
+                                scope.launch {
+                                    try { player.setSpeed(nextVoiceSpeed(playback?.speed ?: 1f)) }
                                     catch (e: Exception) { error = e.userMessage() }
                                 }
                             },
@@ -230,35 +257,68 @@ private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCa
 }
 
 @Composable
-private fun VoiceBubble(voice: VoiceMessage, playback: VoicePlayback?, textColor: Color, onTogglePlay: () -> Unit) {
+private fun VoiceBubble(
+    voice: VoiceMessage,
+    playback: VoicePlayback?,
+    textColor: Color,
+    onTogglePlay: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSpeed: () -> Unit,
+) {
     val playing = playback?.playing == true
     val loading = playback?.loading == true
     val total = (playback?.durationMs ?: voice.durationMs).coerceAtLeast(1L)
     val position = playback?.positionMs ?: 0L
+    val ready = voice.mediaId != null || voice.localPath != null
+    // Пока палец на ползунке, показываем его позицию, а не тикающую позицию плеера.
+    var dragFraction by remember(playback?.key) { mutableStateOf<Float?>(null) }
+    val fraction = dragFraction ?: (position.toFloat() / total.toFloat()).coerceIn(0f, 1f)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        FilledIconButton(onTogglePlay, enabled = !loading && (voice.mediaId != null || voice.localPath != null)) {
+        FilledIconButton(onTogglePlay, enabled = !loading && ready) {
             Icon(
                 if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 if (playing) "Пауза" else "Прослушать голосовое сообщение",
             )
         }
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.width(180.dp)) {
-            LinearProgressIndicator(
-                progress = { (position.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.width(168.dp)) {
+            Slider(
+                value = fraction,
+                onValueChange = { dragFraction = it },
+                onValueChangeFinished = {
+                    dragFraction?.let { onSeek((it * total).toLong()) }
+                    dragFraction = null
+                },
+                enabled = playback != null && !loading,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(6.dp))
             Text(
                 when {
                     loading -> "Загрузка записи…"
-                    playback != null && position > 0 -> "${voiceDurationText(position)} / ${voiceDurationText(total)}"
+                    playback != null -> "${voiceDurationText(position)} / ${voiceDurationText(total)}"
                     else -> "Голосовое · ${voiceDurationText(voice.durationMs)}"
                 },
                 style = MaterialTheme.typography.labelSmall, color = textColor,
             )
         }
+        if (playback != null && !loading) TextButton(onSpeed, contentPadding = PaddingValues(horizontal = 6.dp)) {
+            Text(voiceSpeedLabel(playback.speed), style = MaterialTheme.typography.labelSmall, color = textColor)
+        }
     }
+}
+
+/** Цикл скоростей по нажатию: 1× → 1,5× → 2× → 1×. */
+private val VOICE_SPEEDS = listOf(1f, 1.5f, 2f)
+
+private fun nextVoiceSpeed(current: Float): Float {
+    val index = VOICE_SPEEDS.indexOfFirst { kotlin.math.abs(it - current) < 0.01f }
+    return VOICE_SPEEDS[(index + 1) % VOICE_SPEEDS.size]
+}
+
+private fun voiceSpeedLabel(speed: Float): String = when {
+    speed >= 1.99f -> "2×"
+    speed >= 1.49f -> "1,5×"
+    else -> "1×"
 }
 
 @Composable
@@ -267,6 +327,8 @@ private fun MessageBubble(
     senderName: String?,
     playback: VoicePlayback?,
     onTogglePlay: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSpeed: () -> Unit,
     onRetry: () -> Unit,
 ) {
     val textColor = if (message.outgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
@@ -275,7 +337,7 @@ private fun MessageBubble(
         Surface(shape = RoundedCornerShape(18.dp), color = if (message.outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.widthIn(max = 320.dp)) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 val voice = message.voice
-                if (voice != null) VoiceBubble(voice, playback, textColor, onTogglePlay)
+                if (voice != null) VoiceBubble(voice, playback, textColor, onTogglePlay, onSeek, onSpeed)
                 else SelectionContainer { Text(message.text, color = textColor) }
                 val status = when {
                     message.failed -> "Не отправлено"

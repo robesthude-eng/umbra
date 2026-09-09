@@ -98,6 +98,13 @@ type Store interface {
 	UpdateCallStatus(ctx context.Context, id string, status model.CallStatus) error
 	ListCallsForUser(ctx context.Context, userID string) ([]*model.Call, error)
 
+	// Push-уведомления: токены устройств Firebase.
+	// SavePushDevice идемпотентен; токен, пришедший от другого аккаунта,
+	// перепривязывается к текущему пользователю.
+	SavePushDevice(ctx context.Context, userID, token, platform string) error
+	ListPushDevices(ctx context.Context, userID string) ([]model.PushDevice, error)
+	DeletePushDevice(ctx context.Context, token string) error
+
 	// DeleteUser полностью удаляет пользователя и все его данные (аккаунт,
 	// ключи, сообщения, медиа, членства в чатах, контакты, звонки) — «сжечь аккаунт».
 	DeleteUser(ctx context.Context, userID string) error

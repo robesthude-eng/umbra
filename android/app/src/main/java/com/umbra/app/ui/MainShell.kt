@@ -187,6 +187,7 @@ private fun CallsTab(container: AppContainer) {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showCall by rememberSaveable { mutableStateOf(false) }
+    var videoCall by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     suspend fun reload() {
         loading = true; error = null
@@ -197,8 +198,11 @@ private fun CallsTab(container: AppContainer) {
     LaunchedEffect(active) { reload() }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         TabHeading("Звонки")
-        Text("Звук и видео пока недоступны. Можно проверить только отправку вызова.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedButton({ showCall = true }, enabled = active == null) { Text("Проверить вызов без звука") }
+        Text("Голос и видео идут напрямую между устройствами. Вызов дойдёт, если у собеседника открыто приложение.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton({ videoCall = false; showCall = true }, enabled = active == null) { Text("Позвонить") }
+            OutlinedButton({ videoCall = true; showCall = true }, enabled = active == null) { Text("Видеозвонок") }
+        }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { problem ->
             Text(problem, color = MaterialTheme.colorScheme.error)
@@ -218,9 +222,14 @@ private fun CallsTab(container: AppContainer) {
             }
         }
     }
-    if (showCall) UsernameDialog("Проверка вызова", "Собеседник увидит вызов, если приложение открыто. Звука и видео не будет.", "Отправить вызов", { showCall = false }) { name ->
+    if (showCall) UsernameDialog(
+        if (videoCall) "Видеозвонок" else "Звонок",
+        "Введите имя пользователя. Разговор начнётся, когда собеседник примет вызов.",
+        if (videoCall) "Позвонить с видео" else "Позвонить",
+        { showCall = false },
+    ) { name ->
         val user = repo.resolveByUsername(name) ?: throw IllegalArgumentException("Пользователь не найден")
-        repo.startCall(user.id)
+        repo.startCall(user.id, videoCall)
         showCall = false
     }
 }

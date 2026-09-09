@@ -4,6 +4,7 @@ import android.content.Context
 import com.umbra.app.BuildConfig
 import com.umbra.app.data.api.UmbraApi
 import com.umbra.app.data.api.createUmbraApi
+import com.umbra.app.data.call.CallEngine
 import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.session.SessionStore
@@ -25,4 +26,10 @@ class AppContainer(context: Context) {
 
     /** Проигрывание: файл берётся из локального кэша либо скачивается репозиторием. */
     val voicePlayer = VoicePlayer { mediaId -> chatRepository.voiceFile(mediaId) }
+
+    /**
+     * Звонки на WebRTC. Движок принадлежит приложению, а не экрану: поворот
+     * телефона и свёртывание не рвут разговор.
+     */
+    val callEngine = CallEngine(context, chatRepository)
 }

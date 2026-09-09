@@ -32,6 +32,7 @@ type Server struct {
 	uploads    chan struct{}
 	otp        *otpStore
 	otpSender  OTPSender
+	pusher     pushSender
 	handler    http.Handler
 }
 
@@ -47,7 +48,7 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 
 // NewServerForMain собирает сервер с OTP-доставкой кодов (Telegram) и готов к запуску.
 func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender) *http.Server {
-	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender}
+	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg)}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -83,6 +84,10 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.Handle("POST /v1/calls/{id}/signal", s.requireAuth(http.HandlerFunc(s.handleCallSignal)))
 	mux.Handle("POST /v1/calls/{id}/status", s.requireAuth(http.HandlerFunc(s.handleUpdateCallStatus)))
 	mux.Handle("GET /v1/calls", s.requireAuth(http.HandlerFunc(s.handleListCalls)))
+	mux.Handle("GET /v1/turn", s.requireAuth(http.HandlerFunc(s.handleIceConfig)))
+	// Push-уведомления: регистрация и отвязка токена устройства.
+	mux.Handle("POST /v1/push/devices", s.requireAuth(http.HandlerFunc(s.handleRegisterPushDevice)))
+	mux.Handle("DELETE /v1/push/devices", s.requireAuth(http.HandlerFunc(s.handleDeletePushDevice)))
 	// Аккаунт: получение и полное удаление («сжечь»).
 	mux.Handle("GET /v1/account", s.requireAuth(http.HandlerFunc(s.handleGetAccount)))
 	mux.Handle("POST /v1/account/burn", s.requireAuth(http.HandlerFunc(s.handleBurnAccount)))

@@ -354,6 +354,7 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if err == nil && (msg.ExpiresAt == nil || msg.ExpiresAt.After(time.Now())) {
 		for _, m := range members {
 			s.hub.Push(m.UserID, ws.Event{Type: "message", Data: resp})
+			s.notifyMessage(m.UserID, msg.SenderID, chatID, msg.ID)
 		}
 	}
 

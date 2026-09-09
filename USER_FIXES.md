@@ -6,9 +6,10 @@
 Изменения подготовлены в исходниках; сборку и проверку на Android ещё нужно выполнить.
 
 > **Документ историчен:** описывает состояние 0.4.1. Текущее состояние
-> исходников — versionName 0.5.0, versionCode 9 (голосовые сообщения, Room 4;
-> см. [CHANGES.md](CHANGES.md) и [TODO.md](TODO.md)). Актуальный контракт API —
-> [docs/api.md](docs/api.md), состояние клиента — [android/README.md](android/README.md).
+> исходников — versionName 0.6.0, versionCode 10 (звонки на WebRTC, голосовые
+> сообщения, Room 4; см. [CHANGES.md](CHANGES.md) и [TODO.md](TODO.md)).
+> Актуальный контракт API — [docs/api.md](docs/api.md), состояние клиента —
+> [android/README.md](android/README.md).
 
 ## Вход и профиль
 

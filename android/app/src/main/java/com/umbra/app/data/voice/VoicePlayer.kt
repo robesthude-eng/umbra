@@ -26,6 +26,8 @@ data class VoicePlayback(
     val durationMs: Long,
     val playing: Boolean,
     val loading: Boolean,
+    /** Скорость проигрывания: 1f, 1.5f или 2f. */
+    val speed: Float = 1f,
 )
 
 /**
@@ -45,6 +47,10 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
     private var ticker: Job? = null
     private var currentKey: String? = null
 
+    /** Скорость сохраняется между записями: выбрал 2x — играют так все. */
+    private var speed = 1f
+    private var speedTouched = false
+
     /**
      * Играет или ставит на паузу сообщение [key].
      * [localPath] — своя запись, ещё не отправленная на сервер.
@@ -62,7 +68,8 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
                 // Повторное нажатие в конце записи начинает её заново.
                 if (active.currentPosition >= durationOf(active, durationMs) - REPLAY_EDGE_MS) active.seekTo(0)
                 active.start()
-                _state.value = _state.value?.copy(playing = true, loading = false)
+                applySpeedLocked(active)
+                _state.value = _state.value?.copy(playing = true, loading = false, speed = speed)
                 startTickerLocked()
             }
             true
@@ -72,7 +79,7 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
         mutex.withLock {
             releaseLocked()
             currentKey = key
-            _state.value = VoicePlayback(key, 0, durationMs, playing = false, loading = true)
+            _state.value = VoicePlayback(key, 0, durationMs, playing = false, loading = true, speed = speed)
         }
         val file = try {
             withContext(Dispatchers.IO) {
@@ -118,7 +125,8 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
             }
             player = created
             created.start()
-            _state.value = VoicePlayback(key, 0, total, playing = true, loading = false)
+            applySpeedLocked(created)
+            _state.value = VoicePlayback(key, 0, total, playing = true, loading = false, speed = speed)
             startTickerLocked()
         }
     }
@@ -131,6 +139,33 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
     /** Остановка без ожидания: для onDispose, где нельзя вызывать suspend-функции. */
     fun stopAsync() {
         scope.launch { runCatching { stop() } }
+    }
+
+    /**
+     * Перемотка активной записи. Ключ проверяется: пока файл готовится или
+     * играет другое сообщение, ползунок чужого пузыря ничего не двигает.
+     */
+    suspend fun seekTo(key: String, positionMs: Long) = mutex.withLock {
+        val active = player ?: return@withLock
+        if (currentKey != key) return@withLock
+        val total = durationOf(active, _state.value?.durationMs ?: 0L)
+        val target = positionMs.coerceIn(0L, total)
+        runCatching { active.seekTo(target.toInt()) }
+        _state.value = _state.value?.copy(positionMs = target)
+    }
+
+    /**
+     * Скорость проигрывания.
+     *
+     * MediaPlayer.setPlaybackParams на части прошивок сам запускает запись,
+     * поэтому на паузе значение только запоминается и применяется при старте.
+     */
+    suspend fun setSpeed(value: Float) = mutex.withLock {
+        speed = value.coerceIn(MIN_SPEED, MAX_SPEED)
+        speedTouched = true
+        val active = player
+        if (active != null && active.isPlaying) applySpeedLocked(active)
+        _state.value = _state.value?.copy(speed = speed)
     }
 
     /** Вызывать только под [mutex]. */
@@ -148,6 +183,15 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
                 if (finished) return@launch
             }
         }
+    }
+
+    /**
+     * Вызывать только под [mutex] и только на играющем плеере: PlaybackParams
+     * до prepare бросает исключение, поэтому вызов защищён runCatching.
+     */
+    private fun applySpeedLocked(active: MediaPlayer) {
+        if (!speedTouched && speed == 1f) return
+        runCatching { active.playbackParams = active.playbackParams.setSpeed(speed) }
     }
 
     /** Вызывать только под [mutex]. */
@@ -178,5 +222,7 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
     private companion object {
         const val TICK_MS = 200L
         const val REPLAY_EDGE_MS = 150L
+        const val MIN_SPEED = 0.5f
+        const val MAX_SPEED = 2f
     }
 }

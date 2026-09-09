@@ -3,6 +3,7 @@ package com.umbra.app.data.api
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -15,6 +16,7 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.HTTP
 import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.POST
@@ -198,8 +200,50 @@ data class CallDto(
 @Serializable
 data class CallsResponse(val calls: List<CallDto> = emptyList())
 
+/** Адрес STUN/TURN с временной учёткой: секрет остаётся на сервере. */
+@Serializable
+data class IceServerDto(
+    val urls: List<String> = emptyList(),
+    val username: String = "",
+    val credential: String = "",
+)
+
+/** Ответ GET /v1/turn: серверы и срок жизни учётки в секундах. */
+@Serializable
+data class IceConfigResponse(
+    @SerialName("ice_servers") val iceServers: List<IceServerDto> = emptyList(),
+    val ttl: Int = 0,
+)
+
+/** Токен FCM: по нему сервер будит телефон, пока приложение закрыто. */
+@Serializable
+data class PushDeviceRequest(val token: String, val platform: String = "android")
+
+/** Ответ /v1/push/devices. push_enabled=false — сервер без ключа Firebase. */
+@Serializable
+data class PushDeviceResponse(
+    val status: String = "",
+    @SerialName("push_enabled") val pushEnabled: Boolean = false,
+)
+
 @Serializable
 data class CallStatusRequest(val status: String)
+
+/** Сигнал WebRTC второму участнику: kind = offer | answer | ice. */
+@Serializable
+data class CallSignalRequest(val to: String, val kind: String, val payload: JsonObject)
+
+@Serializable
+data class CallSignalResponse(val status: String = "")
+
+/** Сигнал, пришедший по WebSocket (событие call_signal). */
+@Serializable
+data class CallSignalEvent(
+    @SerialName("call_id") val callId: String = "",
+    val from: String = "",
+    val kind: String = "",
+    val payload: JsonObject = JsonObject(emptyMap()),
+)
 
 // ---------- Retrofit ----------
 
@@ -289,8 +333,28 @@ interface UmbraApi {
     @POST("/v1/calls/{id}/status")
     suspend fun updateCallStatus(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: CallStatusRequest): CallStatusRequest
 
+    // Ретрансляция SDP/ICE: сервер сигналы не хранит, только пересылает.
+    @POST("/v1/calls/{id}/signal")
+    suspend fun callSignal(
+        @Header("Authorization") auth: String,
+        @Path("id") id: String,
+        @Body body: CallSignalRequest,
+    ): CallSignalResponse
+
     @GET("/v1/calls")
     suspend fun calls(@Header("Authorization") auth: String): CallsResponse
+
+    // ICE-серверы звонка: STUN и временная учётка TURN.
+    @GET("/v1/turn")
+    suspend fun iceConfig(@Header("Authorization") auth: String): IceConfigResponse
+
+    // Push-уведомления: регистрация и отвязка токена устройства.
+    @POST("/v1/push/devices")
+    suspend fun registerPushDevice(@Header("Authorization") auth: String, @Body body: PushDeviceRequest): PushDeviceResponse
+
+    // @DELETE в Retrofit тела не допускает, поэтому явный @HTTP.
+    @HTTP(method = "DELETE", path = "/v1/push/devices", hasBody = true)
+    suspend fun deletePushDevice(@Header("Authorization") auth: String, @Body body: PushDeviceRequest): PushDeviceResponse
 }
 
 // ---------- фабрика ----------

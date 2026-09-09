@@ -27,8 +27,19 @@ services:
       S3_BUCKET: "${S3_BUCKET:-umbra-media}"
       S3_REGION: "${S3_REGION:-us-east-1}"
       S3_USE_SSL: "${S3_USE_SSL:-false}"
+      # Звонки: ICE-серверы. Клиент забирает их через GET /v1/turn.
+      STUN_URL: "${STUN_URL:-stun:stun.l.google.com:19302}"
+      TURN_URL: "${TURN_URL:-}"
+      TURN_SECRET: "${TURN_SECRET:-}"
+      TURN_TTL_SECONDS: "${TURN_TTL_SECONDS:-3600}"
+      # Push-уведомления Firebase. Без ключа сервер работает, но не будит телефоны.
+      FCM_CREDENTIALS_FILE: "${FCM_CREDENTIALS_FILE:-}"
+      FCM_PROJECT_ID: "${FCM_PROJECT_ID:-}"
     volumes:
       - blobdata:/data/blobs
+      # Ключ сервисного аккаунта Firebase: положите файл рядом с compose,
+      # раскомментируйте строку и задайте FCM_CREDENTIALS_FILE=/run/secrets/fcm.json
+      # - ./fcm-service-account.json:/run/secrets/fcm.json:ro
     depends_on:
       db:
         condition: service_healthy
@@ -48,6 +59,29 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # TURN-ретранслятор для звонков: docker compose --profile turn up -d coturn.
+  # Ему нужен весь диапазон relay-портов, поэтому сеть — host.
+  coturn:
+    profiles: [turn]
+    image: coturn/coturn:4.6
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --realm=${TURN_REALM:-turn.example.com}
+      - --listening-port=3478
+      - --tls-listening-port=5349
+      - --min-port=49160
+      - --max-port=49200
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET:?Set TURN_SECRET in .env}
+      - --external-ip=${TURN_PUBLIC_IP:?Set TURN_PUBLIC_IP in .env}
+      - --no-multicast-peers
+      - --no-cli
+      - --no-tlsv1
+      - --no-tlsv1_1
     restart: unless-stopped
 
   minio:

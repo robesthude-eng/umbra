@@ -32,6 +32,9 @@ type MemoryStore struct {
 	transfers   map[string]*accountTransfer            // codeHash -> запись переноса
 	tgChat      map[string]int64                       // phone -> tg chat_id
 	avatars     map[string]string                      // userID -> mediaID
+
+	// pushDevices — токен FCM -> устройство. Создаётся при первой записи.
+	pushDevices map[string]model.PushDevice
 }
 
 type accountTransfer struct {
@@ -442,6 +445,7 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 		delete(m.byPhoneHash, u.PhoneHash)
 	}
 	delete(m.prekeys, userID)
+	m.dropPushDevicesForUser(userID)
 
 	// токены
 	for h, e := range m.tokens {

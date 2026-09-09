@@ -94,6 +94,8 @@ func (s *Server) handleInitiateCall(w http.ResponseWriter, r *http.Request) {
 
 	// Уведомляем вызываемого: входящий звонок.
 	s.hub.Push(req.CalleeID, ws.Event{Type: "call", Data: resp})
+	// Телефон может быть с закрытым приложением — будим его уведомлением.
+	s.notifyIncomingCall(call)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -176,6 +178,10 @@ func (s *Server) handleUpdateCallStatus(w http.ResponseWriter, r *http.Request) 
 		Type: "call_status",
 		Data: callStatusEvent{CallID: callID, Status: string(status)},
 	})
+	// Гасим экран входящего на телефоне, который разбудили звонком.
+	if status == model.CallEnded || status == model.CallDeclined || status == model.CallMissed {
+		s.notifyCallEnded(peerOf(call, userID), callID, string(status))
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
 }

@@ -125,3 +125,12 @@ type Call struct {
 	CreatedAt time.Time  `json:"created_at"`
 	EndedAt   *time.Time `json:"ended_at"`
 }
+
+// PushDevice — токен устройства для push-уведомлений. У одного человека
+// может быть несколько телефонов, поэтому храним списком.
+type PushDevice struct {
+	Token     string    `json:"token"`
+	UserID    string    `json:"user_id"`
+	Platform  string    `json:"platform"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

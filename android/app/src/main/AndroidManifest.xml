@@ -2,11 +2,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Смена сети во время звонка: пересобираем маршрут вместо обрыва. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Контакты: поиск друзей, уже зарегистрированных в Umbra. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Звонки: служба переднего плана держит микрофон и камеру, пока
+         приложение свёрнуто. С Android 14 без типизированных разрешений система
+         глушит захват звука в фоне. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- Уведомление активного звонка (Android 13+ спрашивает разрешение). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Входящий звонок поверх блокировки: полноэкранное уведомление. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- Lint PermissionImpliesHardware: разрешения не должны делать железо
          обязательным — приложение ставится и на устройства без камеры/микрофона. -->
@@ -25,6 +38,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Umbra">
             <intent-filter>
@@ -32,5 +46,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".data.call.CallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
+
+        <!-- Приём push-уведомлений: сообщения и звонки при закрытом
+             приложении. Служба запускается только если Firebase настроен. -->
+        <service
+            android:name=".data.push.PushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Кнопка «Отклонить» в уведомлении о входящем звонке. -->
+        <receiver
+            android:name=".data.call.CallActionReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -18,7 +18,7 @@ curl http://127.0.0.1:8080/healthz
 
 В автоматически собираемом Compose DSN используйте пароль без специальных символов
 URL, например hex. PostgreSQL хранится в томе pgdata, файлы — blobdata. Новый
-PostgreSQL-том получает все миграции 001–011 автоматически. На существующем томе
+PostgreSQL-том получает все миграции 001–012 автоматически. На существующем томе
 init-скрипты повторно не выполняются.
 
 Порт API опубликован только на 127.0.0.1. Для внешнего подключения настройте
@@ -47,12 +47,13 @@ docker inspect "$(docker compose ps -q server)" --format '{{range .NetworkSettin
 
 Сделайте резервную копию БД и файлов. Остановите все прежние экземпляры сервера,
 сохранив тома. Примените недостающие миграции в порядке номеров. При обновлении
-с 0.4.1 (схема 001–010) нужна только 011:
+с 0.4.1 (схема 001–010) нужны 011 и 012, при обновлении с 0.7.0 — только 012:
 
 ```bash
 docker compose stop server
 docker compose up -d db
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/011_revoke_legacy_sessions.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/012_push_devices.sql
 docker compose up -d --build server
 ```
 
@@ -62,6 +63,7 @@ docker compose up -d --build server
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/011_revoke_legacy_sessions.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/012_push_devices.sql
 ```
 
 Миграция 011 **однократно отзывает старые сессии и коды переноса**: прежние токены
@@ -111,6 +113,123 @@ docker compose --profile s3 up -d --build server
 нужен; укажите endpoint своего хранилища и S3_USE_SSL=true. В production закрепите
 образы по проверенным тегам или digest; исходный образ MinIO latest оставлен
 для совместимости локального стенда.
+
+## TURN для звонков
+
+Звонки идут напрямую между устройствами: сервер Umbra переносит только сигналы.
+Но если оба участника за «серым» NAT (обычно мобильный интернет), прямое
+соединение не устанавливается — нужен ретранслятор TURN. С 0.7.0 coturn есть в
+`docker-compose.yml` отдельным профилем `turn` и без него не запускается.
+
+Адреса STUN/TURN приложение больше не хранит: перед каждым звонком оно
+запрашивает их через `GET /v1/turn`. Сервер подписывает временную учётку общим
+секретом coturn (`TURN_SECRET`, схема `use-auth-secret`), поэтому постоянный пароль
+в APK не попадает, а утечка учётки живёт всего час.
+
+1. Сгенерируйте секрет и заполните `.env`:
+
+```bash
+openssl rand -hex 32   # значение для TURN_SECRET
+```
+
+```env
+STUN_URL=stun:stun.l.google.com:19302
+TURN_URL=turn:turn.example.com:3478?transport=udp
+TURN_SECRET=<вывод openssl rand -hex 32>
+TURN_TTL_SECONDS=3600
+TURN_REALM=turn.example.com
+TURN_PUBLIC_IP=<внешний IP хоста>
+```
+
+2. Поднимите ретранслятор и перезапустите сервер, чтобы он увидел секрет:
+
+```bash
+docker compose --profile turn up -d coturn
+docker compose up -d server
+```
+
+3. Откройте 3478/udp, 3478/tcp и диапазон 49160–49200/udp. Контейнер работает
+   в сети хоста: проброс портов Docker для relay-диапазона не годится.
+
+Проверка: `curl -H "Authorization: Bearer <токен>" http://localhost:8080/v1/turn`
+должен вернуть `ice_servers` с логином и паролем; подставьте их в любой
+trickle-ice — должны появиться кандидаты типа `relay`. Если `TURN_SECRET` пуст,
+сервер отдаёт постоянную пару `TURN_USERNAME`/`TURN_PASSWORD`, а без `TURN_URL`
+в списке остаётся только STUN — звонки между двумя мобильными сетями тогда
+часто не соединяются.
+
+Сертификаты в профиль не смонтированы, поэтому TLS (5349) coturn не поднимет —
+для звонков достаточно UDP. Если TLS всё же нужен (жёсткие корпоративные сети),
+смонтируйте сертификаты в контейнер и добавьте `--cert`/`--pkey` в команду
+сервиса `coturn`.
+
+Смена сети во время разговора (Wi-Fi ↔ мобильный) звонок не рвёт: клиент
+перезапускает ICE и показывает «Восстанавливаю связь…», давая на возврат 30
+секунд и до пяти попыток. Без TURN такой переход часто не выживает.
+
+Адрес и ключи TURN вшиваются в APK при сборке клиента:
+
+```bash
+./gradlew assembleRelease -Pumbra.serverUrl=https://umbra.example.com \
+  -Pumbra.turnUrl=turn:turn.example.com:3478 \
+  -Pumbra.turnUser=umbra -Pumbra.turnPassword=ЗАМЕНИТЕ_ПАРОЛЬ
+```
+
+Пароль из APK можно извлечь, поэтому давайте TURN-пользователю только
+ретрансляцию и меняйте пароль вместе с выпуском новой версии. Долгоживущее
+решение — временные ключи (REST API credentials в coturn); для этого нужен новый
+маршрут на сервере, его пока нет.
+
+STUN по умолчанию — публичный `stun:stun.l.google.com:19302`. Свой задаётся
+`-Pumbra.stunUrl=stun:turn.example.com:3478`.
+
+## Push-уведомления (FCM)
+
+Без этой настройки приложение работает как в 0.7.0: уведомления приходят только
+при запущенном процессе. Push нужен, чтобы сообщение и звонок доходили при
+полностью закрытом приложении.
+
+1. В консоли Firebase создайте проект, добавьте Android-приложение с пакетом
+   `com.umbra.app` и скачайте `google-services.json`. Положите файл в
+   `android/app/` перед сборкой APK: без него сборка проходит, но push выключен.
+2. В том же проекте: Project settings → Service accounts → Generate new private
+   key. Полученный JSON — ключ сервера, храните его как пароль.
+3. Положите ключ на сервер и укажите путь в `.env`:
+
+```env
+FCM_CREDENTIALS_FILE=/run/secrets/fcm.json
+# либо содержимое ключа одной строкой:
+# FCM_CREDENTIALS_JSON={"type":"service_account", ...}
+# FCM_PROJECT_ID берётся из ключа; задавайте, только если нужен другой проект.
+```
+
+   В `docker-compose.yml` монтирование уже подготовлено, снимите комментарий:
+
+```yaml
+      - ./fcm-service-account.json:/run/secrets/fcm.json:ro
+```
+
+4. Примените миграцию `012_push_devices.sql` (таблица токенов устройств) и
+   перезапустите сервер:
+
+```bash
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/012_push_devices.sql
+docker compose up -d --build server
+docker compose logs server | grep push
+```
+
+   В логе должно появиться `push: FCM enabled for project <id>`. Строка
+   `notifications disabled` означает, что ключ не прочитан — сервер продолжает
+   работать, но уведомлений не будет.
+
+Проверка: соберите APK с `google-services.json`, войдите на двух телефонах,
+полностью закройте приложение на втором (свайп из списка задач) и позвоните.
+На заблокированном экране должен появиться полноэкранный вызов с кнопками
+«Ответить» и «Отклонить». Токены лежат в таблице `push_devices`: при выходе из
+аккаунта клиент удаляет свой токен сам, мёртвые сервер вычищает по ответу FCM.
+
+Что уходит в Google: только идентификаторы (кто, какой чат, какой звонок) и имя
+отправителя. Текст сообщений и медиа через Firebase не передаются.
 
 ## Очистка
 

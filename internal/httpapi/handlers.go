@@ -421,6 +421,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// Realtime-доставка, если получатель онлайн.
 	if msg.ExpiresAt == nil || msg.ExpiresAt.After(time.Now()) {
 		s.hub.Push(req.RecipientID, ws.Event{Type: "message", Data: resp})
+		// Если приложение закрыто — будим телефон уведомлением.
+		s.notifyMessage(req.RecipientID, msg.SenderID, "", msg.ID)
 	}
 
 	writeJSON(w, http.StatusCreated, resp)

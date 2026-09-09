@@ -46,6 +46,26 @@ type Config struct {
 	S3UseSSL    bool
 	// MaxUserMediaBytes — квота суммарного объёма медиа на пользователя (0 = без лимита).
 	MaxUserMediaBytes int64
+	// StunURL — публичный STUN для сбора ICE-кандидатов звонка.
+	StunURL string
+	// TurnURL — TURN-сервер для ретрансляции, когда прямое соединение не поднялось.
+	// Можно перечислить несколько адресов через запятую.
+	TurnURL string
+	// TurnSecret — общий секрет coturn (--use-auth-secret). Если задан, сервер
+	// выдаёт временные учётки, и постоянный пароль в приложение не попадает.
+	TurnSecret string
+	// TurnUsername, TurnPassword — постоянная учётка TURN (запасной вариант).
+	TurnUsername string
+	TurnPassword string
+	// TurnTTL — срок жизни временной учётки TURN.
+	TurnTTL time.Duration
+	// FCMKeyFile — путь к JSON сервисного аккаунта Firebase.
+	// Пусто и FCMKeyJSON пуст = push-уведомления выключены.
+	FCMKeyFile string
+	// FCMKeyJSON — тот же JSON строкой (удобно для секретов без файла).
+	FCMKeyJSON string
+	// FCMProjectID переопределяет project_id из файла (обычно не нужен).
+	FCMProjectID string
 	// TelegramBotToken — токен бота для доставки OTP-кодов (пусто = коды отключены).
 	TelegramBotToken string
 	// TelegramAPIBase — если задан, все вызовы Bot API идут через этот base URL
@@ -76,6 +96,15 @@ func Load() *Config {
 		S3Region:          getenv("S3_REGION", ""),
 		S3UseSSL:          getenvBool("S3_USE_SSL", true),
 		MaxUserMediaBytes: int64(getenvInt("MAX_USER_MEDIA_BYTES", 0)),
+		StunURL:           getenv("STUN_URL", "stun:stun.l.google.com:19302"),
+		TurnURL:           getenv("TURN_URL", ""),
+		TurnSecret:        getenv("TURN_SECRET", ""),
+		TurnUsername:      getenv("TURN_USERNAME", ""),
+		TurnPassword:      getenv("TURN_PASSWORD", ""),
+		TurnTTL:           time.Duration(getenvPositiveInt("TURN_TTL_SECONDS", 3600)) * time.Second,
+		FCMKeyFile:        getenv("FCM_CREDENTIALS_FILE", ""),
+		FCMKeyJSON:        getenv("FCM_CREDENTIALS_JSON", ""),
+		FCMProjectID:      getenv("FCM_PROJECT_ID", ""),
 		TelegramBotToken:  getenv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramAPIBase:   getenv("TELEGRAM_API_BASE", ""),
 		TelegramAPIKey:    getenv("TELEGRAM_API_KEY", ""),
@@ -104,6 +133,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxUserMediaBytes < 0 {
 		return errors.New("MAX_USER_MEDIA_BYTES must not be negative")
+	}
+	if c.TurnTTL <= 0 || c.TurnTTL > 24*time.Hour {
+		return errors.New("TURN_TTL_SECONDS must be positive and at most one day")
 	}
 	if _, err := ParseTrustedProxies(c.TrustedProxies); err != nil {
 		return err
