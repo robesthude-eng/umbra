@@ -12,6 +12,7 @@ import com.umbra.app.data.msg.MessageContent
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.SessionPhase
 import com.umbra.app.data.session.SessionStore
+import com.umbra.app.data.voice.VoiceRecording
 import com.umbra.app.data.ws.WebSocketClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
@@ -26,6 +27,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import retrofit2.HttpException
+import java.io.File
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -109,6 +111,56 @@ class UserFlowsTest {
         assertTrue(clientIds.all { it.isNotBlank() })
         assertEquals(1, clientIds.toSet().size)
         assertEquals(2, attempts.get())
+    }
+
+    @Test fun voiceMessageUploadsRecordingThenSendsVoiceEnvelope() = runBlocking {
+        val sentCiphertexts = ConcurrentLinkedQueue<String>()
+        val uploadStarted = CountDownLatch(1)
+        val allowUpload = CountDownLatch(1)
+        handler = { request ->
+            when (request.requestUrl?.encodedPath) {
+                "/v1/media" -> {
+                    // Задерживаем загрузку, чтобы проверить пузырь до отправки файла.
+                    uploadStarted.countDown()
+                    allowUpload.await(10, TimeUnit.SECONDS)
+                    ok("""{"id":"media-1","content_type":"audio/mp4","size":2048}""", 201)
+                }
+                "/v1/messages" -> {
+                    val body = Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject
+                    val ciphertext = body["ciphertext"]!!.jsonPrimitive.content
+                    sentCiphertexts.add(ciphertext)
+                    ok(buildJsonObject {
+                        put("id", "server-voice"); put("sender_id", me); put("recipient_id", peer)
+                        put("ciphertext", ciphertext); put("created_at", created)
+                        put("client_message_id", body["client_message_id"]!!.jsonPrimitive.content)
+                    }.toString(), 201)
+                }
+                else -> ok("{}", 404)
+            }
+        }
+        db.chatDao().upsert(ChatEntity(peer, "dm", "Друг"))
+        val recorded = File(context.cacheDir, "voice_${UUID.randomUUID()}.m4a")
+        recorded.writeBytes(ByteArray(2048))
+        repo.sendVoice(peer, VoiceRecording(recorded, 3_500, "audio/mp4"))
+        assertTrue(withContext(Dispatchers.IO) { uploadStarted.await(5, TimeUnit.SECONDS) })
+        val queued = withTimeout(5000) { repo.messagesFor(peer).first { it.isNotEmpty() } }.single()
+        assertTrue(queued.pending)
+        assertNull(queued.voice!!.mediaId)
+        assertEquals(3_500L, queued.voice!!.durationMs)
+        assertFalse(recorded.exists()) // запись уехала из кэша в приватный каталог приложения
+        allowUpload.countDown()
+        repo.flushOutbox()
+        val delivered = withTimeout(5000) { repo.messagesFor(peer).first { it.size == 1 && !it[0].pending } }.single()
+        assertFalse(delivered.failed)
+        assertEquals("media-1", delivered.voice!!.mediaId)
+        val ciphertext = sentCiphertexts.single()
+        assertEquals(MessageContent.KIND_VOICE, MessageCodec.decode(ciphertext)!!.kind)
+        val media = MessageCodec.voice(ciphertext)!!
+        assertEquals("media-1", media.id)
+        assertEquals("audio/mp4", media.mime)
+        assertEquals(3_500L, media.durationMs)
+        assertEquals(2048L, media.size)
+        assertTrue(requests.any { it.method == "POST" && it.requestUrl?.encodedPath == "/v1/media" })
     }
 
     @Test fun failedMessageCanBeRetriedWithoutLosingText() = runBlocking {

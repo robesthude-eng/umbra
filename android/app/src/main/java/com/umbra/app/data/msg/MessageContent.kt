@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.Locale
 
 /**
  * Модель T1: сервер хранит сообщения, клиент шлёт их «конвертом» — маленьким
@@ -25,6 +26,15 @@ data class MessageContent(
     companion object {
         const val KIND_TEXT = "text"
         const val KIND_MEDIA = "media"
+
+        /**
+         * Голосовое сообщение: `media.id` — запись, загруженная в `/v1/media`,
+         * `media.durationMs` — длительность, `media.mime` — `audio/mp4`.
+         *
+         * Клиенты 0.4.2 и старше этого kind не знают и покажут сообщение как
+         * неподдерживаемое: у них нет ни этой ветки, ни проигрывателя.
+         */
+        const val KIND_VOICE = "voice"
     }
 }
 
@@ -34,6 +44,8 @@ data class MediaContent(
     val mime: String = "application/octet-stream",
     val size: Long = 0,
     val name: String? = null,
+    /** Длительность звука в миллисекундах; 0 — неизвестна. */
+    val durationMs: Long = 0,
 ) {
     companion object {
         const val KIND_PHOTO = "photo"
@@ -43,6 +55,16 @@ data class MediaContent(
 
 /** Модель вложения для UI. */
 data class UiMedia(val id: String, val mime: String, val size: Long, val name: String?)
+
+/** 7_000 -> «0:07», 95_000 -> «1:35». */
+fun voiceDurationText(millis: Long): String {
+    val seconds = (millis.coerceAtLeast(0) + 500) / 1000
+    return String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60)
+}
+
+/** Голосовая часть конверта; null — сообщение не голосовое. */
+fun MessageContent.voice(): MediaContent? =
+    media?.takeIf { kind == MessageContent.KIND_VOICE && it.id.isNotBlank() }
 
 object MessageCodec {
     private val json = Json { ignoreUnknownKeys = true }
@@ -57,10 +79,18 @@ object MessageCodec {
         json.decodeFromString<MessageContent>(String(bytes, Charsets.UTF_8))
     }.getOrNull()
 
+    /** Голосовая часть конверта или null, если это не голосовое сообщение. */
+    fun voice(ciphertextB64: String): MediaContent? = decode(ciphertextB64)?.voice()
+
+    /** Подпись голосового сообщения для списка чатов и для пузыря. */
+    fun voiceLabel(durationMs: Long): String =
+        if (durationMs > 0) "Голосовое сообщение · ${voiceDurationText(durationMs)}" else "Голосовое сообщение"
+
     /** Показывает сообщение: текст конверта (медиа-подпись). */
     fun plainText(ciphertextB64: String): String {
         val c = decode(ciphertextB64) ?: return "Сообщение из другой версии приложения: содержимое недоступно"
         if (c.v != 1) return "Обновите приложение, чтобы прочитать это сообщение"
+        c.voice()?.let { return voiceLabel(it.durationMs) }
         if (c.kind == MessageContent.KIND_MEDIA) {
             return listOf(c.text, c.media?.name?.let { "Вложение: $it" } ?: "Вложение")
                 .filter { it.isNotBlank() }.joinToString("\n") + "\nПросмотр вложений в этой версии пока недоступен."

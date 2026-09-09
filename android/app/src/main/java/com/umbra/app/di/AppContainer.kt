@@ -7,6 +7,8 @@ import com.umbra.app.data.api.createUmbraApi
 import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.session.SessionStore
+import com.umbra.app.data.voice.VoicePlayer
+import com.umbra.app.data.voice.VoiceRecorder
 import com.umbra.app.data.ws.WebSocketClient
 
 /** Простой граф зависимостей (service locator). */
@@ -17,4 +19,10 @@ class AppContainer(context: Context) {
     val api: UmbraApi = createUmbraApi(baseUrl)
     val webSocketClient = WebSocketClient(baseUrl)
     val chatRepository = ChatRepository(context, api, database, session, webSocketClient)
+
+    /** Запись голосовых сообщений: MediaRecorder из Android SDK, без новых зависимостей. */
+    val voiceRecorder = VoiceRecorder(context)
+
+    /** Проигрывание: файл берётся из локального кэша либо скачивается репозиторием. */
+    val voicePlayer = VoicePlayer { mediaId -> chatRepository.voiceFile(mediaId) }
 }

@@ -11,9 +11,12 @@ import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.db.ChatEntity
 import com.umbra.app.data.db.CryptoRecord
 import com.umbra.app.data.db.MessageEntity
+import com.umbra.app.data.msg.MediaContent
 import com.umbra.app.data.msg.MessageCodec
 import com.umbra.app.data.msg.MessageContent
 import com.umbra.app.data.session.SessionStore
+import com.umbra.app.data.voice.VoiceRecorder
+import com.umbra.app.data.voice.VoiceRecording
 import com.umbra.app.data.ws.WebSocketClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -26,9 +29,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.HttpException
+import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.time.Instant
 import java.util.UUID
 
@@ -55,6 +61,20 @@ data class UiMessage(
     val pending: Boolean = false,
     val error: String? = null,
     val stableId: String = id,
+    /** Заполнено только у голосовых сообщений. */
+    val voice: VoiceMessage? = null,
+)
+
+/**
+ * Голосовое сообщение для UI.
+ * mediaId == null — запись ещё не загружена на сервер, играется локальный файл.
+ * localPath == null — своей копии нет, файл будет скачан при первом прослушивании.
+ */
+data class VoiceMessage(
+    val mediaId: String?,
+    val localPath: String?,
+    val durationMs: Long,
+    val sizeBytes: Long,
 )
 
 /** Запись о звонке (история/активный). */
@@ -180,7 +200,7 @@ class ChatRepository(
             authMutex.withLock {
                 stopRealtime()
                 // Reauthentication to the same account must preserve unsent messages.
-                if (session.userId() != a.id) db.clearAllTables()
+                if (session.userId() != a.id) { db.clearAllTables(); clearLocalMediaFiles() }
                 _userCache.value = emptyMap()
                 avatarCache.evictAll()
                 session.save(result.token, a.id, a.username, a.phone, a.displayName, a.lastName, a.avatarMediaId)
@@ -255,6 +275,7 @@ class ChatRepository(
                 commit(key) {
                     clearSessionLocally()
                     db.clearAllTables()
+                    clearLocalMediaFiles()
                     session.clear()
                     _account.value = accountInfo()
                 }
@@ -521,9 +542,21 @@ class ChatRepository(
     fun messagesFor(chatId: String): Flow<List<UiMessage>> {
         val owner = me().orEmpty()
         return db.messageDao().messagesFor(owner, chatId).map { rows -> rows.map { e ->
-            UiMessage(e.id, e.senderId, MessageCodec.plainText(e.ciphertext), e.createdAtMillis,
+            val remote = if (e.ciphertext.isBlank()) null else MessageCodec.voice(e.ciphertext)
+            // Пока запись не загружена на сервер, конверта ещё нет: играем локальный файл.
+            val voice = when {
+                remote != null -> VoiceMessage(
+                    remote.id, e.localMediaPath,
+                    if (remote.durationMs > 0) remote.durationMs else e.localMediaDurationMs, remote.size,
+                )
+                e.localMediaPath != null && e.localMediaMime?.startsWith("audio/") == true ->
+                    VoiceMessage(null, e.localMediaPath, e.localMediaDurationMs, 0)
+                else -> null
+            }
+            val text = if (voice != null) MessageCodec.voiceLabel(voice.durationMs) else MessageCodec.plainText(e.ciphertext)
+            UiMessage(e.id, e.senderId, text, e.createdAtMillis,
                 e.senderId == owner && e.ownerId == owner, e.deliveryState == "failed", e.deliveryState == "pending",
-                e.error, e.clientId?.let { "${e.senderId}:$it" } ?: e.id)
+                e.error, e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice)
         } }.flowOn(Dispatchers.IO)
     }
 
@@ -576,6 +609,43 @@ class ChatRepository(
         requestOutbox()
     }
 
+    /**
+     * Голосовое сообщение уходит той же очередью, что и текст: строка появляется
+     * сразу со статусом «Ожидает отправки», файл записи переносится в приватный
+     * каталог приложения, а загрузка в /v1/media и отправка конверта происходят
+     * в flushOutbox — с теми же повторами и сохранением порядка.
+     */
+    suspend fun sendVoice(chatId: String, recording: VoiceRecording) {
+        val key = key()
+        require(recording.durationMs >= VoiceRecorder.MIN_DURATION_MS) { "Слишком короткая запись. Запишите чуть дольше." }
+        require(recording.durationMs <= VoiceRecorder.MAX_DURATION_MS + 1_000) { "Запись длиннее 5 минут. Запишите короче." }
+        val size = withContext(Dispatchers.IO) { recording.file.length() }
+        require(size > 0) { "Запись не удалась. Попробуйте ещё раз." }
+        require(size <= MAX_VOICE_BYTES) { "Голосовое сообщение слишком большое. Запишите короче." }
+        val id = UUID.randomUUID().toString()
+        // Кэш записи может быть вычищен системой, а очередь ждёт сеть сколько нужно.
+        val stored = withContext(Dispatchers.IO) { moveTo(recording.file, File(outboxDir(), "$id.m4a")) }
+        try {
+            commit(key) {
+                val chat = requireNotNull(db.chatDao().get(chatId)) { "Сначала откройте диалог" }
+                check(chat.type != "unavailable") { "Доступ к группе прекращён. Обратитесь к её владельцу." }
+                val now = Instant.now()
+                db.messageDao().upsert(MessageEntity(
+                    "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
+                    "", now.toString(), null,
+                    ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+                    localMediaPath = stored.absolutePath, localMediaMime = recording.mime,
+                    localMediaDurationMs = recording.durationMs,
+                ))
+            }
+        } catch (e: Throwable) {
+            // Строки в базе нет — файл записи тоже не должен остаться мусором.
+            withContext(NonCancellable + Dispatchers.IO) { stored.delete() }
+            throw e
+        }
+        requestOutbox()
+    }
+
     suspend fun retryMessage(id: String) {
         val key = key()
         commit(key) {
@@ -607,18 +677,27 @@ class ChatRepository(
                     continue
                 }
                 try {
+                    // Голосовое: сначала загружаем запись в /v1/media, затем отправляем конверт с media.id.
+                    val ready = ensureMediaUploaded(key, m)
                     val sent = request(key) { auth ->
-                        if (m.recipientId.isEmpty()) api.sendChatMessage(auth, m.chatId, SendChatMessageRequest(m.ciphertext, clientId))
-                        else api.sendMessage(auth, SendMessageRequest(m.recipientId, m.ciphertext, clientId))
+                        if (ready.recipientId.isEmpty()) api.sendChatMessage(auth, ready.chatId, SendChatMessageRequest(ready.ciphertext, clientId))
+                        else api.sendMessage(auth, SendMessageRequest(ready.recipientId, ready.ciphertext, clientId))
                     }
                     persist(key, sent.copy(clientMessageId = clientId))
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
-                    val retryable = e is IOException || e is HttpException && (e.code() >= 500 || e.code() in listOf(408, 429))
+                    val code = (e as? HttpException)?.code()
+                    val retryable = e is IOException || code != null && (code >= 500 && code != 507 || code in listOf(408, 429))
+                    val voiceUpload = m.ciphertext.isBlank() && m.localMediaPath != null
                     commit(key) { db.messageDao().get(m.id)?.let { current ->
                         if (current.deliveryState == "pending") db.messageDao().upsert(current.copy(
                             deliveryState = if (retryable) "pending" else "failed",
-                            error = if (retryable) null else "Не отправлено. Проверьте доступ к чату и повторите.",
+                            error = if (retryable) null else when {
+                                code == 413 -> "Сервер не принял запись: слишком большой файл или закончилась квота."
+                                code == 507 -> "На сервере нет места для файлов. Сообщите владельцу Umbra."
+                                voiceUpload -> "Голосовое сообщение не отправлено. Повторите отправку."
+                                else -> "Не отправлено. Проверьте доступ к чату и повторите."
+                            },
                         ))
                     } }
                     if (retryable) throw e // Preserve ordering and retry later instead of hammering an offline server.
@@ -640,6 +719,123 @@ class ChatRepository(
         return bytes
     }
 
+    /**
+     * Загружает файл записи в /v1/media и подставляет в строку готовый конверт.
+     * Повторный вызов ничего не делает: признак загруженной записи — непустой ciphertext,
+     * поэтому обрыв сети между загрузкой и отправкой не создаёт вторую копию файла.
+     */
+    private suspend fun ensureMediaUploaded(key: SessionKey, m: MessageEntity): MessageEntity {
+        if (m.ciphertext.isNotBlank()) return m
+        val path = m.localMediaPath ?: throw IllegalStateException("Запись потеряна. Запишите голосовое сообщение заново.")
+        val file = File(path)
+        val size = withContext(Dispatchers.IO) { if (file.isFile) file.length() else 0L }
+        if (size <= 0) throw IllegalStateException("Файл записи не найден. Запишите голосовое сообщение заново.")
+        val mime = m.localMediaMime ?: VoiceRecorder.MIME
+        val up = request(key) { auth ->
+            val part = MultipartBody.Part.createFormData("file", "voice.m4a", file.asRequestBody(mime.toMediaType()))
+            val response = api.uploadMedia(auth, part, mime.toRequestBody("text/plain".toMediaType()))
+            if (!response.isSuccessful) throw HttpException(response)
+            response.body() ?: throw IOException("Empty upload response")
+        }
+        check(up.id.isNotBlank()) { "Сервер не сохранил запись. Повторите отправку." }
+        val envelope = MessageCodec.encode(MessageContent(
+            kind = MessageContent.KIND_VOICE,
+            media = MediaContent(
+                id = up.id,
+                mime = up.contentType.ifBlank { mime },
+                size = if (up.size > 0) up.size else size,
+                durationMs = m.localMediaDurationMs,
+            ),
+        ))
+        // Свою запись оставляем на устройстве как кэш — уже под именем media id.
+        val cached = withContext(Dispatchers.IO) { runCatching { moveTo(file, mediaCacheFile(up.id)) }.getOrNull() }
+        val next = m.copy(ciphertext = envelope, localMediaPath = (cached ?: file).absolutePath)
+        commit(key) { db.messageDao().upsert(next) }
+        return next
+    }
+
+    /** Файл голосового сообщения: из локального кэша либо скачивается с сервера. */
+    suspend fun voiceFile(mediaId: String): File {
+        require(mediaId.isNotBlank()) { "Голосовое сообщение недоступно" }
+        val target = mediaCacheFile(mediaId)
+        if (withContext(Dispatchers.IO) { target.isFile && target.length() > 0 }) return target
+        val key = key()
+        val file = request(key) { auth ->
+            val response = api.downloadMedia(auth, mediaId)
+            if (!response.isSuccessful) {
+                response.errorBody()?.close()
+                if (response.code() == 404) throw IllegalStateException("Запись не найдена на сервере.")
+                throw HttpException(response)
+            }
+            val body = response.body() ?: throw IOException("Empty media response")
+            withContext(Dispatchers.IO) { body.use { saveMedia(it.byteStream(), target) } }
+        }
+        withContext(Dispatchers.IO) { runCatching { pruneMediaCache() } }
+        return file
+    }
+
+    /** Пишем через .part и переименовываем: недокачанный файл не попадёт в кэш. */
+    private fun saveMedia(input: InputStream, target: File): File {
+        val temp = File(target.parentFile, target.name + ".part")
+        try {
+            var total = 0L
+            temp.outputStream().use { out ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    check(total <= MAX_VOICE_BYTES) { "Запись слишком большая для загрузки." }
+                    out.write(buffer, 0, read)
+                }
+            }
+            check(total > 0) { "Сервер вернул пустую запись." }
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
+            }
+        } catch (e: Throwable) {
+            temp.delete()
+            throw e
+        }
+        return target
+    }
+
+    private fun mediaCacheDir(): File = File(context.filesDir, MEDIA_CACHE_DIR).apply { mkdirs() }
+
+    private fun mediaCacheFile(mediaId: String): File =
+        File(mediaCacheDir(), mediaId.replace(Regex("[^A-Za-z0-9_.-]"), "_"))
+
+    private fun outboxDir(): File = File(context.filesDir, VOICE_OUTBOX_DIR).apply { mkdirs() }
+
+    private fun moveTo(source: File, target: File): File {
+        if (source == target) return target
+        target.parentFile?.mkdirs()
+        if (!source.renameTo(target)) {
+            source.copyTo(target, overwrite = true)
+            source.delete()
+        }
+        return target
+    }
+
+    /** Кэш записей не должен расти бесконечно: держим бюджет, удаляя самые старые файлы. */
+    private fun pruneMediaCache() {
+        val files = mediaCacheDir().listFiles()?.filter { it.isFile } ?: return
+        var total = files.sumOf { it.length() }
+        if (total <= MEDIA_CACHE_BUDGET_BYTES) return
+        for (file in files.sortedBy { it.lastModified() }) {
+            val size = file.length()
+            if (file.delete()) total -= size
+            if (total <= MEDIA_CACHE_BUDGET_BYTES) break
+        }
+    }
+
+    /** Смена аккаунта или удаление: локальные файлы записей тоже должны исчезнуть. */
+    private fun clearLocalMediaFiles() {
+        runCatching { File(context.filesDir, MEDIA_CACHE_DIR).deleteRecursively() }
+        runCatching { File(context.filesDir, VOICE_DIR).deleteRecursively() }
+    }
+
     suspend fun deleteExpiredMessages() {
         val key = key()
         commit(key) { db.messageDao().deleteExpired(System.currentTimeMillis()) }
@@ -647,5 +843,13 @@ class ChatRepository(
 
     fun close() { stopRealtime(); scope.cancel(); ws.close() }
 
-    companion object { const val MEDIA_CACHE_DIR = "media" }
+    companion object {
+        const val MEDIA_CACHE_DIR = "media"
+        private const val VOICE_DIR = "voice"
+        private const val VOICE_OUTBOX_DIR = "voice/outbox"
+
+        /** 5 минут AAC 64 кбит/с ≈ 2,5 МиБ; запас — на случай другого кодека устройства. */
+        private const val MAX_VOICE_BYTES = 24L * 1024 * 1024
+        private const val MEDIA_CACHE_BUDGET_BYTES = 256L * 1024 * 1024
+    }
 }

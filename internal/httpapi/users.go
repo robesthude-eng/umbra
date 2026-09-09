@@ -20,7 +20,7 @@ type userCard struct {
 	CreatedAt     string `json:"created_at"`
 }
 
-// handleGetUserByUsername — GET /v1/users/by-username/{username}. Разрешает
+// handleGetUserByUsername — GET /v1/by-username/{username}. Разрешает
 // @username в карточку (нужно для «новый диалог по имени пользователя»).
 func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(strings.TrimSpace(r.PathValue("username")), "@")

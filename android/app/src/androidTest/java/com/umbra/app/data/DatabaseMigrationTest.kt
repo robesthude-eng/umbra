@@ -30,13 +30,17 @@ class DatabaseMigrationTest {
                 db.version = 1
             }
             val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3).build()
+                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4).build()
             try {
                 runBlocking {
                     val row = db.messageDao().get("old")!!
                     assertEquals("opaque", row.ciphertext)
                     assertEquals("", row.ownerId)
                     assertNull(row.localBody)
+                    // Старые текстовые строки после MIGRATION_3_4 остаются без голосовых полей.
+                    assertNull(row.localMediaPath)
+                    assertNull(row.localMediaMime)
+                    assertEquals(0L, row.localMediaDurationMs)
                     assertEquals("Alice", db.chatDao().get("alice")!!.title)
                     // После назначения owner таймер удаляет и ciphertext, и локальную копию.
                     db.messageDao().upsert(row.copy(ownerId = "bob", localBody = "encrypted", expiresAtMillis = 100))

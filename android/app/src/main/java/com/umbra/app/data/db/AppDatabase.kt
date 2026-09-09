@@ -26,6 +26,11 @@ data class MessageEntity(
     @ColumnInfo(defaultValue = "NULL") val clientId: String? = null,
     @ColumnInfo(defaultValue = "NULL") val error: String? = null,
     @ColumnInfo(defaultValue = "0") val expiresInSeconds: Long = 0,
+    // Голосовое сообщение: файл записи на устройстве, его тип и длительность.
+    // Пока ciphertext пуст, запись ещё не загружена на сервер (см. flushOutbox).
+    @ColumnInfo(defaultValue = "NULL") val localMediaPath: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val localMediaMime: String? = null,
+    @ColumnInfo(defaultValue = "0") val localMediaDurationMs: Long = 0,
 )
 
 @Entity(tableName = "chats")
@@ -145,7 +150,7 @@ interface IdentityKeyDao {
 
 @Database(
     entities = [MessageEntity::class, ChatEntity::class, ContactEntity::class, IdentityKeyEntity::class, CryptoRecord::class],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -180,9 +185,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Голосовые сообщения: путь к файлу записи, тип и длительность.
+                // Существующие строки остаются текстовыми: NULL и 0.
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaPath TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaMime TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaDurationMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "umbra.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

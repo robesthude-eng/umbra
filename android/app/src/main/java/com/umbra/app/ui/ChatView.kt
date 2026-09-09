@@ -2,7 +2,11 @@
 
 package com.umbra.app.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,21 +19,31 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.umbra.app.data.InputRules
 import com.umbra.app.data.api.UserCard
+import com.umbra.app.data.msg.voiceDurationText
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.UiMessage
+import com.umbra.app.data.repo.VoiceMessage
+import com.umbra.app.data.voice.VoicePlayback
+import com.umbra.app.data.voice.VoiceRecordingState
 import com.umbra.app.di.AppContainer
 import com.umbra.app.ui.theme.UmbraColors
 import kotlinx.coroutines.launch
@@ -40,11 +54,16 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     val repo = container.chatRepository
+    val recorder = container.voiceRecorder
+    val player = container.voicePlayer
+    val context = LocalContext.current
     val chatFlow = remember(chatId) { container.database.chatDao().observe(chatId) }
     val chat by chatFlow.collectAsState(null)
     val messageFlow = remember(chatId) { repo.messagesFor(chatId) }
     val messages by messageFlow.collectAsState(emptyList())
     val users by repo.userCache.collectAsState()
+    val recording by recorder.state.collectAsState()
+    val playback by player.state.collectAsState()
     var input by rememberSaveable(chatId) { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -60,6 +79,47 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     LaunchedEffect(latestId) {
         if (latestId != null && nearBottom) listState.animateScrollToItem(0)
     }
+    // Ушли с экрана — глушим звук и выкидываем недозаписанную запись.
+    DisposableEffect(chatId) {
+        onDispose {
+            player.stopAsync()
+            recorder.cancelAsync()
+        }
+    }
+
+    fun beginRecording() {
+        error = null
+        scope.launch {
+            try { recorder.start() } catch (e: Exception) { error = e.userMessage() }
+        }
+    }
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginRecording()
+        else error = "Разрешите доступ к микрофону, чтобы записывать голосовые сообщения."
+    }
+    fun requestRecording() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) beginRecording()
+        else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    fun sendRecording() {
+        if (sending) return
+        sending = true; error = null
+        scope.launch {
+            try {
+                val recorded = recorder.finish()
+                repo.sendVoice(chatId, recorded)
+                listState.animateScrollToItem(0)
+            } catch (e: Exception) {
+                error = e.userMessage()
+                runCatching { recorder.cancel() }
+            } finally { sending = false }
+        }
+    }
+    fun cancelRecording() {
+        error = null
+        scope.launch { runCatching { recorder.cancel() } }
+    }
+
     BackHandler(onBack = onBack)
     Scaffold(containerColor = Color.Transparent, modifier = Modifier.imePadding(), topBar = {
         TopAppBar(title = {
@@ -78,7 +138,18 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                 if (messages.isEmpty()) Text("Здесь появятся сообщения", Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 LazyColumn(state = listState, reverseLayout = true, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(messages.asReversed(), key = { it.stableId }) { message ->
-                        MessageBubble(message, if (isGroup && !message.outgoing) users[message.senderId]?.fullName() ?: "Участник" else null) {
+                        MessageBubble(
+                            message,
+                            if (isGroup && !message.outgoing) users[message.senderId]?.fullName() ?: "Участник" else null,
+                            playback?.takeIf { it.key == message.stableId },
+                            onTogglePlay = {
+                                val voice = message.voice
+                                if (voice != null) scope.launch {
+                                    try { player.toggle(message.stableId, voice.mediaId, voice.localPath, voice.durationMs) }
+                                    catch (e: Exception) { error = e.userMessage() }
+                                }
+                            },
+                        ) {
                             scope.launch {
                                 try { repo.retryMessage(message.id) }
                                 catch (e: Exception) { error = e.userMessage() }
@@ -97,28 +168,41 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                 }
             }
             if (chat?.type == "unavailable") Text("Доступ к группе прекращён. Сохранённую историю можно прочитать.", Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(
-                    input, { input = it; error = null }, Modifier.weight(1f), enabled = !sending && available,
-                    placeholder = { Text("Сообщение…") }, maxLines = 5,
-                    isError = input.length > InputRules.MAX_TEXT_LENGTH,
-                    supportingText = if (input.length > InputRules.MAX_TEXT_LENGTH) ({ Text("Максимум 16 000 символов") }) else null,
-                )
-                Spacer(Modifier.width(6.dp))
-                FilledIconButton(enabled = !sending && available && input.isNotBlank() && input.length <= InputRules.MAX_TEXT_LENGTH, onClick = {
-                    if (!sending) {
-                        val text = input
-                        sending = true; error = null
-                        scope.launch {
-                            try {
-                                repo.sendText(chatId, text)
-                                input = ""
-                                listState.animateScrollToItem(0)
-                            } catch (e: Exception) { error = e.userMessage() }
-                            finally { sending = false }
+            val activeRecording = recording
+            if (activeRecording != null) {
+                VoiceRecordingBar(activeRecording, sending, onCancel = { cancelRecording() }, onSend = { sendRecording() })
+            } else {
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
+                    OutlinedTextField(
+                        input, { input = it; error = null }, Modifier.weight(1f), enabled = !sending && available,
+                        placeholder = { Text("Сообщение…") }, maxLines = 5,
+                        isError = input.length > InputRules.MAX_TEXT_LENGTH,
+                        supportingText = if (input.length > InputRules.MAX_TEXT_LENGTH) ({ Text("Максимум 16 000 символов") }) else null,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    if (input.isBlank()) {
+                        // Пустое поле — микрофон. Нажатие, а не удержание: так удобнее
+                        // для долгих записей и для людей с ограниченной моторикой.
+                        FilledIconButton(enabled = !sending && available, onClick = { requestRecording() }) {
+                            Icon(Icons.Filled.Mic, "Записать голосовое сообщение")
                         }
+                    } else {
+                        FilledIconButton(enabled = !sending && available && input.length <= InputRules.MAX_TEXT_LENGTH, onClick = {
+                            if (!sending) {
+                                val text = input
+                                sending = true; error = null
+                                scope.launch {
+                                    try {
+                                        repo.sendText(chatId, text)
+                                        input = ""
+                                        listState.animateScrollToItem(0)
+                                    } catch (e: Exception) { error = e.userMessage() }
+                                    finally { sending = false }
+                                }
+                            }
+                        }) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить") }
                     }
-                }) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить") }
+                }
             }
         }
     }
@@ -126,13 +210,73 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun MessageBubble(message: UiMessage, senderName: String?, onRetry: () -> Unit) {
+private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCancel: () -> Unit, onSend: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onCancel, enabled = !sending) { Icon(Icons.Filled.Delete, "Отменить запись") }
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (state.limitReached) "Максимум 5:00 — отправьте или запишите заново" else "Запись… ${voiceDurationText(state.elapsedMs)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (state.limitReached) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            )
+            LinearProgressIndicator(
+                progress = { state.level.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        FilledIconButton(onSend, enabled = !sending) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить голосовое сообщение") }
+    }
+}
+
+@Composable
+private fun VoiceBubble(voice: VoiceMessage, playback: VoicePlayback?, textColor: Color, onTogglePlay: () -> Unit) {
+    val playing = playback?.playing == true
+    val loading = playback?.loading == true
+    val total = (playback?.durationMs ?: voice.durationMs).coerceAtLeast(1L)
+    val position = playback?.positionMs ?: 0L
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        FilledIconButton(onTogglePlay, enabled = !loading && (voice.mediaId != null || voice.localPath != null)) {
+            Icon(
+                if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                if (playing) "Пауза" else "Прослушать голосовое сообщение",
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.width(180.dp)) {
+            LinearProgressIndicator(
+                progress = { (position.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                when {
+                    loading -> "Загрузка записи…"
+                    playback != null && position > 0 -> "${voiceDurationText(position)} / ${voiceDurationText(total)}"
+                    else -> "Голосовое · ${voiceDurationText(voice.durationMs)}"
+                },
+                style = MaterialTheme.typography.labelSmall, color = textColor,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    message: UiMessage,
+    senderName: String?,
+    playback: VoicePlayback?,
+    onTogglePlay: () -> Unit,
+    onRetry: () -> Unit,
+) {
     val textColor = if (message.outgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (message.outgoing) Alignment.End else Alignment.Start) {
         senderName?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
         Surface(shape = RoundedCornerShape(18.dp), color = if (message.outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.widthIn(max = 320.dp)) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                SelectionContainer { Text(message.text, color = textColor) }
+                val voice = message.voice
+                if (voice != null) VoiceBubble(voice, playback, textColor, onTogglePlay)
+                else SelectionContainer { Text(message.text, color = textColor) }
                 val status = when {
                     message.failed -> "Не отправлено"
                     message.pending -> "Ожидает отправки"
