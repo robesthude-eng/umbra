@@ -23,20 +23,20 @@ import (
 // ---------- вспомогательные структуры запросов/ответов ----------
 
 type registerRequest struct {
-	Username        string   `json:"username"`
+	Username string `json:"username"`
 	// Phone — номер телефона (нормализуется к E.164); Name — отображаемое имя.
 	// Если задан phone, username можно не передавать: сервер сгенерирует
 	// служебный идентификатор вида u<digits>.
-	Phone string `json:"phone"`
-	Name  string `json:"name"`
-	IdentityEd25519 string   `json:"identity_ed25519"` // base64
-	IdentityX25519  string   `json:"identity_x25519"`  // base64
-	SignedPrekey    string   `json:"signed_prekey"`    // base64
-	SignedPrekeySig string   `json:"signed_prekey_signature"`
-	OneTimePrekeys  []string `json:"one_time_prekeys"` // base64
-	KeyVersion      int      `json:"key_version"`
-	RegistrationID  int      `json:"registration_id"`
-	SignedPrekeyID  int      `json:"signed_prekey_id"`
+	Phone            string   `json:"phone"`
+	Name             string   `json:"name"`
+	IdentityEd25519  string   `json:"identity_ed25519"` // base64
+	IdentityX25519   string   `json:"identity_x25519"`  // base64
+	SignedPrekey     string   `json:"signed_prekey"`    // base64
+	SignedPrekeySig  string   `json:"signed_prekey_signature"`
+	OneTimePrekeys   []string `json:"one_time_prekeys"` // base64
+	KeyVersion       int      `json:"key_version"`
+	RegistrationID   int      `json:"registration_id"`
+	SignedPrekeyID   int      `json:"signed_prekey_id"`
 	OneTimePrekeyIDs []int    `json:"one_time_prekey_ids"`
 	KeyBundleID      string   `json:"key_bundle_id"`
 }
@@ -53,7 +53,7 @@ type prekeysResponse struct {
 	RegistrationID  int    `json:"registration_id"`
 	SignedPrekeyID  int    `json:"signed_prekey_id"`
 	OneTimePrekeyID int    `json:"one_time_prekey_id"`
-	DeviceID       int    `json:"device_id"`
+	DeviceID        int    `json:"device_id"`
 }
 
 type challengeRequest struct {
@@ -81,8 +81,8 @@ type sendMessageRequest struct {
 	RecipientID string `json:"recipient_id"`
 	Ciphertext  string `json:"ciphertext"` // base64
 	// ExpiresIn — секунды до самоуничтожения (секретный чат). 0 = без таймера.
-	ExpiresIn int64 `json:"expires_in"`
-	ClientID string `json:"client_message_id"`
+	ExpiresIn int64  `json:"expires_in"`
+	ClientID  string `json:"client_message_id"`
 }
 
 type messageResponse struct {
@@ -103,18 +103,31 @@ type challengeStore struct {
 	data map[string]challengeEntry
 }
 
-type challengeEntry struct { username string; expires time.Time }
+type challengeEntry struct {
+	username string
+	expires  time.Time
+}
 
-func newChallengeStore() *challengeStore { return &challengeStore{data: make(map[string]challengeEntry)} }
+func newChallengeStore() *challengeStore {
+	return &challengeStore{data: make(map[string]challengeEntry)}
+}
 
 func (c *challengeStore) put(challenge string, ttl time.Duration, username ...string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
-	for key, value := range c.data { if !value.expires.After(now) { delete(c.data, key) } }
-	if len(c.data) >= 4096 { return false }
+	for key, value := range c.data {
+		if !value.expires.After(now) {
+			delete(c.data, key)
+		}
+	}
+	if len(c.data) >= 4096 {
+		return false
+	}
 	name := ""
-	if len(username) != 0 { name = username[0] }
+	if len(username) != 0 {
+		name = username[0]
+	}
 	c.data[challenge] = challengeEntry{name, now.Add(ttl)}
 	return true
 }
@@ -126,7 +139,9 @@ func (c *challengeStore) consume(challenge string, username ...string) bool {
 	if !ok {
 		return false
 	}
-	if len(username) != 0 && exp.username != username[0] { return false }
+	if len(username) != 0 && exp.username != username[0] {
+		return false
+	}
 	delete(c.data, challenge)
 	return time.Now().Before(exp.expires)
 }
@@ -210,7 +225,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		SignedPrekeySig: spsig,
 		OneTimePrekeys:  otks,
 		CreatedAt:       time.Now().UTC(),
-		KeyVersion: req.KeyVersion, RegistrationID: req.RegistrationID, SignedPrekeyID: req.SignedPrekeyID,
+		KeyVersion:      req.KeyVersion, RegistrationID: req.RegistrationID, SignedPrekeyID: req.SignedPrekeyID,
 		KeyBundleID: req.KeyBundleID,
 	}
 	if err := prepareKeyMaterial(u, req.OneTimePrekeyIDs); err != nil {
@@ -235,12 +250,19 @@ func (s *Server) handlePrekeys(w http.ResponseWriter, r *http.Request) {
 	username := r.PathValue("username")
 	u, otk, err := s.store.TakePrekeyBundle(r.Context(), username)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) { writeError(w, http.StatusNotFound, "user not found") } else { writeError(w, http.StatusInternalServerError, "internal error") }
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "user not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 	otkID := 0
 	if u.KeyVersion == 2 && len(otk) != 0 {
-		if len(otk) != 37 { writeError(w, http.StatusInternalServerError, "invalid stored prekey"); return }
+		if len(otk) != 37 {
+			writeError(w, http.StatusInternalServerError, "invalid stored prekey")
+			return
+		}
 		otkID = int(binary.BigEndian.Uint32(otk[:4]))
 		otk = otk[4:]
 	}
@@ -252,7 +274,7 @@ func (s *Server) handlePrekeys(w http.ResponseWriter, r *http.Request) {
 		SignedPrekey:    b64e(u.SignedPrekey),
 		SignedPrekeySig: b64e(u.SignedPrekeySig),
 		OneTimePrekey:   b64e(otk),
-		KeyVersion: u.KeyVersion, RegistrationID: u.RegistrationID, SignedPrekeyID: u.SignedPrekeyID,
+		KeyVersion:      u.KeyVersion, RegistrationID: u.RegistrationID, SignedPrekeyID: u.SignedPrekeyID,
 		OneTimePrekeyID: otkID, DeviceID: 1,
 	})
 }
@@ -371,14 +393,17 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		RecipientID: req.RecipientID,
 		Ciphertext:  ct,
 		CreatedAt:   time.Now().UTC(),
-		ClientID: req.ClientID, ExpiresIn: req.ExpiresIn,
+		ClientID:    req.ClientID, ExpiresIn: req.ExpiresIn,
 	}
 	if req.ExpiresIn > 0 {
 		exp := msg.CreatedAt.Add(time.Duration(req.ExpiresIn) * time.Second)
 		msg.ExpiresAt = &exp
 	}
 	if err := s.store.SaveMessage(r.Context(), msg); err != nil {
-		if errors.Is(err, store.ErrConflict) { writeError(w, http.StatusConflict, "client_message_id reused with different content"); return }
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict, "client_message_id reused with different content")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -390,7 +415,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		Ciphertext:  req.Ciphertext,
 		CreatedAt:   msg.CreatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:   formatTime(msg.ExpiresAt),
-		ClientID: msg.ClientID,
+		ClientID:    msg.ClientID,
 	}
 
 	// Realtime-доставка, если получатель онлайн.
@@ -409,13 +434,17 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			since = t
 		} else {
-			writeError(w, http.StatusBadRequest, "invalid since"); return
+			writeError(w, http.StatusBadRequest, "invalid since")
+			return
 		}
 	}
 	limit := 200
 	if v := r.URL.Query().Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > 500 { writeError(w, http.StatusBadRequest, "invalid limit"); return }
+		if err != nil || n < 1 || n > 500 {
+			writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
 		limit = n
 	}
 	msgs, err := s.store.ListMessagesPage(r.Context(), userID, since, r.URL.Query().Get("after_id"), limit)
@@ -443,7 +472,9 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 // Bearer-заголовок; query token поддерживается для старых клиентов.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	token, _ := bearerToken(r)
-	if token == "" { token = r.URL.Query().Get("token") } // Совместимость со старым клиентом.
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	} // Совместимость со старым клиентом.
 	if token == "" {
 		writeError(w, http.StatusUnauthorized, "missing token")
 		return

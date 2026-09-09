@@ -13,7 +13,9 @@ func registerVerifiedPhone(t *testing.T, h http.Handler, sender *fakeOTPSender, 
 		t.Fatalf("request_code: %d %v", code, body)
 	}
 	normalized, err := NormalizePhone(phone)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, body := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": phone, "code": sender.code(normalized)}, "")
 	if code != http.StatusOK {
 		t.Fatalf("verify_code: %d %v", code, body)
@@ -23,7 +25,9 @@ func registerVerifiedPhone(t *testing.T, h http.Handler, sender *fakeOTPSender, 
 		t.Fatalf("profile: %d %v", code, body)
 	}
 	code, account := doReq(t, h, http.MethodGet, "/v1/account", nil, token)
-	if code != http.StatusOK { t.Fatalf("account: %d %v", code, account) }
+	if code != http.StatusOK {
+		t.Fatalf("account: %d %v", code, account)
+	}
 	return account, token
 }
 

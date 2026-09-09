@@ -18,8 +18,8 @@ type initiateCallRequest struct {
 }
 
 type callSignalRequest struct {
-	To      string          `json:"to"`    // получатель сигнала (id второго участника)
-	Kind    string          `json:"kind"`  // offer | answer | ice
+	To      string          `json:"to"`   // получатель сигнала (id второго участника)
+	Kind    string          `json:"kind"` // offer | answer | ice
 	Payload json.RawMessage `json:"payload"`
 }
 

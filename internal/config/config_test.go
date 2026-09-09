@@ -10,11 +10,17 @@ func TestAuthAndProxyDefaults(t *testing.T) {
 	t.Setenv("TOKEN_TTL_SECONDS", "")
 	t.Setenv("TRUSTED_PROXIES", "")
 	c := Load()
-	if c.AllowLegacyAuth || c.TokenTTL != 30*24*time.Hour || c.TrustedProxies != "" { t.Fatal("unsafe or unexpected defaults") }
-	for _, input := range []string{"0.0.0.0/0", "::/0", "*", "127.0.0.1,invalid", "127.0.0.1,"} {
-		if _, err := ParseTrustedProxies(input); err == nil { t.Fatalf("accepted %q", input) }
+	if c.AllowLegacyAuth || c.TokenTTL != 30*24*time.Hour || c.TrustedProxies != "" {
+		t.Fatal("unsafe or unexpected defaults")
 	}
-	if prefixes, err := ParseTrustedProxies("127.0.0.1, ::1, 10.1.0.0/16"); err != nil || len(prefixes) != 3 { t.Fatalf("valid proxies: %v", err) }
+	for _, input := range []string{"0.0.0.0/0", "::/0", "*", "127.0.0.1,invalid", "127.0.0.1,"} {
+		if _, err := ParseTrustedProxies(input); err == nil {
+			t.Fatalf("accepted %q", input)
+		}
+	}
+	if prefixes, err := ParseTrustedProxies("127.0.0.1, ::1, 10.1.0.0/16"); err != nil || len(prefixes) != 3 {
+		t.Fatalf("valid proxies: %v", err)
+	}
 }
 
 func TestMediaConfig(t *testing.T) {

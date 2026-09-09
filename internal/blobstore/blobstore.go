@@ -2,10 +2,10 @@
 package blobstore
 
 import (
-    "context"
+	"context"
 	"errors"
 	"io"
-    "time"
+	"time"
 )
 
 var ErrInvalidID = errors.New("blobstore: invalid id")
@@ -25,41 +25,59 @@ type Lister interface {
 }
 
 type TimestampReader interface {
-    ModifiedAt(ctx context.Context, id string) (time.Time, error)
+	ModifiedAt(ctx context.Context, id string) (time.Time, error)
 }
 
 // Context variants allow HTTP cancellation and bounded maintenance sweeps.
 func Put(ctx context.Context, blobs BlobStore, id string, r io.Reader) error {
-    if b, ok := blobs.(interface { PutContext(context.Context, string, io.Reader) error }); ok {
-        return b.PutContext(ctx, id, r)
-    }
-    if err := ctx.Err(); err != nil { return err }
-    return blobs.Put(id, r)
+	if b, ok := blobs.(interface {
+		PutContext(context.Context, string, io.Reader) error
+	}); ok {
+		return b.PutContext(ctx, id, r)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return blobs.Put(id, r)
 }
 
 func Get(ctx context.Context, blobs BlobStore, id string) (io.ReadCloser, error) {
-    if b, ok := blobs.(interface { GetContext(context.Context, string) (io.ReadCloser, error) }); ok {
-        return b.GetContext(ctx, id)
-    }
-    if err := ctx.Err(); err != nil { return nil, err }
-    return blobs.Get(id)
+	if b, ok := blobs.(interface {
+		GetContext(context.Context, string) (io.ReadCloser, error)
+	}); ok {
+		return b.GetContext(ctx, id)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return blobs.Get(id)
 }
 
 func Delete(ctx context.Context, blobs BlobStore, id string) error {
-    if b, ok := blobs.(interface { DeleteContext(context.Context, string) error }); ok {
-        return b.DeleteContext(ctx, id)
-    }
-    if err := ctx.Err(); err != nil { return err }
-    return blobs.Delete(id)
+	if b, ok := blobs.(interface {
+		DeleteContext(context.Context, string) error
+	}); ok {
+		return b.DeleteContext(ctx, id)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return blobs.Delete(id)
 }
 
 func List(ctx context.Context, blobs BlobStore) ([]string, error) {
-    if b, ok := blobs.(interface { ListContext(context.Context) ([]string, error) }); ok {
-        return b.ListContext(ctx)
-    }
-    if err := ctx.Err(); err != nil { return nil, err }
-    if b, ok := blobs.(Lister); ok { return b.List() }
-    return nil, errors.New("blobstore cannot list objects")
+	if b, ok := blobs.(interface {
+		ListContext(context.Context) ([]string, error)
+	}); ok {
+		return b.ListContext(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if b, ok := blobs.(Lister); ok {
+		return b.List()
+	}
+	return nil, errors.New("blobstore cannot list objects")
 }
 
 // validID запрещает разделители пути, точки и слишком длинные имена файлов.

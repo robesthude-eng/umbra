@@ -57,10 +57,14 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 		return
 	default:
-		writeError(w, http.StatusServiceUnavailable, "too many active uploads"); return
+		writeError(w, http.StatusServiceUnavailable, "too many active uploads")
+		return
 	}
 	unlock, err := s.store.LockBlobs(r.Context(), false)
-	if err != nil { writeError(w, 503, "storage busy"); return }
+	if err != nil {
+		writeError(w, 503, "storage busy")
+		return
+	}
 	defer unlock()
 	limit := int64(s.cfg.MaxMediaBytes)
 	if limit <= 0 {
@@ -96,8 +100,8 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	var fileSeen, contentTypeSeen, blobSaved, committed bool
 	defer func() {
 		if blobSaved && !committed {
-            cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-            defer cancel()
+			cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 			if err := blobstore.Delete(cleanup, s.blobs, id); err != nil && !errors.Is(err, store.ErrNotFound) {
 				log.Printf("не удалось удалить незавершённый blob: %v", err)
 			}
@@ -190,7 +194,10 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		err = s.store.SaveMedia(r.Context(), m)
 	}
 	if err != nil {
-		if errors.Is(err, store.ErrQuota) { writeError(w, 413, "user media quota exceeded"); return }
+		if errors.Is(err, store.ErrQuota) {
+			writeError(w, 413, "user media quota exceeded")
+			return
+		}
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "media id conflict")
 		} else {

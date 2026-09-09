@@ -52,12 +52,12 @@ func NewS3BlobStore(endpoint, accessKey, secretKey, bucket, region string, useSS
 }
 
 func (s *S3BlobStore) Put(id string, r io.Reader) error {
-    return s.PutContext(context.Background(), id, r)
+	return s.PutContext(context.Background(), id, r)
 }
 
 func (s *S3BlobStore) PutContext(parent context.Context, id string, r io.Reader) error {
-    ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-    defer cancel()
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	defer cancel()
 	if !validID(id) {
 		return ErrInvalidID
 	}
@@ -68,17 +68,17 @@ func (s *S3BlobStore) PutContext(parent context.Context, id string, r io.Reader)
 }
 
 func (s *S3BlobStore) Get(id string) (io.ReadCloser, error) {
-    return s.GetContext(context.Background(), id)
+	return s.GetContext(context.Background(), id)
 }
 
 func (s *S3BlobStore) GetContext(parent context.Context, id string) (io.ReadCloser, error) {
 	if !validID(id) {
 		return nil, ErrInvalidID
 	}
-    ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	// Context остаётся жив до закрытия потока.
 	if _, err := s.client.StatObject(ctx, s.bucket, id, minio.StatObjectOptions{}); err != nil {
-        cancel()
+		cancel()
 		if isNoSuchKey(err) {
 			return nil, store.ErrNotFound
 		}
@@ -86,22 +86,26 @@ func (s *S3BlobStore) GetContext(parent context.Context, id string) (io.ReadClos
 	}
 	obj, err := s.client.GetObject(ctx, s.bucket, id, minio.GetObjectOptions{})
 	if err != nil {
-        cancel()
+		cancel()
 		return nil, fmt.Errorf("s3 get: %w", err)
 	}
 	return &contextReader{ReadCloser: obj, cancel: cancel}, nil
 }
 
-type contextReader struct { io.ReadCloser; cancel context.CancelFunc }
+type contextReader struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
 func (r *contextReader) Close() error { r.cancel(); return r.ReadCloser.Close() }
 
 func (s *S3BlobStore) Delete(id string) error {
-    return s.DeleteContext(context.Background(), id)
+	return s.DeleteContext(context.Background(), id)
 }
 
 func (s *S3BlobStore) DeleteContext(parent context.Context, id string) error {
-    ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-    defer cancel()
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
 	if !validID(id) {
 		return ErrInvalidID
 	}
@@ -113,12 +117,12 @@ func (s *S3BlobStore) DeleteContext(parent context.Context, id string) error {
 
 // List перечисляет id всех объектов в бакете (для GC).
 func (s *S3BlobStore) List() ([]string, error) {
-    return s.ListContext(context.Background())
+	return s.ListContext(context.Background())
 }
 
 func (s *S3BlobStore) ListContext(parent context.Context) ([]string, error) {
-    ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-    defer cancel()
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	defer cancel()
 	out := make([]string, 0)
 	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{}) {
 		if obj.Err != nil {
@@ -132,12 +136,16 @@ func (s *S3BlobStore) ListContext(parent context.Context) ([]string, error) {
 func (s *S3BlobStore) Close() error { return nil }
 
 func (s *S3BlobStore) ModifiedAt(parent context.Context, id string) (time.Time, error) {
-    if !validID(id) { return time.Time{}, ErrInvalidID }
-    ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-    defer cancel()
-    info, err := s.client.StatObject(ctx, s.bucket, id, minio.StatObjectOptions{})
-    if err != nil && isNoSuchKey(err) { return time.Time{}, store.ErrNotFound }
-    return info.LastModified, err
+	if !validID(id) {
+		return time.Time{}, ErrInvalidID
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	info, err := s.client.StatObject(ctx, s.bucket, id, minio.StatObjectOptions{})
+	if err != nil && isNoSuchKey(err) {
+		return time.Time{}, store.ErrNotFound
+	}
+	return info.LastModified, err
 }
 
 func isNoSuchKey(err error) bool {

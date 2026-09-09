@@ -1,13 +1,13 @@
 package blobstore
 
 import (
-    "context"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-    "time"
+	"time"
 
 	"umbra/server/internal/store"
 )
@@ -124,11 +124,21 @@ func (f *FileBlobStore) List() ([]string, error) {
 func (f *FileBlobStore) Close() error { return nil }
 
 func (f *FileBlobStore) ModifiedAt(ctx context.Context, id string) (time.Time, error) {
-    if err := ctx.Err(); err != nil { return time.Time{}, err }
-    if !validID(id) { return time.Time{}, ErrInvalidID }
-    info, err := os.Lstat(filepath.Join(f.dir, id))
-    if errors.Is(err, os.ErrNotExist) { return time.Time{}, store.ErrNotFound }
-    if err != nil { return time.Time{}, err }
-    if !info.Mode().IsRegular() { return time.Time{}, store.ErrNotFound }
-    return info.ModTime(), nil
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	if !validID(id) {
+		return time.Time{}, ErrInvalidID
+	}
+	info, err := os.Lstat(filepath.Join(f.dir, id))
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, store.ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return time.Time{}, store.ErrNotFound
+	}
+	return info.ModTime(), nil
 }

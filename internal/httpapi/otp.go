@@ -160,11 +160,11 @@ type verifyCodeResponse struct {
 }
 
 type accountView struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	Phone       string `json:"phone"`
-	DisplayName string `json:"display_name"`
-	LastName    string `json:"last_name,omitempty"`
+	ID            string `json:"id"`
+	Username      string `json:"username"`
+	Phone         string `json:"phone"`
+	DisplayName   string `json:"display_name"`
+	LastName      string `json:"last_name,omitempty"`
 	AvatarMediaID string `json:"avatar_media_id,omitempty"`
 }
 
@@ -241,11 +241,11 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 		NewAccount:      newAccount,
 		ProfileComplete: u.DisplayName != "",
 		Account: &accountView{
-			ID:          u.ID,
-			Username:    u.Username,
-			Phone:       u.Phone,
-			DisplayName: u.DisplayName,
-			LastName:    u.LastName,
+			ID:            u.ID,
+			Username:      u.Username,
+			Phone:         u.Phone,
+			DisplayName:   u.DisplayName,
+			LastName:      u.LastName,
 			AvatarMediaID: avatar,
 		},
 	})
@@ -281,8 +281,8 @@ func (s *Server) createCloudUser(ctx context.Context, phone string) (*model.User
 }
 
 type updateProfileRequest struct {
-	Username string `json:"username"`
-	Name     string `json:"name"`
+	Username string  `json:"username"`
+	Name     string  `json:"name"`
 	LastName *string `json:"last_name"`
 }
 
@@ -311,13 +311,14 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if req.LastName != nil {
 		lastName = strings.TrimSpace(*req.LastName)
 	}
+	// Имя обязательно всегда (правило пользователя; соответствует UI, которое не
+	// позволяет очистить имя). Клиент, обновляющий только username/last_name,
+	// присылает текущее имя; пустое имя отклоняется.
 	if name == "" {
-		if cur.DisplayName == "" {
-			writeError(w, http.StatusBadRequest, "Введите имя")
-			return
-		}
-		name = cur.DisplayName
-	} else if !validDisplayName(name) {
+		writeError(w, http.StatusBadRequest, "Введите имя")
+		return
+	}
+	if !validDisplayName(name) {
 		writeError(w, http.StatusBadRequest, "invalid name")
 		return
 	}

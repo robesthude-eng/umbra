@@ -14,8 +14,8 @@ type rateWindow struct {
 	end   time.Time
 }
 type requestLimiter struct {
-	mu      sync.Mutex
-	entries map[string]rateWindow
+	mu             sync.Mutex
+	entries        map[string]rateWindow
 	trustedProxies []netip.Prefix
 }
 

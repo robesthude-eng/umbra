@@ -27,7 +27,9 @@ func TestDefaultServerRequiresOTP(t *testing.T) {
 		}
 	}
 	account, token := registerVerifiedPhone(t, h, sender, "Владелец", "+79991234567")
-	if account["id"] == "" || token == "" { t.Fatal("OTP did not create a usable account") }
+	if account["id"] == "" || token == "" {
+		t.Fatal("OTP did not create a usable account")
+	}
 }
 
 func TestLegacyRegistrationCannotClaimPhone(t *testing.T) {
@@ -49,9 +51,13 @@ func TestExistingPhoneKeysCannotAuthenticateAfterOTP(t *testing.T) {
 	// Reproduce an account created by the vulnerable server before the upgrade.
 	u := &model.User{ID: "old-account", Username: "old_phone_account", Phone: "+79991234567",
 		PhoneHash: PhoneHash("+79991234567"), IdentityEd25519: key.privEd.Public().(ed25519.PublicKey), CreatedAt: time.Now()}
-	if err := st.CreateUser(context.Background(), u); err != nil { t.Fatal(err) }
+	if err := st.CreateUser(context.Background(), u); err != nil {
+		t.Fatal(err)
+	}
 	account, _ := registerVerifiedPhone(t, h, sender, "Владелец", u.Phone)
-	if account["id"] != u.ID { t.Fatal("OTP lost the existing account") }
+	if account["id"] != u.ID {
+		t.Fatal("OTP lost the existing account")
+	}
 	for _, login := range []map[string]any{{"phone": u.Phone}, {"username": u.Username}} {
 		if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/challenge", login, ""); code != http.StatusNotFound {
 			t.Fatalf("phone account accepted key challenge: %d", code)
@@ -73,22 +79,44 @@ func TestExistingPhoneKeysCannotAuthenticateAfterOTP(t *testing.T) {
 func TestSessionRefreshKeepsCredentialAndRejectsRevokedToken(t *testing.T) {
 	h, st := newTestServerWith(t, nil)
 	key := newKeyBundle("alice")
-	if code, _ := register(t, h, key); code != http.StatusCreated { t.Fatal(code) }
+	if code, _ := register(t, h, key); code != http.StatusCreated {
+		t.Fatal(code)
+	}
 	token := authenticate(t, h, "alice", key.privEd)
 	userID, err := st.GetUserIDByTokenHash(context.Background(), crypto.HashToken(token))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Shorten the original token to demonstrate that the endpoint extends it.
-	if err := st.PutToken(context.Background(), crypto.HashToken(token), userID, time.Now().Add(time.Minute)); err != nil { t.Fatal(err) }
+	if err := st.PutToken(context.Background(), crypto.HashToken(token), userID, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
 		code, body := doReq(t, h, http.MethodPost, "/v1/auth/refresh", nil, token)
-		if code != http.StatusOK { t.Fatalf("refresh: %d %v", code, body) }
+		if code != http.StatusOK {
+			t.Fatalf("refresh: %d %v", code, body)
+		}
 		expires, err := time.Parse(time.RFC3339Nano, body["expires_at"].(string))
-		if err != nil || time.Until(expires) < 50*time.Minute { t.Fatalf("session not extended: %v %v", expires, err) }
-		if _, changed := body["token"]; changed { t.Fatal("refresh must not replace the credential") }
+		if err != nil || time.Until(expires) < 50*time.Minute {
+			t.Fatalf("session not extended: %v %v", expires, err)
+		}
+		if _, changed := body["token"]; changed {
+			t.Fatal("refresh must not replace the credential")
+		}
 	}
-	if code, _ := doReq(t, h, http.MethodGet, "/v1/account", nil, token); code != http.StatusOK { t.Fatal("credential stopped working") }
-	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/logout", nil, token); code != http.StatusOK { t.Fatal(code) }
-	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/refresh", nil, token); code != http.StatusUnauthorized { t.Fatal("logout token renewed") }
-	if err := st.PutToken(context.Background(), crypto.HashToken("expired"), userID, time.Now().Add(-time.Minute)); err != nil { t.Fatal(err) }
-	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/refresh", nil, "expired"); code != http.StatusUnauthorized { t.Fatal("expired token renewed") }
+	if code, _ := doReq(t, h, http.MethodGet, "/v1/account", nil, token); code != http.StatusOK {
+		t.Fatal("credential stopped working")
+	}
+	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/logout", nil, token); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/refresh", nil, token); code != http.StatusUnauthorized {
+		t.Fatal("logout token renewed")
+	}
+	if err := st.PutToken(context.Background(), crypto.HashToken("expired"), userID, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/refresh", nil, "expired"); code != http.StatusUnauthorized {
+		t.Fatal("expired token renewed")
+	}
 }
