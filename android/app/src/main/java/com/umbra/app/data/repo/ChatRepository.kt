@@ -322,11 +322,26 @@ class ChatRepository(
             }.associateBy { it.id }
             commit(key) { _userCache.value = cached + _userCache.value }
             ws.connect(key.token)
+            // Живой WebSocket уже доставляет новые сообщения (eventJob -> persist),
+            // поэтому частый REST-опрос не нужен и лишь заставлял экран мигать
+            // «Обновление… / Загружаем диалоги…» каждые 4 секунды. Стартовый вызов —
+            // с индикацией; дальше: при живом WS — тихая редкая страховка, при разрыве —
+            // явный refresh с интервалом 5 c (для восстановления и индикации ошибки).
+            var started = false
             while (isActive && isCurrent(key)) {
-                try { refresh() }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { /* refresh publishes the error; polling retries. */ }
-                delay(4000)
+                try {
+                    if (started && ws.connected.value) {
+                        syncNow(key, forceFull = false, notify = false)
+                        flushOutbox()
+                        commit(key) { _syncProblem.value = null }
+                    } else {
+                        refresh()
+                    }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* refresh публикует ошибку; поллинг повторит. */ }
+                started = true
+                val live = ws.connected.value
+                delay(if (live) 60_000L else 5_000L)
             }
         }
     }
@@ -352,8 +367,8 @@ class ChatRepository(
         }
     }
 
-    private suspend fun syncNow(key: SessionKey, forceFull: Boolean) = syncMutex.withLock {
-        _syncing.value = true
+    private suspend fun syncNow(key: SessionKey, forceFull: Boolean, notify: Boolean = true) = syncMutex.withLock {
+        if (notify) _syncing.value = true
         try {
             val newest = db.messageDao().maxCreatedAtMillis(key.owner) ?: 0L
             val now = System.currentTimeMillis()
@@ -399,7 +414,7 @@ class ChatRepository(
                 catch (_: Exception) { /* Cached messages remain usable if a profile lookup fails. */ }
             }
             if (full) commit(key) { lastFullSyncMillis = now }
-        } finally { _syncing.value = false }
+        } finally { if (notify) _syncing.value = false }
     }
 
     private suspend fun persist(key: SessionKey, dto: MessageDto) = commit(key) {
