@@ -1,53 +1,36 @@
 package httpapi
 
 import (
-	"crypto/ed25519"
-	"encoding/base64"
 	"net/http"
 	"strings"
 	"testing"
 )
 
-// registerWithPhone регистрирует пользователя по имени + номеру телефона
-// (без username — сервер должен сгенерировать служебный).
-func registerWithPhone(t *testing.T, h http.Handler, name, phone string) (int, map[string]any, ed25519.PrivateKey) {
+// Register through the same verified phone flow as the current Android client.
+func registerVerifiedPhone(t *testing.T, h http.Handler, sender *fakeOTPSender, name, phone string) (map[string]any, string) {
 	t.Helper()
-	kb := newKeyBundle("") // username перезаписываем ниже
-	kb.reg["username"] = ""
-	kb.reg["phone"] = phone
-	kb.reg["name"] = name
-	code, m := doReq(t, h, http.MethodPost, "/v1/register", kb.reg, "")
-	return code, m, kb.privEd
+	if code, body := doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": phone}, ""); code != http.StatusOK {
+		t.Fatalf("request_code: %d %v", code, body)
+	}
+	normalized, err := NormalizePhone(phone)
+	if err != nil { t.Fatal(err) }
+	code, body := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": phone, "code": sender.code(normalized)}, "")
+	if code != http.StatusOK {
+		t.Fatalf("verify_code: %d %v", code, body)
+	}
+	token := body["token"].(string)
+	if code, body := doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": name}, token); code != http.StatusOK {
+		t.Fatalf("profile: %d %v", code, body)
+	}
+	code, account := doReq(t, h, http.MethodGet, "/v1/account", nil, token)
+	if code != http.StatusOK { t.Fatalf("account: %d %v", code, account) }
+	return account, token
 }
 
-// authenticateByPhone проходит challenge-response по номеру телефона.
-func authenticateByPhone(t *testing.T, h http.Handler, phone string, priv ed25519.PrivateKey) string {
-	t.Helper()
-	code, m := doReq(t, h, http.MethodPost, "/v1/auth/challenge", map[string]any{"phone": phone}, "")
-	if code != http.StatusOK {
-		t.Fatalf("challenge по телефону: ожидался 200, получен %d (%v)", code, m)
-	}
-	ch, _ := m["challenge"].(string)
-	sig := ed25519.Sign(priv, []byte(ch))
-	code, m2 := doReq(t, h, http.MethodPost, "/v1/auth/verify", map[string]any{
-		"phone":     phone,
-		"challenge": ch,
-		"signature": base64.StdEncoding.EncodeToString(sig),
-	}, "")
-	if code != http.StatusOK {
-		t.Fatalf("verify по телефону: ожидался 200, получен %d (%v)", code, m2)
-	}
-	tok, _ := m2["token"].(string)
-	return tok
-}
-
-func TestRegisterWithPhoneAndLogin(t *testing.T) {
-	h := newTestServer(t)
-
-	code, m, priv := registerWithPhone(t, h, "Григорий", "8 (999) 123-45-67")
-	if code != http.StatusCreated {
-		t.Fatalf("регистрация по телефону: ожидался 201, получен %d (%v)", code, m)
-	}
+func TestVerifiedPhoneAccountAndLogin(t *testing.T) {
+	sender := &fakeOTPSender{}
+	h, _ := newTestServerWith(t, sender)
+	m, token := registerVerifiedPhone(t, h, sender, "Григорий", "8 (999) 123-45-67")
 	if m["phone"] != "+79991234567" {
 		t.Fatalf("номер не нормализован к E.164: %v", m)
 	}
@@ -59,58 +42,32 @@ func TestRegisterWithPhoneAndLogin(t *testing.T) {
 		t.Fatalf("служебный username должен строиться из номера, получено %q", username)
 	}
 
-	// Повторная регистрация того же номера — 409 phone already registered.
-	code, m, _ = registerWithPhone(t, h, "Другой", "+7 999 123 45 67")
-	if code != http.StatusConflict || m["error"] != "phone already registered" {
-		t.Fatalf("повтор номера: ожидался 409 phone already registered, получено %d (%v)", code, m)
+	// Re-verification must recover the same account, not create a duplicate.
+	second, _ := registerVerifiedPhone(t, h, sender, "Григорий", "+7 999 123 45 67")
+	if second["id"] != m["id"] {
+		t.Fatalf("повторный вход создал другой аккаунт: %v", second)
 	}
 
-	// Вход по номеру телефона: challenge + verify принимают phone.
-	tok := authenticateByPhone(t, h, "+79991234567", priv)
-	if tok == "" {
-		t.Fatal("пустой токен после входа по телефону")
-	}
-
-	// Аккаунт отдаёт телефон и имя.
-	code, m = doReq(t, h, http.MethodGet, "/v1/account", nil, tok)
-	if code != http.StatusOK || m["phone"] != "+79991234567" || m["display_name"] != "Григорий" {
-		t.Fatalf("account: ожидались phone и display_name, получено %d (%v)", code, m)
-	}
-
-	// Регистрация без имени — 400.
-	code, _, _ = registerWithPhone(t, h, "", "+79990001122")
+	code, _ := doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": ""}, token)
 	if code != http.StatusBadRequest {
 		t.Fatalf("без имени: ожидался 400, получен %d", code)
 	}
-	// Регистрация с невалидным номером — 400.
-	code, _, _ = registerWithPhone(t, h, "Имя", "123")
+	code, _ = doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": "123"}, "")
 	if code != http.StatusBadRequest {
 		t.Fatalf("невалидный номер: ожидался 400, получен %d", code)
-	}
-	// challenge по неизвестному номеру — 404.
-	code, _ = doReq(t, h, http.MethodPost, "/v1/auth/challenge", map[string]any{"phone": "+79990000000"}, "")
-	if code != http.StatusNotFound {
-		t.Fatalf("challenge по чужому номеру: ожидался 404, получен %d", code)
 	}
 }
 
 func TestDiscoverContacts(t *testing.T) {
-	h := newTestServer(t)
+	sender := &fakeOTPSender{}
+	h, _ := newTestServerWith(t, sender)
 
 	// Два пользователя с телефонами, один legacy без телефона.
-	code, _, privA := registerWithPhone(t, h, "Алиса", "+79991112233")
-	if code != http.StatusCreated {
-		t.Fatalf("регистрация A: %d", code)
-	}
-	code, mB, _ := registerWithPhone(t, h, "Борис", "+79994445566")
-	if code != http.StatusCreated {
-		t.Fatalf("регистрация B: %d", code)
-	}
+	_, tokA := registerVerifiedPhone(t, h, sender, "Алиса", "+79991112233")
+	mB, _ := registerVerifiedPhone(t, h, sender, "Борис", "+79994445566")
 	if code, _ := register(t, h, newKeyBundle("legacy_user")); code != http.StatusCreated {
 		t.Fatal("регистрация legacy-пользователя не удалась")
 	}
-
-	tokA := authenticateByPhone(t, h, "+79991112233", privA)
 
 	// В телефонной книге Алисы: Борис и неизвестный номер (дубль хэша игнорируется).
 	unknownHash := PhoneHash("+75550001122")

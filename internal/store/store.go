@@ -41,6 +41,9 @@ type Store interface {
 	// Сессионные токены.
 	PutToken(ctx context.Context, tokenHash, userID string, expires time.Time) error
 	GetUserIDByTokenHash(ctx context.Context, tokenHash string) (string, error)
+	// RenewToken extends a live token atomically without changing the credential.
+	// Missing, expired, revoked or differently owned tokens return ErrNotFound.
+	RenewToken(ctx context.Context, tokenHash, userID string, expires time.Time) (time.Time, error)
 	DeleteToken(ctx context.Context, tokenHash string) error
 
 	// Сообщения (хранится только ciphertext).

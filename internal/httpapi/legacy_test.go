@@ -23,7 +23,7 @@ func TestLegacyEndpointsAndWebSocket(t *testing.T) {
 	st := store.NewMemoryStore()
 	hub := ws.NewHub()
 	go hub.Run()
-	cfg := &config.Config{TokenTTL: time.Hour, MaxMessageBytes: 1 << 20}
+	cfg := &config.Config{AllowLegacyAuth: true, TokenTTL: time.Hour, MaxMessageBytes: 1 << 20}
 	srv := httptest.NewServer(NewServer(cfg, st, hub).Handler)
 	t.Cleanup(srv.Close)
 	client := &http.Client{Timeout: 5 * time.Second}

@@ -60,6 +60,9 @@ func newTestServer(t *testing.T) http.Handler {
 func newTestServerWith(t *testing.T, sender OTPSender) (http.Handler, *store.MemoryStore) {
 	t.Helper()
 	cfg := &config.Config{
+		// These compatibility fixtures exercise username-only key clients.
+		// Production defaults and phone-only rules have separate regression tests.
+		AllowLegacyAuth: true,
 		ListenAddr:      ":0",
 		Store:           "memory",
 		TokenTTL:        time.Hour,

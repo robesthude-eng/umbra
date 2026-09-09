@@ -35,6 +35,7 @@ func uploadMedia(t *testing.T, h http.Handler, token string, data []byte) (int, 
 
 func TestMediaQuota(t *testing.T) {
 	cfg := &config.Config{
+		AllowLegacyAuth:   true,
 		ListenAddr:        ":0",
 		Store:             "memory",
 		TokenTTL:          time.Hour,
@@ -71,6 +72,7 @@ func TestMediaQuota(t *testing.T) {
 
 func TestMediaNoQuota(t *testing.T) {
 	cfg := &config.Config{
+		AllowLegacyAuth: true,
 		ListenAddr:      ":0",
 		Store:           "memory",
 		TokenTTL:        time.Hour,

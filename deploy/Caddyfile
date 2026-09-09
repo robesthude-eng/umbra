@@ -7,13 +7,16 @@
 	# Проксируем на сервер Umbra (внутренний порт 8080)
 	handle /v1/ws {
 		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Forwarded-For {remote_host}
 			# WebSocket + long-poll: держим соединение открытым
 			flush_interval -1
 		}
 	}
 
 	handle {
-		reverse_proxy 127.0.0.1:8080
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Forwarded-For {remote_host}
+		}
 	}
 
 	# Безопасные заголовки

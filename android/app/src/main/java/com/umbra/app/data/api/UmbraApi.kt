@@ -37,6 +37,9 @@ data class RequestCodeResponse(val status: String = "", @SerialName("expires_in"
 data class VerifyCodeRequest(val phone: String, val code: String)
 
 @Serializable
+data class SessionRenewalResponse(@SerialName("expires_at") val expiresAt: String)
+
+@Serializable
 data class AccountView(
     val id: String,
     val username: String = "",
@@ -219,6 +222,9 @@ interface UmbraApi {
 
     @POST("/v1/auth/logout")
     suspend fun logout(@Header("Authorization") auth: String): Unit
+
+    @POST("/v1/auth/refresh")
+    suspend fun refreshSession(@Header("Authorization") auth: String): SessionRenewalResponse
 
     @POST("/v1/account/burn")
     suspend fun burnAccount(@Header("Authorization") auth: String): Unit

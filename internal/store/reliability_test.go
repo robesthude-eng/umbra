@@ -21,6 +21,19 @@ func reliabilityContract(t *testing.T, st Store) {
 		mustStore(t, st.CreateUser(ctx, testUser(name)))
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	t.Run("renewal cannot revive revoked or expired sessions", func(t *testing.T) {
+		mustStore(t, st.PutToken(ctx, "renewable", "id-owner", now.Add(time.Minute)))
+		expires := now.Add(30*24*time.Hour)
+		got, err := st.RenewToken(ctx, "renewable", "id-owner", expires)
+		if err != nil || !got.Equal(expires) { t.Fatalf("renewal: %v %v", got, err) }
+		if _, err := st.RenewToken(ctx, "renewable", "id-peer", expires); !errors.Is(err, ErrNotFound) { t.Fatal("wrong owner renewed token") }
+		got, err = st.RenewToken(ctx, "renewable", "id-owner", now.Add(time.Hour))
+		if err != nil || !got.Equal(expires) { t.Fatal("renewal shortened session") }
+		mustStore(t, st.DeleteToken(ctx, "renewable"))
+		if _, err := st.RenewToken(ctx, "renewable", "id-owner", expires); !errors.Is(err, ErrNotFound) { t.Fatal("revoked token revived") }
+		mustStore(t, st.PutToken(ctx, "expired-renewal", "id-owner", now.Add(-time.Minute)))
+		if _, err := st.RenewToken(ctx, "expired-renewal", "id-owner", expires); !errors.Is(err, ErrNotFound) { t.Fatal("expired token revived") }
+	})
 
 	t.Run("concurrent quota", func(t *testing.T) {
 		var wg sync.WaitGroup

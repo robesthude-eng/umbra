@@ -218,6 +218,31 @@ class UserFlowsTest {
         repo.refresh(forceFull = true)
         assertNull(db.messageDao().get("local:request-id"))
         assertEquals("server-id", repo.messagesFor(peer).first().single().id)
-        assertTrue(requests.none { it.method == "POST" })
+        assertTrue(requests.none { it.method == "POST" && it.requestUrl?.encodedPath == "/v1/messages" })
+    }
+
+    @Test fun fullSyncRenewsSessionWithoutChangingCredential() = runBlocking {
+        handler = { request -> when (request.requestUrl?.encodedPath) {
+            "/v1/auth/refresh" -> ok("""{"expires_at":"2026-10-09T10:00:00Z"}""")
+            "/v1/chats" -> ok("""{"chats":[]}""")
+            "/v1/messages" -> ok("""{"messages":[]}""")
+            "/v1/account" -> ok(account())
+            else -> ok("{}", 404)
+        } }
+        repo.refresh(forceFull = true)
+        val renewal = requests.single { it.requestUrl?.encodedPath == "/v1/auth/refresh" }
+        assertEquals("POST", renewal.method)
+        assertEquals("Bearer token", renewal.getHeader("Authorization"))
+        assertEquals("token", session.token())
+        assertEquals(SessionPhase.READY, repo.phase.value)
+    }
+
+    @Test fun rejectedRenewalKeepsUnsentMessagesForRelogin() = runBlocking {
+        seedPending()
+        handler = { ok("""{"error":"unauthorized"}""", 401) }
+        assertTrue(runCatching { repo.refresh(forceFull = true) }.exceptionOrNull() is HttpException)
+        assertEquals(SessionPhase.LOGGED_OUT, repo.phase.value)
+        assertNull(session.token())
+        assertNotNull(db.messageDao().get("local:request-id"))
     }
 }

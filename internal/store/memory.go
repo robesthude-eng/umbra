@@ -176,11 +176,25 @@ func (m *MemoryStore) GetUserIDByTokenHash(_ context.Context, tokenHash string) 
 	if !ok {
 		return "", ErrNotFound
 	}
-	if time.Now().After(e.expires) {
+	if !e.expires.After(time.Now()) {
 		delete(m.tokens, tokenHash)
 		return "", ErrNotFound
 	}
 	return e.userID, nil
+}
+
+func (m *MemoryStore) RenewToken(_ context.Context, tokenHash, userID string, expires time.Time) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.tokens[tokenHash]
+	if !ok || e.userID != userID || !e.expires.After(time.Now()) {
+		return time.Time{}, ErrNotFound
+	}
+	if expires.After(e.expires) {
+		e.expires = expires
+		m.tokens[tokenHash] = e
+	}
+	return e.expires, nil
 }
 
 func (m *MemoryStore) DeleteToken(_ context.Context, tokenHash string) error {

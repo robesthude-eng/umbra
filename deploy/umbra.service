@@ -16,7 +16,9 @@ ExecStart=/usr/local/bin/umbra-server
 Environment=LISTEN_ADDR=127.0.0.1:8080
 Environment=STORE=postgres
 Environment=BLOB_DIR=/opt/umbra/data/blobs
-Environment=TOKEN_TTL_SECONDS=86400
+Environment=TOKEN_TTL_SECONDS=2592000
+Environment=ALLOW_LEGACY_AUTH=false
+Environment=TRUSTED_PROXIES=127.0.0.1,::1
 Environment=MAX_MEDIA_BYTES=52428800
 EnvironmentFile=/opt/umbra/umbra.env
 # Файл должен содержать DATABASE_URL и остальные настройки; задайте права 0600.

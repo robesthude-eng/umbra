@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -15,10 +16,58 @@ type rateWindow struct {
 type requestLimiter struct {
 	mu      sync.Mutex
 	entries map[string]rateWindow
+	trustedProxies []netip.Prefix
 }
 
-func newRequestLimiter() *requestLimiter {
-	return &requestLimiter{entries: make(map[string]rateWindow)}
+func newRequestLimiter(trustedProxies ...netip.Prefix) *requestLimiter {
+	return &requestLimiter{entries: make(map[string]rateWindow), trustedProxies: trustedProxies}
+}
+
+func (l *requestLimiter) trusted(addr netip.Addr) bool {
+	for _, prefix := range l.trustedProxies {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// Only an explicitly trusted direct peer may supply X-Forwarded-For.
+// Walk from the proxy towards the client and stop at the first untrusted hop;
+// anything to its left may have been supplied by that client.
+func (l *requestLimiter) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	peer = peer.Unmap()
+	if !l.trusted(peer) {
+		return peer.String()
+	}
+	forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	if forwarded == "" || len(forwarded) > 2048 {
+		return peer.String()
+	}
+	hops := strings.Split(forwarded, ",")
+	if len(hops) > 32 {
+		return peer.String()
+	}
+	current := peer
+	for i := len(hops) - 1; i >= 0; i-- {
+		if !l.trusted(current) {
+			break
+		}
+		addr, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil || addr.Zone() != "" {
+			return peer.String()
+		}
+		current = addr.Unmap()
+	}
+	return current.String()
 }
 
 func (l *requestLimiter) wrap(next http.Handler) http.Handler {
@@ -27,11 +76,7 @@ func (l *requestLimiter) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			ip = r.RemoteAddr
-		}
-		// Не доверяем X-Forwarded-For от произвольного клиента.
+		ip := l.clientIP(r)
 		category, limit := "api", 600
 		if strings.HasPrefix(r.URL.Path, "/v1/auth/") || strings.HasSuffix(r.URL.Path, "/prekeys") {
 			category, limit = "auth", 120

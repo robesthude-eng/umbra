@@ -373,6 +373,14 @@ class ChatRepository(
             val newest = db.messageDao().maxCreatedAtMillis(key.owner) ?: 0L
             val now = System.currentTimeMillis()
             val full = forceFull || newest == 0L || now - lastFullSyncMillis >= 15 * 60_000L
+            if (full) {
+                try { request(key) { api.refreshSession(it) } }
+                catch (e: HttpException) {
+                    // Permit a gradual rollout against an older server. It keeps
+                    // its original fixed token lifetime until the server is updated.
+                    if (e.code() != 404 && e.code() != 405) throw e
+                }
+            }
             val groups = request(key) { api.chats(it).chats }
             commit(key) { db.withTransaction {
                 val remoteIds = groups.map { it.id }.toSet()

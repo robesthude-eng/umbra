@@ -77,3 +77,21 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.hub.DisconnectUser(r.Context().Value(ctxUserID).(string))
 	writeJSON(w, 200, map[string]string{"status": "logged_out"})
 }
+
+// Renew the same credential so a lost HTTP response cannot lose the session.
+// The store checks expiry/revocation again in the same operation as the update.
+func (s *Server) handleRefreshSession(w http.ResponseWriter, r *http.Request) {
+	token, _ := bearerToken(r)
+	userID := r.Context().Value(ctxUserID).(string)
+	expires, err := s.store.RenewToken(r.Context(), crypto.HashToken(token), userID, time.Now().Add(s.cfg.TokenTTL))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "session renewal temporarily unavailable")
+		}
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"expires_at": expires.UTC().Format(time.RFC3339Nano)})
+}

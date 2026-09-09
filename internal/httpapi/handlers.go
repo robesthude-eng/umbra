@@ -140,31 +140,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // handleRegister — регистрация пользователя по username + открытые ключи.
 // НИКАКИХ паролей и номеров телефонов — только публичные ключи.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.AllowLegacyAuth {
+		writeError(w, http.StatusGone, "key registration is disabled; use phone verification")
+		return
+	}
 	var req registerRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	username := strings.TrimSpace(req.Username)
-	phone := ""
-	phoneHash := ""
 	displayName := strings.TrimSpace(req.Name)
-	if raw := strings.TrimSpace(req.Phone); raw != "" {
-		normalized, err := NormalizePhone(raw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid phone")
-			return
-		}
-		phone, phoneHash = normalized, PhoneHash(normalized)
-	}
-	if phone != "" && !validDisplayName(displayName) {
-		writeError(w, http.StatusBadRequest, "invalid name")
+	if strings.TrimSpace(req.Phone) != "" {
+		writeError(w, http.StatusForbidden, "phone registration requires verification code")
 		return
-	}
-	if username == "" && phone != "" {
-		// Служебный username из цифр номера: детерминирован и уникален
-		// вместе с номером. Пользователю показывается DisplayName.
-		username = "u" + phone[1:]
 	}
 	if !validUsername(username) {
 		writeError(w, http.StatusBadRequest, "invalid username")
@@ -214,8 +203,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	u := &model.User{
 		ID:              userID,
 		Username:        username,
-		Phone:           phone,
-		PhoneHash:       phoneHash,
 		DisplayName:     displayName,
 		IdentityEd25519: idKey,
 		IdentityX25519:  ix,
@@ -232,12 +219,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.CreateUser(r.Context(), u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			if phone != "" {
-				if _, lookErr := s.store.GetUserByPhone(r.Context(), phone); lookErr == nil {
-					writeError(w, http.StatusConflict, "phone already registered")
-					return
-				}
-			}
 			writeError(w, http.StatusConflict, "username already taken")
 			return
 		}
@@ -245,7 +226,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{
-		"id": userID, "username": username, "phone": phone, "display_name": displayName,
+		"id": userID, "username": username, "phone": "", "display_name": displayName,
 	})
 }
 
@@ -278,13 +259,17 @@ func (s *Server) handlePrekeys(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthChallenge — выдаёт nonce для подписи (challenge-response).
 func (s *Server) handleAuthChallenge(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.AllowLegacyAuth {
+		writeError(w, http.StatusGone, "key authentication is disabled; use phone verification")
+		return
+	}
 	var req challengeRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	u, err := s.findUserByLogin(r, req.Username, req.Phone)
-	if err != nil {
+	if err != nil || u.Phone != "" {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -315,13 +300,17 @@ func (s *Server) findUserByLogin(r *http.Request, username, phone string) (*mode
 
 // handleAuthVerify — проверяет ed25519-подпись challenge и выдаёт сессионный токен.
 func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.AllowLegacyAuth {
+		writeError(w, http.StatusGone, "key authentication is disabled; use phone verification")
+		return
+	}
 	var req verifyRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	u, err := s.findUserByLogin(r, req.Username, req.Phone)
-	if err != nil {
+	if err != nil || u.Phone != "" {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

@@ -59,6 +59,7 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.HandleFunc("POST /v1/auth/request_code", s.handleRequestCode)
 	mux.HandleFunc("POST /v1/auth/verify_code", s.handleVerifyCode)
 	mux.Handle("POST /v1/auth/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
+	mux.Handle("POST /v1/auth/refresh", s.requireAuth(http.HandlerFunc(s.handleRefreshSession)))
 	mux.Handle("PUT /v1/account/keys", s.requireAuth(http.HandlerFunc(s.handleUpdateKeys)))
 	mux.Handle("POST /v1/messages", s.requireAuth(http.HandlerFunc(s.handleSendMessage)))
 	mux.Handle("GET /v1/messages", s.requireAuth(http.HandlerFunc(s.handleListMessages)))
@@ -95,7 +96,13 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.Handle("GET /v1/by-username/{username}", s.requireAuth(http.HandlerFunc(s.handleGetUserByUsername)))
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
-	s.handler = logMiddleware(newRequestLimiter().wrap(mux))
+	// Load/Validate rejects invalid configuration in production. A constructor
+	// used directly by tests also fails closed: invalid values trust no proxies.
+	trustedProxies, err := config.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		log.Printf("proxy configuration ignored: %v", err)
+	}
+	s.handler = logMiddleware(newRequestLimiter(trustedProxies...).wrap(mux))
 	return &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           s.handler,

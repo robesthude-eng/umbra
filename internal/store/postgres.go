@@ -154,6 +154,15 @@ func (p *PostgresStore) DeleteToken(ctx context.Context, tokenHash string) error
 	return mapErr(err)
 }
 
+func (p *PostgresStore) RenewToken(ctx context.Context, tokenHash, userID string, expires time.Time) (time.Time, error) {
+	var renewed time.Time
+	err := p.pool.QueryRow(ctx,
+		`UPDATE auth_tokens SET expires_at = GREATEST(expires_at, $3)
+		 WHERE token_hash = $1 AND user_id = $2 AND expires_at > now()
+		 RETURNING expires_at`, tokenHash, userID, expires).Scan(&renewed)
+	return renewed, mapErr(err)
+}
+
 func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error {
 	// PostgreSQL сохраняет TIMESTAMPTZ с микросекундной точностью.
 	m.CreatedAt = m.CreatedAt.Truncate(time.Microsecond)

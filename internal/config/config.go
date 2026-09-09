@@ -4,8 +4,10 @@ package config
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,8 +20,14 @@ type Config struct {
 	Store string
 	// DatabaseURL — DSN PostgreSQL (используется при Store=postgres).
 	DatabaseURL string
-	// TokenTTL — срок жизни сессионного токена.
+	// TokenTTL — срок сессии после входа или последнего продления.
 	TokenTTL time.Duration
+	// AllowLegacyAuth enables username-only key authentication for old clients.
+	// Phone accounts always require OTP, including when this option is enabled.
+	AllowLegacyAuth bool
+	// TrustedProxies is a comma-separated list of proxy IP addresses/CIDRs.
+	// Forwarded client addresses are ignored unless the direct peer is trusted.
+	TrustedProxies string
 	// MaxMessageBytes — лимит размера одного сообщения (защита от переполнения).
 	MaxMessageBytes int64
 	// BlobDir — директория с зашифрованными файлами (при BlobStoreType=file).
@@ -54,7 +62,9 @@ func Load() *Config {
 		ListenAddr:        getenv("LISTEN_ADDR", ":8080"),
 		Store:             getenv("STORE", "memory"),
 		DatabaseURL:       getenv("DATABASE_URL", ""),
-		TokenTTL:          time.Duration(getenvInt("TOKEN_TTL_SECONDS", 86400)) * time.Second,
+		TokenTTL:          time.Duration(getenvInt("TOKEN_TTL_SECONDS", 30*24*60*60)) * time.Second,
+		AllowLegacyAuth:   getenvBool("ALLOW_LEGACY_AUTH", false),
+		TrustedProxies:    getenv("TRUSTED_PROXIES", ""),
 		MaxMessageBytes:   int64(getenvInt("MAX_MESSAGE_BYTES", 2_097_152)), // 2 MiB по умолчанию
 		BlobDir:           getenv("BLOB_DIR", "./data/blobs"),
 		MaxMediaBytes:     getenvPositiveInt("MAX_MEDIA_BYTES", DefaultMaxMediaBytes),
@@ -95,7 +105,31 @@ func (c *Config) Validate() error {
 	if c.MaxUserMediaBytes < 0 {
 		return errors.New("MAX_USER_MEDIA_BYTES must not be negative")
 	}
+	if _, err := ParseTrustedProxies(c.TrustedProxies); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ParseTrustedProxies(value string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	if strings.TrimSpace(value) == "" {
+		return prefixes, nil
+	}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if addr, err := netip.ParseAddr(part); err == nil && addr.Zone() == "" {
+			addr = addr.Unmap()
+			prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+			continue
+		}
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil || prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+			return nil, errors.New("TRUSTED_PROXIES must contain explicit proxy IPs or CIDRs; wildcard networks are not allowed")
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 func getenvBool(key string, def bool) bool {
