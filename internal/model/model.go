@@ -116,14 +116,72 @@ const (
 
 // Call — запись о звонке (голосовом или видео). Сервер хранит только метаданные
 // звонка: медиа-поток идёт peer-to-peer (WebRTC) и через сервер не проходит.
+//
+// Participants — полный список участников, включая звонящего (появился в 0.9.0
+// вместе с групповыми звонками). У записей 0.8.0 он пуст: там звонок всегда был
+// на двоих, поэтому список собирается из CallerID и CalleeID. CalleeID заполнен
+// и в группе (первый приглашённый) — так старые клиенты и база остаются целы.
 type Call struct {
-	ID        string     `json:"id"`
-	CallerID  string     `json:"caller_id"`
-	CalleeID  string     `json:"callee_id"`
-	Video     bool       `json:"video"`
-	Status    CallStatus `json:"status"`
-	CreatedAt time.Time  `json:"created_at"`
-	EndedAt   *time.Time `json:"ended_at"`
+	ID           string     `json:"id"`
+	CallerID     string     `json:"caller_id"`
+	CalleeID     string     `json:"callee_id"`
+	Participants []string   `json:"participants"`
+	Video        bool       `json:"video"`
+	Status       CallStatus `json:"status"`
+	CreatedAt    time.Time  `json:"created_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+}
+
+// MaxCallParticipants — предел mesh-схемы: каждый участник держит соединение
+// с каждым, поэтому вчетвером это уже три потока на телефон. Больше — нужен SFU.
+const MaxCallParticipants = 4
+
+// Everyone — все участники звонка, включая звонящего.
+func (c *Call) Everyone() []string {
+	if len(c.Participants) > 0 {
+		out := make([]string, 0, len(c.Participants))
+		for _, id := range c.Participants {
+			if id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	if c.CalleeID == "" {
+		return []string{c.CallerID}
+	}
+	return []string{c.CallerID, c.CalleeID}
+}
+
+// IsParticipant — участвует ли человек в звонке.
+func (c *Call) IsParticipant(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	for _, id := range c.Everyone() {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// Others — остальные участники звонка. nil означает «этот человек не участник»,
+// а пустой не-nil список — «участник, но кроме него никого не осталось».
+func (c *Call) Others(userID string) []string {
+	member := false
+	out := make([]string, 0, MaxCallParticipants)
+	for _, id := range c.Everyone() {
+		if id == userID {
+			member = true
+			continue
+		}
+		out = append(out, id)
+	}
+	if !member {
+		return nil
+	}
+	return out
 }
 
 // PushDevice — токен устройства для push-уведомлений. У одного человека

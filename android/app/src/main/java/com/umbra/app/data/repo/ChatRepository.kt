@@ -1,6 +1,7 @@
 package com.umbra.app.data.repo
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.util.LruCache
 import androidx.room.withTransaction
@@ -12,6 +13,8 @@ import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.db.ChatEntity
 import com.umbra.app.data.db.CryptoRecord
 import com.umbra.app.data.db.MessageEntity
+import com.umbra.app.data.media.Attachments
+import com.umbra.app.data.msg.ATTACHMENT_KINDS
 import com.umbra.app.data.msg.MediaContent
 import com.umbra.app.data.msg.MessageCodec
 import com.umbra.app.data.msg.MessageContent
@@ -30,6 +33,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -65,6 +69,8 @@ data class UiMessage(
     val stableId: String = id,
     /** Заполнено только у голосовых сообщений. */
     val voice: VoiceMessage? = null,
+    /** Заполнено у сообщений с фото, видео или файлом. */
+    val attachment: UiAttachment? = null,
 )
 
 /**
@@ -78,6 +84,26 @@ data class VoiceMessage(
     val durationMs: Long,
     val sizeBytes: Long,
 )
+
+/**
+ * Вложение для UI: фото, видео или файл.
+ * mediaId == null — файл ещё не загружен на сервер, показываем локальную копию.
+ * localPath == null — своей копии нет, файл скачается при открытии.
+ */
+data class UiAttachment(
+    val kind: String,
+    val mediaId: String?,
+    val localPath: String?,
+    val name: String,
+    val mime: String,
+    val sizeBytes: Long,
+    val durationMs: Long = 0,
+    val width: Int = 0,
+    val height: Int = 0,
+) {
+    val isImage: Boolean get() = kind == MessageContent.KIND_IMAGE
+    val isVideo: Boolean get() = kind == MessageContent.KIND_VIDEO
+}
 
 /** Запись о звонке (история/активный). */
 data class CallUi(
@@ -99,7 +125,16 @@ data class ActiveCall(
     val ringing: Boolean,
     /** Видеозвонок: камера включается сразу после соединения. */
     val video: Boolean = false,
-)
+    /** Свой id: по нему движок решает, кто кому шлёт offer. */
+    val selfUserId: String = "",
+    /** Кто начал звонок: его предложение принимают остальные. */
+    val callerUserId: String = "",
+    /** Собеседники без себя: в групповом звонке их до трёх. */
+    val peers: List<String> = emptyList(),
+) {
+    /** Звонок больше чем на двоих. */
+    val group: Boolean get() = peers.size > 1
+}
 
 /** Cloud messenger repository. Message envelopes are not end-to-end encrypted. */
 class ChatRepository(
@@ -364,9 +399,11 @@ class ChatRepository(
                         "call_status" -> {
                             val callId = event.data["call_id"]?.toString()?.trim('"')
                             val status = event.data["status"]?.toString()?.trim('"')
+                            // from — кто именно сменил статус: в группе это важно.
+                            val from = event.data["from"]?.toString()?.trim('"').orEmpty()
                             commit(key) {
                                 _activeCall.value?.takeIf { it.callId == callId }?.let {
-                                    _activeCall.value = if (status == "active") it.copy(ringing = false) else null
+                                    _activeCall.value = applyCallStatus(it, status, from)
                                 }
                             }
                             fetchCalls()
@@ -509,24 +546,89 @@ class ChatRepository(
     }
 
     private suspend fun handleCallEvent(key: SessionKey, call: CallDto) {
-        if (call.calleeId != key.owner || call.status != "ringing") return
-        if (_activeCall.value?.callId == call.id) return
+        // В групповом звонке приглашённых несколько: участие видно по participants.
+        val invited = if (call.participants.isEmpty()) call.calleeId == key.owner
+        else call.participants.contains(key.owner) && call.callerId != key.owner
+        if (!invited || call.status != "ringing") return
+        val existing = _activeCall.value
+        if (existing != null && existing.callId == call.id) {
+            // Экран уже показан из push: дополняем список участников группового звонка.
+            val known = peersOf(call, key.owner)
+            if (known.isNotEmpty() && known != existing.peers) {
+                commit(key) {
+                    _activeCall.value = existing.copy(
+                        peers = known,
+                        peerName = callTitle(known, call.callerId),
+                        selfUserId = key.owner,
+                        callerUserId = call.callerId,
+                    )
+                }
+            }
+            return
+        }
         if (_activeCall.value != null) {
             request(key) { api.updateCallStatus(it, call.id, CallStatusRequest("declined")) }
             return
         }
         commit(key) {
-            _activeCall.value = ActiveCall(call.id, call.callerId, titleFor(call.callerId), true, true, call.video)
+            _activeCall.value = ActiveCall(
+                callId = call.id,
+                peerUserId = call.callerId,
+                peerName = callTitle(peersOf(call, key.owner), call.callerId),
+                incoming = true,
+                ringing = true,
+                video = call.video,
+                selfUserId = key.owner,
+                callerUserId = call.callerId,
+                peers = peersOf(call, key.owner),
+            )
         }
     }
 
-    suspend fun startCall(peerUserId: String, video: Boolean = false) = callMutex.withLock {
+    /** Участники звонка без себя: с каждым движок поднимает отдельное соединение. */
+    private fun peersOf(call: CallDto, owner: String): List<String> {
+        val everyone = if (call.participants.isEmpty()) listOf(call.callerId, call.calleeId) else call.participants
+        return everyone.filter { it.isNotBlank() && it != owner }.distinct()
+    }
+
+    /** Заголовок экрана звонка: имя собеседника, а в группе — «имя и ещё N». */
+    private fun callTitle(peers: List<String>, fallback: String): String {
+        val first = peers.firstOrNull() ?: fallback
+        val name = titleFor(first)
+        return if (peers.size > 1) "$name и ещё ${peers.size - 1}" else name
+    }
+
+    suspend fun startCall(peerUserId: String, video: Boolean = false) = startCall(listOf(peerUserId), video)
+
+    /**
+     * Групповой звонок собирается mesh-схемой на самих телефонах, поэтому
+     * собеседников не больше трёх: четверо участников — потолок без
+     * серверного микшера. Сервер проверяет это же ограничение.
+     */
+    suspend fun startCall(peerUserIds: List<String>, video: Boolean = false) = callMutex.withLock {
         val key = key()
-        require(peerUserId != key.owner) { "Нельзя позвонить самому себе" }
+        val peers = peerUserIds.filter { it.isNotBlank() }.distinct()
+        require(peers.isNotEmpty()) { "Некому звонить" }
+        require(peers.none { it == key.owner }) { "Нельзя позвонить самому себе" }
+        require(peers.size <= 3) { "В звонке не больше четырёх человек" }
         check(_activeCall.value == null) { "Сначала завершите текущий вызов" }
-        val call = request(key) { api.initiateCall(it, InitiateCallRequest(peerUserId, video)) }
+        val call = request(key) {
+            api.initiateCall(it, InitiateCallRequest(peers.first(), peers.drop(1), video))
+        }
         commit(key) {
-            _activeCall.value = ActiveCall(call.id, peerUserId, titleFor(peerUserId), false, true, call.video)
+            val everyone = if (call.participants.isEmpty()) peers
+            else call.participants.filter { it != key.owner }
+            _activeCall.value = ActiveCall(
+                callId = call.id,
+                peerUserId = everyone.firstOrNull() ?: peers.first(),
+                peerName = callTitle(everyone, peers.first()),
+                incoming = false,
+                ringing = true,
+                video = call.video,
+                selfUserId = key.owner,
+                callerUserId = key.owner,
+                peers = everyone,
+            )
         }
     }
 
@@ -542,7 +644,19 @@ class ChatRepository(
     }
 
     /**
-     * Отправка SDP/ICE второму участнику.
+     * Статус пришёл от одного участника. Вдвоём это конец разговора,
+     * а в группе — выход этого человека: остальные продолжают говорить.
+     */
+    private fun applyCallStatus(call: ActiveCall, status: String?, from: String): ActiveCall? {
+        if (status == "active") return call.copy(ringing = false)
+        if (from.isEmpty() || !call.group) return null
+        val rest = call.peers.filter { it != from }
+        if (rest.isEmpty()) return null
+        return call.copy(peers = rest, peerUserId = rest.first(), peerName = callTitle(rest, rest.first()))
+    }
+
+    /**
+     * Отправка SDP/ICE конкретному участнику.
      *
      * Без callMutex: ICE-кандидатов много, и они не должны ждать смену статуса.
      */
@@ -596,7 +710,18 @@ class ChatRepository(
     fun showIncomingCallFromPush(callId: String, peerId: String, peerName: String, video: Boolean) {
         if (callId.isBlank() || !session.isLoggedIn()) return
         if (_activeCall.value != null) return
-        _activeCall.value = ActiveCall(callId, peerId, peerName.ifBlank { titleFor(peerId) }, true, true, video)
+        _activeCall.value = ActiveCall(
+            callId = callId,
+            peerUserId = peerId,
+            peerName = peerName.ifBlank { titleFor(peerId) },
+            incoming = true,
+            ringing = true,
+            video = video,
+            selfUserId = session.userId().orEmpty(),
+            callerUserId = peerId,
+            // Push несёт только звонящего; остальных добавит событие call по WebSocket.
+            peers = listOf(peerId),
+        )
         scope.launch {
             // Имя собеседника и актуальный статус: звонок мог уже завершиться.
             runCatching { resolveUser(peerId) }
@@ -677,11 +802,57 @@ class ChatRepository(
                     VoiceMessage(null, e.localMediaPath, e.localMediaDurationMs, 0)
                 else -> null
             }
-            val text = if (voice != null) MessageCodec.voiceLabel(voice.durationMs) else MessageCodec.plainText(e.ciphertext)
+            val attachment = if (voice != null) null else uiAttachment(e)
+            val text = when {
+                voice != null -> MessageCodec.voiceLabel(voice.durationMs)
+                attachment != null -> attachmentLabel(attachment)
+                else -> MessageCodec.plainText(e.ciphertext)
+            }
             UiMessage(e.id, e.senderId, text, e.createdAtMillis,
                 e.senderId == owner && e.ownerId == owner, e.deliveryState == "failed", e.deliveryState == "pending",
-                e.error, e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice)
+                e.error, e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice, attachment)
         } }.flowOn(Dispatchers.IO)
+    }
+
+    /**
+     * Вложение строки: сначала конверт с сервера, иначе локальная копия
+     * из очереди отправки — её видно сразу, ещё до загрузки.
+     */
+    private fun uiAttachment(e: MessageEntity): UiAttachment? {
+        val remote = if (e.ciphertext.isBlank()) null else MessageCodec.attachment(e.ciphertext)
+        if (remote != null) {
+            val kind = remote.first
+            val media = remote.second
+            val local = e.localMediaPath ?: mediaCacheFile(media.id).takeIf { it.isFile }?.absolutePath
+            return UiAttachment(
+                kind, media.id, local,
+                media.name?.takeIf { it.isNotBlank() } ?: defaultAttachmentName(kind),
+                media.mime, media.size, media.durationMs,
+                if (media.width > 0) media.width else e.localMediaWidth,
+                if (media.height > 0) media.height else e.localMediaHeight,
+            )
+        }
+        val kind = e.localMediaKind ?: return null
+        val path = e.localMediaPath ?: return null
+        if (kind !in ATTACHMENT_KINDS) return null
+        return UiAttachment(
+            kind, null, path,
+            e.localMediaName?.takeIf { it.isNotBlank() } ?: defaultAttachmentName(kind),
+            e.localMediaMime ?: Attachments.DEFAULT_MIME,
+            e.localMediaSize, e.localMediaDurationMs, e.localMediaWidth, e.localMediaHeight,
+        )
+    }
+
+    private fun attachmentLabel(a: UiAttachment): String = when (a.kind) {
+        MessageContent.KIND_IMAGE -> "Фото"
+        MessageContent.KIND_VIDEO -> "Видео"
+        else -> a.name
+    }
+
+    private fun defaultAttachmentName(kind: String): String = when (kind) {
+        MessageContent.KIND_IMAGE -> "Фото"
+        MessageContent.KIND_VIDEO -> "Видео"
+        else -> "Файл"
     }
 
     suspend fun openDm(peerUserId: String) {
@@ -770,6 +941,41 @@ class ChatRepository(
         requestOutbox()
     }
 
+    /**
+     * Фото, видео и файлы уходят той же очередью, что текст и голосовые:
+     * строка появляется сразу, файл копируется в приватный каталог (выданный
+     * системой Uri живёт только до перезапуска), а загрузка в /v1/media и
+     * отправка конверта происходят в flushOutbox — с повторами и порядком.
+     */
+    suspend fun sendAttachment(chatId: String, uri: Uri) {
+        val key = key()
+        val picked = withContext(Dispatchers.IO) {
+            Attachments.copyToOutbox(context, uri, attachOutboxDir(), MAX_ATTACHMENT_BYTES)
+        }
+        try {
+            commit(key) {
+                val chat = requireNotNull(db.chatDao().get(chatId)) { "Сначала откройте диалог" }
+                check(chat.type != "unavailable") { "Доступ к группе прекращён. Обратитесь к её владельцу." }
+                val id = UUID.randomUUID().toString()
+                val now = Instant.now()
+                db.messageDao().upsert(MessageEntity(
+                    "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
+                    "", now.toString(), null,
+                    ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+                    localMediaPath = picked.file.absolutePath, localMediaMime = picked.mime,
+                    localMediaDurationMs = picked.durationMs, localMediaKind = picked.kind,
+                    localMediaName = picked.name, localMediaSize = picked.size,
+                    localMediaWidth = picked.width, localMediaHeight = picked.height,
+                ))
+            }
+        } catch (e: Throwable) {
+            // Строки в базе нет — копия файла тоже не должна остаться мусором.
+            withContext(NonCancellable + Dispatchers.IO) { picked.file.delete() }
+            throw e
+        }
+        requestOutbox()
+    }
+
     suspend fun retryMessage(id: String) {
         val key = key()
         commit(key) {
@@ -812,14 +1018,16 @@ class ChatRepository(
                 catch (e: Exception) {
                     val code = (e as? HttpException)?.code()
                     val retryable = e is IOException || code != null && (code >= 500 && code != 507 || code in listOf(408, 429))
-                    val voiceUpload = m.ciphertext.isBlank() && m.localMediaPath != null
+                    val mediaUpload = m.ciphertext.isBlank() && m.localMediaPath != null
+                    val voiceUpload = mediaUpload && m.localMediaKind == null
                     commit(key) { db.messageDao().get(m.id)?.let { current ->
                         if (current.deliveryState == "pending") db.messageDao().upsert(current.copy(
                             deliveryState = if (retryable) "pending" else "failed",
                             error = if (retryable) null else when {
-                                code == 413 -> "Сервер не принял запись: слишком большой файл или закончилась квота."
+                                code == 413 -> "Сервер не принял файл: он слишком большой или закончилась квота."
                                 code == 507 -> "На сервере нет места для файлов. Сообщите владельцу Umbra."
                                 voiceUpload -> "Голосовое сообщение не отправлено. Повторите отправку."
+                                mediaUpload -> "Вложение не отправлено. Повторите отправку."
                                 else -> "Не отправлено. Проверьте доступ к чату и повторите."
                             },
                         ))
@@ -843,35 +1051,66 @@ class ChatRepository(
         return bytes
     }
 
+    /** Небольшой кэш миниатюр: список сообщений не перерисует их каждый раз. */
+    private val thumbCache = LruCache<String, Bitmap>(24)
+
     /**
-     * Загружает файл записи в /v1/media и подставляет в строку готовый конверт.
-     * Повторный вызов ничего не делает: признак загруженной записи — непустой ciphertext,
-     * поэтому обрыв сети между загрузкой и отправкой не создаёт вторую копию файла.
+     * Миниатюра фото или кадр видео. Если своей копии нет, файл скачивается
+     * один раз и остаётся в кэше медиа.
+     */
+    suspend fun attachmentThumbnail(a: UiAttachment): Bitmap? {
+        if (!Attachments.hasPreview(a.kind)) return null
+        val cacheKey = a.mediaId ?: a.localPath ?: return null
+        thumbCache.get(cacheKey)?.let { return it }
+        val local = a.localPath?.let { File(it) }?.takeIf { it.isFile && it.length() > 0 }
+        val file = local ?: a.mediaId?.let { runCatching { attachmentFile(it) }.getOrNull() } ?: return null
+        val bitmap = withContext(Dispatchers.IO) { Attachments.thumbnail(file, a.kind) } ?: return null
+        thumbCache.put(cacheKey, bitmap)
+        return bitmap
+    }
+
+    /**
+     * Загружает файл (запись, фото, видео, документ) в /v1/media и подставляет
+     * в строку готовый конверт. Повторный вызов ничего не делает: признак
+     * загруженного файла — непустой ciphertext, поэтому обрыв сети между
+     * загрузкой и отправкой не создаёт вторую копию на сервере.
      */
     private suspend fun ensureMediaUploaded(key: SessionKey, m: MessageEntity): MessageEntity {
         if (m.ciphertext.isNotBlank()) return m
-        val path = m.localMediaPath ?: throw IllegalStateException("Запись потеряна. Запишите голосовое сообщение заново.")
+        val kind = m.localMediaKind ?: MessageContent.KIND_VOICE
+        val voice = kind == MessageContent.KIND_VOICE
+        val lost = if (voice) "Запись потеряна. Запишите голосовое сообщение заново."
+            else "Файл потерян. Выберите вложение заново."
+        val path = m.localMediaPath ?: throw IllegalStateException(lost)
         val file = File(path)
         val size = withContext(Dispatchers.IO) { if (file.isFile) file.length() else 0L }
-        if (size <= 0) throw IllegalStateException("Файл записи не найден. Запишите голосовое сообщение заново.")
-        val mime = m.localMediaMime ?: VoiceRecorder.MIME
+        if (size <= 0) throw IllegalStateException(lost)
+        val mime = m.localMediaMime ?: if (voice) VoiceRecorder.MIME else Attachments.DEFAULT_MIME
+        val fileName = m.localMediaName?.takeIf { it.isNotBlank() } ?: if (voice) "voice.m4a" else file.name
+        // Неизвестный или битый тип не должен ронять отправку: шлём как двоичный.
+        val mediaType = mime.toMediaTypeOrNull() ?: Attachments.DEFAULT_MIME.toMediaType()
         val up = request(key) { auth ->
-            val part = MultipartBody.Part.createFormData("file", "voice.m4a", file.asRequestBody(mime.toMediaType()))
+            val part = MultipartBody.Part.createFormData("file", fileName, file.asRequestBody(mediaType))
             val response = api.uploadMedia(auth, part, mime.toRequestBody("text/plain".toMediaType()))
             if (!response.isSuccessful) throw HttpException(response)
             response.body() ?: throw IOException("Empty upload response")
         }
-        check(up.id.isNotBlank()) { "Сервер не сохранил запись. Повторите отправку." }
+        check(up.id.isNotBlank()) {
+            if (voice) "Сервер не сохранил запись. Повторите отправку." else "Сервер не сохранил файл. Повторите отправку."
+        }
         val envelope = MessageCodec.encode(MessageContent(
-            kind = MessageContent.KIND_VOICE,
+            kind = kind,
             media = MediaContent(
                 id = up.id,
                 mime = up.contentType.ifBlank { mime },
                 size = if (up.size > 0) up.size else size,
+                name = if (voice) null else fileName,
                 durationMs = m.localMediaDurationMs,
+                width = m.localMediaWidth,
+                height = m.localMediaHeight,
             ),
         ))
-        // Свою запись оставляем на устройстве как кэш — уже под именем media id.
+        // Свою копию оставляем на устройстве как кэш — уже под именем media id.
         val cached = withContext(Dispatchers.IO) { runCatching { moveTo(file, mediaCacheFile(up.id)) }.getOrNull() }
         val next = m.copy(ciphertext = envelope, localMediaPath = (cached ?: file).absolutePath)
         commit(key) { db.messageDao().upsert(next) }
@@ -879,8 +1118,33 @@ class ChatRepository(
     }
 
     /** Файл голосового сообщения: из локального кэша либо скачивается с сервера. */
-    suspend fun voiceFile(mediaId: String): File {
-        require(mediaId.isNotBlank()) { "Голосовое сообщение недоступно" }
+    suspend fun voiceFile(mediaId: String): File =
+        mediaFile(mediaId, MAX_VOICE_BYTES, "Запись не найдена на сервере.")
+
+    /** Файл вложения (фото, видео, документ): из кэша либо с сервера. */
+    suspend fun attachmentFile(mediaId: String): File =
+        mediaFile(mediaId, MAX_ATTACHMENT_BYTES, "Файл не найден на сервере.")
+
+    /** Готовая копия файла на устройстве, если она есть. */
+    fun cachedMediaFile(mediaId: String): File? =
+        mediaCacheFile(mediaId).takeIf { it.isFile && it.length() > 0 }
+
+    /** Файл вложения на устройстве: своя копия либо скачивание с сервера. */
+    suspend fun attachmentLocalFile(a: UiAttachment): File {
+        val local = a.localPath?.let { File(it) }?.takeIf { it.isFile && it.length() > 0 }
+        if (local != null) return local
+        val id = a.mediaId ?: throw IllegalStateException("Файл ещё не отправлен. Дождитесь отправки.")
+        return attachmentFile(id)
+    }
+
+    /** Сохранение вложения в выбранное человеком место. */
+    suspend fun saveAttachmentTo(a: UiAttachment, destination: Uri) {
+        val file = attachmentLocalFile(a)
+        withContext(Dispatchers.IO) { Attachments.writeTo(context, destination, file) }
+    }
+
+    private suspend fun mediaFile(mediaId: String, maxBytes: Long, missing: String): File {
+        require(mediaId.isNotBlank()) { "Вложение недоступно" }
         val target = mediaCacheFile(mediaId)
         if (withContext(Dispatchers.IO) { target.isFile && target.length() > 0 }) return target
         val key = key()
@@ -888,18 +1152,18 @@ class ChatRepository(
             val response = api.downloadMedia(auth, mediaId)
             if (!response.isSuccessful) {
                 response.errorBody()?.close()
-                if (response.code() == 404) throw IllegalStateException("Запись не найдена на сервере.")
+                if (response.code() == 404) throw IllegalStateException(missing)
                 throw HttpException(response)
             }
             val body = response.body() ?: throw IOException("Empty media response")
-            withContext(Dispatchers.IO) { body.use { saveMedia(it.byteStream(), target) } }
+            withContext(Dispatchers.IO) { body.use { saveMedia(it.byteStream(), target, maxBytes) } }
         }
         withContext(Dispatchers.IO) { runCatching { pruneMediaCache() } }
         return file
     }
 
     /** Пишем через .part и переименовываем: недокачанный файл не попадёт в кэш. */
-    private fun saveMedia(input: InputStream, target: File): File {
+    private fun saveMedia(input: InputStream, target: File, maxBytes: Long): File {
         val temp = File(target.parentFile, target.name + ".part")
         try {
             var total = 0L
@@ -909,11 +1173,11 @@ class ChatRepository(
                     val read = input.read(buffer)
                     if (read < 0) break
                     total += read
-                    check(total <= MAX_VOICE_BYTES) { "Запись слишком большая для загрузки." }
+                    check(total <= maxBytes) { "Файл слишком большой для загрузки." }
                     out.write(buffer, 0, read)
                 }
             }
-            check(total > 0) { "Сервер вернул пустую запись." }
+            check(total > 0) { "Сервер вернул пустой файл." }
             if (!temp.renameTo(target)) {
                 temp.copyTo(target, overwrite = true)
                 temp.delete()
@@ -931,6 +1195,8 @@ class ChatRepository(
         File(mediaCacheDir(), mediaId.replace(Regex("[^A-Za-z0-9_.-]"), "_"))
 
     private fun outboxDir(): File = File(context.filesDir, VOICE_OUTBOX_DIR).apply { mkdirs() }
+
+    private fun attachOutboxDir(): File = File(context.filesDir, ATTACH_OUTBOX_DIR).apply { mkdirs() }
 
     private fun moveTo(source: File, target: File): File {
         if (source == target) return target
@@ -958,6 +1224,7 @@ class ChatRepository(
     private fun clearLocalMediaFiles() {
         runCatching { File(context.filesDir, MEDIA_CACHE_DIR).deleteRecursively() }
         runCatching { File(context.filesDir, VOICE_DIR).deleteRecursively() }
+        runCatching { File(context.filesDir, ATTACH_DIR).deleteRecursively() }
     }
 
     suspend fun deleteExpiredMessages() {
@@ -971,9 +1238,14 @@ class ChatRepository(
         const val MEDIA_CACHE_DIR = "media"
         private const val VOICE_DIR = "voice"
         private const val VOICE_OUTBOX_DIR = "voice/outbox"
+        private const val ATTACH_DIR = "attach"
+        private const val ATTACH_OUTBOX_DIR = "attach/outbox"
 
         /** 5 минут AAC 64 кбит/с ≈ 2,5 МиБ; запас — на случай другого кодека устройства. */
         private const val MAX_VOICE_BYTES = 24L * 1024 * 1024
         private const val MEDIA_CACHE_BUDGET_BYTES = 256L * 1024 * 1024
+
+        /** Сервер по умолчанию принимает 50 МиБ на файл; оставляем запас на конверт. */
+        const val MAX_ATTACHMENT_BYTES = 48L * 1024 * 1024
     }
 }

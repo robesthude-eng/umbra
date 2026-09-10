@@ -498,7 +498,7 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 		}
 	}
 	for cid, call := range m.calls {
-		if call.CallerID == userID || call.CalleeID == userID {
+		if call.IsParticipant(userID) {
 			delete(m.calls, cid)
 		}
 	}
@@ -518,6 +518,8 @@ func (m *MemoryStore) SaveCall(_ context.Context, c *model.Call) error {
 		t := *c.EndedAt
 		cp.EndedAt = &t
 	}
+	// Копируем список участников: иначе вызывающий сможет менять его после записи.
+	cp.Participants = append([]string(nil), c.Participants...)
 	m.calls[c.ID] = &cp
 	return nil
 }
@@ -534,6 +536,7 @@ func (m *MemoryStore) GetCall(_ context.Context, id string) (*model.Call, error)
 		t := *c.EndedAt
 		cp.EndedAt = &t
 	}
+	cp.Participants = append([]string(nil), c.Participants...)
 	return &cp, nil
 }
 
@@ -557,12 +560,13 @@ func (m *MemoryStore) ListCallsForUser(_ context.Context, userID string) ([]*mod
 	defer m.mu.Unlock()
 	out := make([]*model.Call, 0)
 	for _, c := range m.calls {
-		if c.CallerID == userID || c.CalleeID == userID {
+		if c.IsParticipant(userID) {
 			cp := *c
 			if c.EndedAt != nil {
 				t := *c.EndedAt
 				cp.EndedAt = &t
 			}
+			cp.Participants = append([]string(nil), c.Participants...)
 			out = append(out, &cp)
 		}
 	}

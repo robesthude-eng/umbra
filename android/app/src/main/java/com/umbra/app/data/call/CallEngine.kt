@@ -60,21 +60,32 @@ import org.webrtc.VideoTrack
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** Один собеседник в звонке: в группе таких до трёх. */
+data class CallPeer(
+    val userId: String,
+    val connected: Boolean = false,
+    /** Пришло видео этого собеседника. */
+    val video: Boolean = false,
+    val reconnecting: Boolean = false,
+)
+
 /** Состояние медиачасти звонка для интерфейса. */
 data class CallMedia(
     val callId: String,
     val video: Boolean,
-    /** Звук пошёл в обе стороны (ICE соединился). */
+    /** Хотя бы с одним собеседником звук пошёл в обе стороны. */
     val connected: Boolean = false,
     val micMuted: Boolean = false,
     val speakerOn: Boolean = false,
     val cameraOn: Boolean = false,
-    /** Пришёл видеопоток собеседника. */
+    /** Пришёл хотя бы один чужой видеопоток. */
     val remoteVideo: Boolean = false,
     /** Связь пропала, идёт восстановление; разговор ещё не завершён. */
     val reconnecting: Boolean = false,
     val startedAtMillis: Long = 0L,
     val problem: String? = null,
+    /** Собеседники в порядке приглашения. */
+    val peers: List<CallPeer> = emptyList(),
 )
 
 /**
@@ -82,10 +93,15 @@ data class CallMedia(
  * между устройствами, сигналинг — через сервер Umbra (POST /v1/calls/{id}/signal
  * и WebSocket-событие call_signal). Медиапотоки через сервер не идут.
  *
- * Роли жёсткие: звонящий всегда делает offer, принимающий — answer, поэтому
- * столкновения предложений (glare) невозможны. Медиасессия поднимается
- * только после принятия вызова (status = active), чтобы не держать камеру
- * и микрофон во время звонка.
+ * Групповой звонок собирается mesh-схемой: с каждым собеседником своё
+ * соединение и свой набор ICE-кандидатов, общие — только микрофон
+ * и камера. Поэтому потолок — четыре участника (три соединения на телефон):
+ * дальше нужен серверный микшер (SFU), которого у Umbra нет.
+ *
+ * Кто делает offer, решается заранее, чтобы предложения не столкнулись (glare):
+ * с инициатором звонка — всегда он, между двумя приглашёнными — тот, чей id
+ * меньше. Медиасессия поднимается только после принятия вызова
+ * (status = active), чтобы не держать камеру и микрофон во время гудка.
  *
  * Движок живёт в [com.umbra.app.di.AppContainer], а не в экране: поворот или
  * свёртывание приложения не рвёт разговор.
@@ -103,33 +119,67 @@ class CallEngine(
 
     private var factory: PeerConnectionFactory? = null
     @Volatile private var eglBase: EglBase? = null
-    private var connection: PeerConnection? = null
+
+    // Общее на весь звонок: микрофон и камера захватываются один раз,
+    // а треки добавляются в каждое соединение mesh-сети.
     private var audioSource: AudioSource? = null
     private var localAudio: AudioTrack? = null
     private var videoSource: VideoSource? = null
     private var localVideo: VideoTrack? = null
     private var capturer: VideoCapturer? = null
     private var surfaceHelper: SurfaceTextureHelper? = null
-    private var remoteVideo: VideoTrack? = null
     private var localSink: SurfaceViewRenderer? = null
-    private var remoteSink: SurfaceViewRenderer? = null
+
+    /** Соединения по собеседникам, в порядке приглашения. */
+    private val sessions = LinkedHashMap<String, PeerSession>()
 
     private var sessionCallId: String? = null
-    private var peerId: String = ""
+    private var selfId = ""
+    private var callerId = ""
     private var outgoing = false
-    private var remoteDescriptionSet = false
-    private val pendingRemoteIce = mutableListOf<IceCandidate>()
-    private var pendingOffer: Pair<String, JsonObject>? = null
-    private var offerRetryJob: Job? = null
+    /** Offer может обогнать поднятие сессии — придерживаем его по отправителю. */
+    private val pendingOffers = mutableMapOf<String, Pair<String, JsonObject>>()
     private var watchdogJob: Job? = null
-    private var restartJob: Job? = null
     private var reconnectDeadlineJob: Job? = null
-    private var restartAttempts = 0
-    private var lastRestartAtMillis = 0L
-    private var awaitingAnswer = false
     private var iceServers: List<PeerConnection.IceServer> = emptyList()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var focusRequest: AudioFocusRequest? = null
+
+    /** Одно соединение mesh-сети: своё согласование и свой видеопоток. */
+    private inner class PeerSession(val peerId: String) {
+        var connection: PeerConnection? = null
+        var remoteVideo: VideoTrack? = null
+        var sink: SurfaceViewRenderer? = null
+        var remoteDescriptionSet = false
+        var awaitingAnswer = false
+        var connected = false
+        var reconnecting = false
+        val pendingIce = mutableListOf<IceCandidate>()
+        var offerRetryJob: Job? = null
+        var restartJob: Job? = null
+        var restartAttempts = 0
+        var lastRestartAtMillis = 0L
+
+        fun snapshot() = CallPeer(
+            userId = peerId,
+            connected = connected,
+            video = remoteVideo != null,
+            reconnecting = reconnecting,
+        )
+
+        /** Вызывать только под [mutex]. */
+        fun releaseLocked() {
+            offerRetryJob?.cancel()
+            restartJob?.cancel()
+            sink?.let { view -> runCatching { remoteVideo?.removeSink(view) } }
+            runCatching { connection?.close() }
+            runCatching { connection?.dispose() }
+            connection = null
+            remoteVideo = null
+            sink = null
+            pendingIce.clear()
+        }
+    }
 
     init {
         scope.launch {
@@ -159,12 +209,17 @@ class CallEngine(
     // ------------------------------------------------------------ сессия
 
     private suspend fun startSession(call: ActiveCall) {
-        if (mutex.withLock { sessionCallId } == call.callId) return
+        if (mutex.withLock { sessionCallId } == call.callId) {
+            // Состав звонка мог измениться: кто-то вышел или только что принял вызов.
+            syncPeers(call)
+            return
+        }
         // Учётка TURN временная, поэтому берём её у сервера перед каждым звонком.
         val servers = fetchIceServers()
+        val fresh = mutableListOf<PeerSession>()
         val prepared = mutex.withLock {
             if (sessionCallId == call.callId) return
-            releaseLocked()
+            releaseAllLocked()
             if (!granted(Manifest.permission.RECORD_AUDIO)) {
                 _media.value = CallMedia(
                     call.callId, call.video,
@@ -173,14 +228,10 @@ class CallEngine(
                 return
             }
             sessionCallId = call.callId
-            peerId = call.peerUserId
+            selfId = call.selfUserId
+            callerId = call.callerUserId
             outgoing = !call.incoming
-            remoteDescriptionSet = false
-            awaitingAnswer = false
-            restartAttempts = 0
-            lastRestartAtMillis = 0L
             iceServers = servers
-            pendingRemoteIce.clear()
 
             val wantCamera = call.video && granted(Manifest.permission.CAMERA)
             // Нативная библиотека и EGL поднимаются ДО публикации состояния: экран
@@ -193,7 +244,9 @@ class CallEngine(
                 cameraOn = wantCamera,
                 speakerOn = call.video,
             )
-            buildPeerConnectionLocked(wantCamera)
+            buildLocalMediaLocked(wantCamera)
+            for (peerId in call.peers) fresh += openSessionLocked(peerId)
+            refreshMediaLocked()
             startForegroundService(call)
             acquireAudio(call.video)
             registerNetworkCallback()
@@ -206,11 +259,47 @@ class CallEngine(
             if (_media.value?.connected == false) fail("Связь не установилась. Проверьте интернет и позвоните ещё раз.")
         }
 
-        if (outgoing) sendOffer() else applyPendingOffer()
+        for (session in fresh) startNegotiation(session)
+    }
+
+    /** Кто-то присоединился или вышел: держим mesh в соответствии со списком участников. */
+    private suspend fun syncPeers(call: ActiveCall) {
+        val fresh = mutableListOf<PeerSession>()
+        mutex.withLock {
+            if (sessionCallId != call.callId) return
+            val wanted = call.peers.toSet()
+            for (peerId in sessions.keys.toList()) {
+                if (peerId in wanted) continue
+                sessions.remove(peerId)?.releaseLocked()
+            }
+            for (peerId in call.peers) {
+                if (sessions.containsKey(peerId)) continue
+                fresh += openSessionLocked(peerId)
+            }
+            refreshMediaLocked()
+        }
+        for (session in fresh) startNegotiation(session)
+    }
+
+    /** Первый шаг согласования: предлагаем мы или ждём offer собеседника. */
+    private suspend fun startNegotiation(session: PeerSession) {
+        if (shouldOffer(session.peerId)) sendOffer(session) else applyPendingOffer(session)
+    }
+
+    /**
+     * Кто отправляет offer в паре. Инициатор звонка предлагает всем, между двумя
+     * приглашёнными предлагает тот, чей id меньше: правило одинаково на обоих
+     * телефонах, поэтому встречных предложений не бывает.
+     */
+    private fun shouldOffer(peerId: String): Boolean = when {
+        selfId.isEmpty() -> outgoing
+        selfId == callerId -> true
+        peerId == callerId -> false
+        else -> selfId < peerId
     }
 
     /** Вызывать только под [mutex]. */
-    private fun buildPeerConnectionLocked(withCamera: Boolean) {
+    private fun buildLocalMediaLocked(withCamera: Boolean) {
         ensureNative(context)
         val egl = eglBase ?: EglBase.create().also { eglBase = it }
         val peerFactory = factory ?: PeerConnectionFactory.builder()
@@ -219,39 +308,21 @@ class CallEngine(
             .createPeerConnectionFactory()
             .also { factory = it }
 
-        val config = PeerConnection.RTCConfiguration(iceServers).apply {
-            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
-            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
-            // Непрерывный сбор кандидатов: переход Wi-Fi ↔ мобильный не рвёт звонок.
-            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-        }
-        val peer = peerFactory.createPeerConnection(config, observer)
-            ?: throw IllegalStateException("Не удалось подготовить звонок на этом устройстве")
-        connection = peer
-
         val source = peerFactory.createAudioSource(MediaConstraints())
         audioSource = source
-        val track = peerFactory.createAudioTrack(AUDIO_TRACK_ID, source)
-        localAudio = track
-        peer.addTrack(track, listOf(STREAM_ID))
+        localAudio = peerFactory.createAudioTrack(AUDIO_TRACK_ID, source)
 
-        if (withCamera) startCameraLocked(peerFactory, egl, peer)
+        if (withCamera) startCameraLocked(peerFactory, egl)
     }
 
     /** Вызывать только под [mutex]. */
-    private fun startCameraLocked(
-        peerFactory: PeerConnectionFactory,
-        egl: EglBase,
-        peer: PeerConnection,
-    ) {
+    private fun startCameraLocked(peerFactory: PeerConnectionFactory, egl: EglBase) {
         val camera = createCapturer() ?: return
         val helper = SurfaceTextureHelper.create("UmbraCapture", egl.eglBaseContext)
         val source = peerFactory.createVideoSource(false)
         camera.initialize(helper, context, source.capturerObserver)
         runCatching { camera.startCapture(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS) }
         val track = peerFactory.createVideoTrack(VIDEO_TRACK_ID, source)
-        peer.addTrack(track, listOf(STREAM_ID))
         localSink?.let { runCatching { track.addSink(it) } }
         surfaceHelper = helper
         videoSource = source
@@ -266,159 +337,215 @@ class CallEngine(
         return enumerator.createCapturer(front, null)
     }
 
-    private suspend fun stopSession() {
-        offerRetryJob?.cancel()
-        watchdogJob?.cancel()
-        restartJob?.cancel()
-        reconnectDeadlineJob?.cancel()
-        unregisterNetworkCallback()
-        mutex.withLock {
-            if (sessionCallId == null) return
-            releaseLocked()
+    /** Вызывать только под [mutex]. Соединение с одним собеседником mesh-сети. */
+    private fun openSessionLocked(peerId: String): PeerSession {
+        val session = PeerSession(peerId)
+        sessions[peerId] = session
+        val peerFactory = factory ?: return session
+        val config = PeerConnection.RTCConfiguration(iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+            // Непрерывный сбор кандидатов: переход Wi-Fi ↔ мобильный не рвёт звонок.
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
-        releaseAudio()
-        stopForegroundService()
-        _media.value = null
+        val peer = peerFactory.createPeerConnection(config, observerFor(session))
+            ?: throw IllegalStateException("Не удалось подготовить звонок на этом устройстве")
+        session.connection = peer
+        // Микрофон и камера общие: один источник раздаётся во все соединения.
+        localAudio?.let { peer.addTrack(it, listOf(STREAM_ID)) }
+        localVideo?.let { peer.addTrack(it, listOf(STREAM_ID)) }
+        return session
     }
 
-    /** Вызывать только под [mutex]. Порядок важен: сначала соединение, потом источники. */
-    private fun releaseLocked() {
-        localSink?.let { sink -> runCatching { localVideo?.removeSink(sink) } }
-        remoteSink?.let { sink -> runCatching { remoteVideo?.removeSink(sink) } }
-        runCatching { connection?.close() }
-        runCatching { connection?.dispose() }
-        connection = null
+    private suspend fun stopSession() {
+        mutex.withLock {
+            if (sessionCallId == null && sessions.isEmpty()) return
+            releaseAllLocked()
+            _media.value = null
+        }
+        stopForegroundService()
+        releaseAudio()
+        unregisterNetworkCallback()
+    }
+
+    /** Вызывать только под [mutex]. */
+    private fun releaseAllLocked() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+        reconnectDeadlineJob?.cancel()
+        reconnectDeadlineJob = null
+        pendingOffers.clear()
+        for (session in sessions.values) session.releaseLocked()
+        sessions.clear()
+        sessionCallId = null
+        selfId = ""
+        callerId = ""
+        outgoing = false
+        iceServers = emptyList()
+
         runCatching { capturer?.stopCapture() }
         runCatching { capturer?.dispose() }
         capturer = null
-        runCatching { surfaceHelper?.dispose() }
-        surfaceHelper = null
-        runCatching { localVideo?.dispose() }
+        localSink?.let { view -> runCatching { localVideo?.removeSink(view) } }
         localVideo = null
         runCatching { videoSource?.dispose() }
         videoSource = null
-        runCatching { localAudio?.dispose() }
+        runCatching { surfaceHelper?.dispose() }
+        surfaceHelper = null
         localAudio = null
         runCatching { audioSource?.dispose() }
         audioSource = null
-        remoteVideo = null
-        sessionCallId = null
-        peerId = ""
-        remoteDescriptionSet = false
-        awaitingAnswer = false
-        pendingRemoteIce.clear()
-        pendingOffer = null
     }
 
-    // ------------------------------------------------------------ сигналинг
+    /**
+     * Собирает состояние для экрана из отдельных соединений: звонок считается
+     * состоявшимся, пока на связи хотя бы один собеседник.
+     * Вызывать только под [mutex].
+     */
+    private fun refreshMediaLocked() {
+        val current = _media.value ?: return
+        val peers = sessions.values.map { it.snapshot() }
+        val connected = peers.any { it.connected }
+        _media.value = current.copy(
+            peers = peers,
+            connected = connected,
+            remoteVideo = peers.any { it.video },
+            reconnecting = peers.any { it.reconnecting },
+            // После переподключения и выхода участников таймер разговора не сбрасывается.
+            startedAtMillis = when {
+                current.startedAtMillis > 0L -> current.startedAtMillis
+                connected -> System.currentTimeMillis()
+                else -> 0L
+            },
+        )
+    }
 
-    private suspend fun sendOffer(iceRestart: Boolean = false) {
-        val peer = mutex.withLock { connection } ?: return
-        val constraints = offerConstraints()
-        // Перезапуск ICE: новые кандидаты для той же сессии, разговор не начинается заново.
-        if (iceRestart) constraints.mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
-        val offer = peer.createOfferAwait(constraints)
+    // -------------------------------------------------------- согласование
+
+    private suspend fun sendOffer(session: PeerSession, iceRestart: Boolean = false) {
+        val peer = mutex.withLock { if (sessions[session.peerId] === session) session.connection else null } ?: return
+        val offer = peer.createOfferAwait(offerConstraints(iceRestart))
         peer.setLocalDescriptionAwait(offer)
-        mutex.withLock { awaitingAnswer = true }
-        deliver("offer", sdpPayload(offer))
-        // WebSocket собеседника мог отключиться в момент пересылки — повторяем offer,
-        // пока не придёт answer. Сервер сигналы не буферизует, иначе звонок зависнет.
-        offerRetryJob?.cancel()
-        offerRetryJob = scope.launch {
-            repeat(OFFER_RETRIES) {
+        mutex.withLock { session.awaitingAnswer = true }
+        deliver("offer", sdpPayload(offer), session.peerId)
+        // WebSocket мог не донести offer (телефон только проснулся от push):
+        // повторяем предложение, пока не придёт ответ.
+        val retry = scope.launch {
+            var attempt = 0
+            while (attempt < OFFER_RETRIES) {
                 delay(OFFER_RETRY_MS)
-                if (mutex.withLock { !awaitingAnswer || connection == null }) return@launch
-                deliver("offer", sdpPayload(offer))
+                val waiting = mutex.withLock { sessions[session.peerId] === session && session.awaitingAnswer }
+                if (!waiting) return@launch
+                deliver("offer", sdpPayload(offer), session.peerId)
+                attempt++
             }
+        }
+        mutex.withLock {
+            session.offerRetryJob?.cancel()
+            session.offerRetryJob = retry
         }
     }
 
-    private suspend fun applyPendingOffer() {
-        val (callId, payload) = mutex.withLock { pendingOffer } ?: return
-        if (callId != sessionCallId) return
-        handleOffer(payload)
+    /** Offer мог прийти раньше, чем поднялась медиасессия. */
+    private suspend fun applyPendingOffer(session: PeerSession) {
+        val pending = mutex.withLock {
+            val held = pendingOffers[session.peerId] ?: return@withLock null
+            if (held.first != sessionCallId) {
+                pendingOffers.remove(session.peerId)
+                return@withLock null
+            }
+            pendingOffers.remove(session.peerId)
+        } ?: return
+        handleOffer(session, pending.second)
     }
 
     private suspend fun onSignal(signal: CallSignalEvent) {
-        val current = mutex.withLock {
+        val from = signal.from
+        if (from.isEmpty()) return
+        val session = mutex.withLock {
             if (sessionCallId != signal.callId) {
-                // Offer может обогнать поднятие сессии — придержим его.
-                if (signal.kind == "offer") pendingOffer = signal.callId to signal.payload
-                null
-            } else sessionCallId
+                // Сессия ещё не поднята (идёт гудок) — придержим offer от этого собеседника.
+                if (signal.kind == "offer") pendingOffers[from] = signal.callId to signal.payload
+                return@withLock null
+            }
+            // В группе собеседник может принять вызов позже нас — поднимаем соединение по его сигналу.
+            sessions[from] ?: if (signal.kind == "offer") openSessionLocked(from) else null
         } ?: return
-        if (current != signal.callId) return
         when (signal.kind) {
-            "offer" -> if (!outgoing) handleOffer(signal.payload)
-            "answer" -> if (outgoing) handleAnswer(signal.payload)
-            "ice" -> handleRemoteIce(signal.payload)
+            "offer" -> handleOffer(session, signal.payload)
+            "answer" -> handleAnswer(session, signal.payload)
+            "ice" -> handleRemoteIce(session, signal.payload)
         }
     }
 
-    private suspend fun handleOffer(payload: JsonObject) {
-        val peer = mutex.withLock { connection } ?: return
+    private suspend fun handleOffer(session: PeerSession, payload: JsonObject) {
+        val peer = mutex.withLock { if (sessions[session.peerId] === session) session.connection else null } ?: return
         val sdp = payload["sdp"]?.jsonPrimitive?.content ?: return
         peer.setRemoteDescriptionAwait(SessionDescription(SessionDescription.Type.OFFER, sdp))
-        drainRemoteIce(peer)
+        drainRemoteIce(session, peer)
         val answer = peer.createAnswerAwait(offerConstraints())
         peer.setLocalDescriptionAwait(answer)
-        deliver("answer", sdpPayload(answer))
+        deliver("answer", sdpPayload(answer), session.peerId)
     }
 
-    private suspend fun handleAnswer(payload: JsonObject) {
-        val peer = mutex.withLock { connection } ?: return
+    private suspend fun handleAnswer(session: PeerSession, payload: JsonObject) {
+        val peer = mutex.withLock { if (sessions[session.peerId] === session) session.connection else null } ?: return
         // Ответ принимаем только на своё предложение, иначе это эхо старого offer.
-        if (!mutex.withLock { awaitingAnswer }) return
+        if (!mutex.withLock { session.awaitingAnswer }) return
         val sdp = payload["sdp"]?.jsonPrimitive?.content ?: return
         peer.setRemoteDescriptionAwait(SessionDescription(SessionDescription.Type.ANSWER, sdp))
-        mutex.withLock { awaitingAnswer = false }
-        offerRetryJob?.cancel()
-        drainRemoteIce(peer)
+        mutex.withLock {
+            session.awaitingAnswer = false
+            session.offerRetryJob?.cancel()
+            session.offerRetryJob = null
+        }
+        drainRemoteIce(session, peer)
     }
 
-    private suspend fun handleRemoteIce(payload: JsonObject) {
+    private suspend fun handleRemoteIce(session: PeerSession, payload: JsonObject) {
         val candidate = IceCandidate(
             payload["sdpMid"]?.jsonPrimitive?.content ?: return,
             payload["sdpMLineIndex"]?.jsonPrimitive?.int ?: return,
             payload["candidate"]?.jsonPrimitive?.content ?: return,
         )
         val peer = mutex.withLock {
-            if (!remoteDescriptionSet) {
-                pendingRemoteIce += candidate
+            if (sessions[session.peerId] !== session) return
+            if (!session.remoteDescriptionSet) {
+                session.pendingIce += candidate
                 null
-            } else connection
+            } else session.connection
         } ?: return
         runCatching { peer.addIceCandidate(candidate) }
     }
 
-    private suspend fun drainRemoteIce(peer: PeerConnection) {
+    private suspend fun drainRemoteIce(session: PeerSession, peer: PeerConnection) {
         val queued = mutex.withLock {
-            remoteDescriptionSet = true
-            val copy = pendingRemoteIce.toList()
-            pendingRemoteIce.clear()
+            session.remoteDescriptionSet = true
+            val copy = session.pendingIce.toList()
+            session.pendingIce.clear()
             copy
         }
         for (candidate in queued) runCatching { peer.addIceCandidate(candidate) }
     }
 
     /** Отправка SDP: без неё звонок не состоится, поэтому ошибка видна пользователю. */
-    private suspend fun deliver(kind: String, payload: JsonObject) {
+    private suspend fun deliver(kind: String, payload: JsonObject, to: String) {
         val callId = mutex.withLock { sessionCallId } ?: return
-        val to = mutex.withLock { peerId }
         try {
             repo.sendCallSignal(callId, to, kind, payload)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            fail("Не удалось согласовать звонок. Проверьте связь и позвоните заново.")
+            // В группе срывается только эта пара; остальные продолжают разговор.
+            dropPeer(to, "Не удалось согласовать звонок. Проверьте связь и позвоните заново.")
         }
     }
 
     /** ICE-кандидатов много: потеря одного не фатальна, ошибку не показываем. */
-    private fun deliverIce(candidate: IceCandidate) {
+    private fun deliverIce(candidate: IceCandidate, to: String) {
         scope.launch {
             val callId = mutex.withLock { sessionCallId } ?: return@launch
-            val to = mutex.withLock { peerId }
             val payload = buildJsonObject {
                 put("candidate", candidate.sdp)
                 put("sdpMid", candidate.sdpMid)
@@ -433,14 +560,15 @@ class CallEngine(
         put("sdp", description.description)
     }
 
-    private fun offerConstraints() = MediaConstraints().apply {
+    private fun offerConstraints(iceRestart: Boolean = false) = MediaConstraints().apply {
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
         mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        if (iceRestart) mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
     }
 
     // ------------------------------------------------------------ управление из UI
 
-    /** Микрофон: трек отключается локально, пересогласование не нужно. */
+    /** Микрофон: трек отключается локально сразу во всех соединениях. */
     fun toggleMic() {
         scope.launch {
             mutex.withLock {
@@ -490,12 +618,14 @@ class CallEngine(
         }
     }
 
-    fun bindRemoteVideo(view: SurfaceViewRenderer) {
+    /** У каждого собеседника своя плитка, поэтому видео привязывается по id. */
+    fun bindRemoteVideo(peerId: String, view: SurfaceViewRenderer) {
         scope.launch {
             mutex.withLock {
-                remoteSink?.let { old -> runCatching { remoteVideo?.removeSink(old) } }
-                remoteSink = view
-                runCatching { remoteVideo?.addSink(view) }
+                val session = sessions[peerId] ?: return@withLock
+                session.sink?.let { old -> runCatching { session.remoteVideo?.removeSink(old) } }
+                session.sink = view
+                runCatching { session.remoteVideo?.addSink(view) }
             }
         }
     }
@@ -507,9 +637,10 @@ class CallEngine(
                     runCatching { localVideo?.removeSink(view) }
                     localSink = null
                 }
-                if (remoteSink === view) {
-                    runCatching { remoteVideo?.removeSink(view) }
-                    remoteSink = null
+                for (session in sessions.values) {
+                    if (session.sink !== view) continue
+                    runCatching { session.remoteVideo?.removeSink(view) }
+                    session.sink = null
                 }
             }
         }
@@ -606,8 +737,9 @@ class CallEngine(
     // ------------------------------------------------------------ смена сети
 
     /**
-     * Wi-Fi ↔ мобильный интернет: вместо обрыва пересобираем маршрут. Новое
-     * предложение делает только звонящий, иначе оба пришлют offer одновременно.
+     * Wi-Fi ↔ мобильный интернет: вместо обрыва пересобираем маршрут с каждым
+     * собеседником отдельно. Новое предложение делает тот же, кто предлагал
+     * изначально, иначе оба пришлют offer одновременно.
      */
     private fun registerNetworkCallback() {
         if (networkCallback != null) return
@@ -615,11 +747,16 @@ class CallEngine(
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val state = _media.value ?: return
-                if (state.connected || state.reconnecting) scheduleIceRestart()
+                if (!state.connected && !state.reconnecting) return
+                scope.launch {
+                    for (session in mutex.withLock { sessions.values.toList() }) scheduleIceRestart(session)
+                }
             }
 
             override fun onLost(network: Network) {
-                markReconnecting()
+                scope.launch {
+                    for (session in mutex.withLock { sessions.values.toList() }) markReconnecting(session)
+                }
             }
         }
         runCatching { manager.registerDefaultNetworkCallback(callback) }
@@ -633,48 +770,86 @@ class CallEngine(
         networkCallback = null
     }
 
-    /** Показываем «восстанавливаю связь» и даём себе полминуты на возврат. */
-    private fun markReconnecting() {
-        val current = _media.value ?: return
-        if (!current.connected || current.reconnecting) return
-        _media.value = current.copy(reconnecting = true)
+    /** Показываем «восстанавливаю связь» рядом с конкретным собеседником. */
+    private fun markReconnecting(session: PeerSession) {
+        scope.launch {
+            val changed = mutex.withLock {
+                if (sessions[session.peerId] !== session) return@withLock false
+                if (!session.connected || session.reconnecting) return@withLock false
+                session.reconnecting = true
+                refreshMediaLocked()
+                true
+            }
+            if (changed) scheduleReconnectDeadline()
+        }
+    }
+
+    /** Полминуты на возврат: кто не вернулся — выбывает, остальные продолжают разговор. */
+    private fun scheduleReconnectDeadline() {
         reconnectDeadlineJob?.cancel()
         reconnectDeadlineJob = scope.launch {
             delay(RECONNECT_TIMEOUT_MS)
-            if (_media.value?.reconnecting == true) {
-                fail("Связь не вернулась. Проверьте интернет и позвоните ещё раз.")
+            val stalled = mutex.withLock { sessions.values.filter { it.reconnecting }.map { it.peerId } }
+            for (peerId in stalled) {
+                dropPeer(peerId, "Связь не вернулась. Проверьте интернет и позвоните ещё раз.")
             }
         }
     }
 
-    private fun scheduleIceRestart() {
-        restartJob?.cancel()
-        restartJob = scope.launch {
+    private fun scheduleIceRestart(session: PeerSession) {
+        val job = scope.launch {
             val allowed = mutex.withLock {
                 val now = System.currentTimeMillis()
                 when {
-                    sessionCallId == null || connection == null -> false
-                    restartAttempts >= MAX_ICE_RESTARTS -> false
-                    now - lastRestartAtMillis < RESTART_MIN_INTERVAL_MS -> false
+                    sessionCallId == null -> false
+                    sessions[session.peerId] !== session || session.connection == null -> false
+                    session.restartAttempts >= MAX_ICE_RESTARTS -> false
+                    now - session.lastRestartAtMillis < RESTART_MIN_INTERVAL_MS -> false
                     else -> {
-                        restartAttempts += 1
-                        lastRestartAtMillis = now
+                        session.restartAttempts += 1
+                        session.lastRestartAtMillis = now
                         true
                     }
                 }
             }
             if (!allowed) return@launch
-            markReconnecting()
-            // Принимающий ждёт новый offer: перезапуск начинает только звонящий.
-            if (!outgoing) return@launch
+            markReconnecting(session)
+            // Принимающая сторона ждёт новый offer, перезапуск начинает предлагавший.
+            if (!shouldOffer(session.peerId)) return@launch
             delay(ICE_RESTART_DELAY_MS)
             try {
-                sendOffer(iceRestart = true)
+                sendOffer(session, iceRestart = true)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // Следующая попытка придёт со следующим событием сети или ICE.
             }
+        }
+        scope.launch {
+            mutex.withLock {
+                if (sessions[session.peerId] !== session) {
+                    job.cancel()
+                    return@withLock
+                }
+                session.restartJob?.takeIf { it !== job }?.cancel()
+                session.restartJob = job
+            }
+        }
+    }
+
+    /**
+     * Один собеседник выпал: в группе убираем его плитку и говорим дальше,
+     * а в разговоре вдвоём это означает конец звонка.
+     */
+    private fun dropPeer(peerId: String, problem: String) {
+        scope.launch {
+            val lastOne = mutex.withLock {
+                val session = sessions.remove(peerId) ?: return@withLock false
+                session.releaseLocked()
+                refreshMediaLocked()
+                sessions.isEmpty()
+            }
+            if (lastOne) fail(problem)
         }
     }
 
@@ -699,40 +874,30 @@ class CallEngine(
 
     // ------------------------------------------------------------ WebRTC callbacks
 
-    private val observer = object : PeerConnection.Observer {
+    /** У каждого соединения свой наблюдатель: события привязаны к собеседнику. */
+    private fun observerFor(session: PeerSession): PeerConnection.Observer = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
-                PeerConnection.IceConnectionState.COMPLETED -> {
-                    watchdogJob?.cancel()
-                    reconnectDeadlineJob?.cancel()
-                    val current = _media.value ?: return
-                    if (!current.connected || current.reconnecting) {
-                        _media.value = current.copy(
-                            connected = true,
-                            reconnecting = false,
-                            // После переподключения таймер разговора продолжается.
-                            startedAtMillis = if (current.startedAtMillis > 0L) current.startedAtMillis
-                            else System.currentTimeMillis(),
-                            problem = null,
-                        )
-                    }
-                }
+                PeerConnection.IceConnectionState.COMPLETED -> markConnected(session)
+
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
-                    markReconnecting()
-                    scheduleIceRestart()
+                    markReconnecting(session)
+                    scheduleIceRestart(session)
                 }
+
                 PeerConnection.IceConnectionState.FAILED -> {
-                    // Разговор уже шёл — пробуем пересобрать маршрут, а не рвать звонок.
-                    if (_media.value?.connected == true) {
-                        markReconnecting()
-                        scheduleIceRestart()
+                    if (session.connected) {
+                        // Разговор уже шёл — пробуем пересобрать маршрут, а не рвать связь.
+                        markReconnecting(session)
+                        scheduleIceRestart(session)
                     } else {
-                        fail("Связь оборвалась. Если это повторяется, нужен TURN-сервер.")
+                        dropPeer(session.peerId, "Связь оборвалась. Если это повторяется, нужен TURN-сервер.")
                     }
                 }
+
                 else -> {}
             }
         }
@@ -744,7 +909,7 @@ class CallEngine(
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
 
         override fun onIceCandidate(candidate: IceCandidate?) {
-            candidate?.let { deliverIce(it) }
+            candidate?.let { deliverIce(it, session.peerId) }
         }
 
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
@@ -763,10 +928,31 @@ class CallEngine(
             val video = track as? VideoTrack ?: return
             scope.launch {
                 mutex.withLock {
-                    remoteVideo = video
-                    remoteSink?.let { sink -> runCatching { video.addSink(sink) } }
+                    if (sessions[session.peerId] !== session) return@withLock
+                    session.remoteVideo = video
+                    session.sink?.let { sink -> runCatching { video.addSink(sink) } }
+                    refreshMediaLocked()
                 }
-                _media.value = _media.value?.copy(remoteVideo = true)
+            }
+        }
+    }
+
+    /** Звук пошёл в обе стороны с этим собеседником. */
+    private fun markConnected(session: PeerSession) {
+        watchdogJob?.cancel()
+        scope.launch {
+            mutex.withLock {
+                if (sessions[session.peerId] !== session) return@withLock
+                if (session.connected && !session.reconnecting) return@withLock
+                session.connected = true
+                session.reconnecting = false
+                session.restartAttempts = 0
+                _media.value = _media.value?.copy(problem = null)
+                refreshMediaLocked()
+                if (sessions.values.none { it.reconnecting }) {
+                    reconnectDeadlineJob?.cancel()
+                    reconnectDeadlineJob = null
+                }
             }
         }
     }

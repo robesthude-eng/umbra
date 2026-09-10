@@ -13,8 +13,9 @@ import (
 // ---------- типы запросов/ответов ----------
 
 type initiateCallRequest struct {
-	CalleeID string `json:"callee_id"`
-	Video    bool   `json:"video"`
+	CalleeID  string   `json:"callee_id"`  // личный звонок (клиенты 0.8.0)
+	CalleeIDs []string `json:"callee_ids"` // групповой: до 4 участников вместе со звонящим
+	Video     bool     `json:"video"`
 }
 
 type callSignalRequest struct {
@@ -28,13 +29,14 @@ type callStatusRequest struct {
 }
 
 type callResponse struct {
-	ID        string  `json:"id"`
-	CallerID  string  `json:"caller_id"`
-	CalleeID  string  `json:"callee_id"`
-	Video     bool    `json:"video"`
-	Status    string  `json:"status"`
-	CreatedAt string  `json:"created_at"`
-	EndedAt   *string `json:"ended_at"`
+	ID           string   `json:"id"`
+	CallerID     string   `json:"caller_id"`
+	CalleeID     string   `json:"callee_id"`
+	Participants []string `json:"participants"`
+	Video        bool     `json:"video"`
+	Status       string   `json:"status"`
+	CreatedAt    string   `json:"created_at"`
+	EndedAt      *string  `json:"ended_at"`
 }
 
 // callSignalEvent — сигнал, ретранслируемый через WebSocket.
@@ -45,16 +47,22 @@ type callSignalEvent struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// callStatusEvent — уведомление об изменении статуса звонка.
+// callStatusEvent — уведомление об изменении статуса звонка. В группе важно,
+// кто именно сменил статус: ended от одного участника — это его выход,
+// а не конец всего звонка.
 type callStatusEvent struct {
 	CallID string `json:"call_id"`
 	Status string `json:"status"`
+	From   string `json:"from"`
 }
 
 // ---------- хэндлеры ----------
 
 // handleInitiateCall — POST /v1/calls. Создаёт запись звонка (ringing) и
-// уведомляет вызываемого через WebSocket.
+// уведомляет приглашённых через WebSocket.
+//
+// Личный звонок присылает callee_id, групповой — callee_ids: до 4 участников
+// вместе со звонящим, медиа идёт mesh-схемой: каждый соединяется с каждым.
 func (s *Server) handleInitiateCall(w http.ResponseWriter, r *http.Request) {
 	callerID := r.Context().Value(ctxUserID).(string)
 
@@ -63,13 +71,29 @@ func (s *Server) handleInitiateCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.CalleeID == "" || req.CalleeID == callerID {
+	// Собираем приглашённых из обоих полей: без пустых, дублей и самого звонящего.
+	callees := make([]string, 0, model.MaxCallParticipants)
+	seen := map[string]bool{callerID: true}
+	for _, peer := range append([]string{req.CalleeID}, req.CalleeIDs...) {
+		if peer == "" || seen[peer] {
+			continue
+		}
+		seen[peer] = true
+		callees = append(callees, peer)
+	}
+	if len(callees) == 0 {
 		writeError(w, http.StatusBadRequest, "invalid callee_id")
 		return
 	}
-	if _, err := s.store.GetUserByID(r.Context(), req.CalleeID); err != nil {
-		writeError(w, http.StatusNotFound, "callee not found")
+	if len(callees)+1 > model.MaxCallParticipants {
+		writeError(w, http.StatusBadRequest, "too many participants")
 		return
+	}
+	for _, peer := range callees {
+		if _, err := s.store.GetUserByID(r.Context(), peer); err != nil {
+			writeError(w, http.StatusNotFound, "callee not found")
+			return
+		}
 	}
 
 	id, err := crypto.NewToken()
@@ -77,13 +101,16 @@ func (s *Server) handleInitiateCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// CalleeID заполняем и в группе (первый приглашённый): так продолжают
+	// работать клиенты 0.8.0 и не нарушается NOT NULL в базе.
 	call := &model.Call{
-		ID:        id,
-		CallerID:  callerID,
-		CalleeID:  req.CalleeID,
-		Video:     req.Video,
-		Status:    model.CallRinging,
-		CreatedAt: time.Now().UTC(),
+		ID:           id,
+		CallerID:     callerID,
+		CalleeID:     callees[0],
+		Participants: append([]string{callerID}, callees...),
+		Video:        req.Video,
+		Status:       model.CallRinging,
+		CreatedAt:    time.Now().UTC(),
 	}
 	if err := s.store.SaveCall(r.Context(), call); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -92,16 +119,19 @@ func (s *Server) handleInitiateCall(w http.ResponseWriter, r *http.Request) {
 
 	resp := callToResponse(call)
 
-	// Уведомляем вызываемого: входящий звонок.
-	s.hub.Push(req.CalleeID, ws.Event{Type: "call", Data: resp})
-	// Телефон может быть с закрытым приложением — будим его уведомлением.
-	s.notifyIncomingCall(call)
+	for _, peer := range callees {
+		// Уведомляем приглашённого: входящий звонок.
+		s.hub.Push(peer, ws.Event{Type: "call", Data: resp})
+		// Телефон может быть с закрытым приложением — будим его уведомлением.
+		s.notifyIncomingCall(call, peer)
+	}
 
 	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleCallSignal — POST /v1/calls/{id}/signal. Ретранслирует SDP/ICE между участниками.
-// Сервер не хранит сигналы — только пересылает по WebSocket.
+// Сервер не хранит сигналы — только пересылает по WebSocket. В групповом
+// звонке поле to обязательно: оно говорит, кому из mesh-соседей адресован сигнал.
 func (s *Server) handleCallSignal(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(ctxUserID).(string)
 	callID := r.PathValue("id")
@@ -121,18 +151,23 @@ func (s *Server) handleCallSignal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "call not found")
 		return
 	}
-	peer := peerOf(call, userID)
-	if peer == "" {
+	others := call.Others(userID)
+	if others == nil {
 		writeError(w, http.StatusForbidden, "not a participant")
 		return
 	}
-	if req.To != peer {
+	to := req.To
+	if to == "" && len(others) == 1 {
+		// Клиенты 0.8.0 не заполняют to в личном звонке — адресат там один.
+		to = others[0]
+	}
+	if !containsID(others, to) {
 		writeError(w, http.StatusBadRequest, "invalid to")
 		return
 	}
 
-	// Ретрансляция сигнала второму участнику.
-	s.hub.Push(peer, ws.Event{
+	// Ретрансляция сигнала конкретному участнику: в mesh каждая пара своя.
+	s.hub.Push(to, ws.Event{
 		Type: "call_signal",
 		Data: callSignalEvent{CallID: callID, From: userID, Kind: req.Kind, Payload: req.Payload},
 	})
@@ -141,7 +176,10 @@ func (s *Server) handleCallSignal(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpdateCallStatus — POST /v1/calls/{id}/status. Меняет статус звонка
-// (accept/decline/end) и уведомляет второго участника.
+// (accept/decline/end) и уведомляет остальных участников.
+//
+// В группе статус общий для записи, а событие несёт поле from: клиент понимает
+// «ушёл один участник» и завершает звонок, только когда рядом никого не осталось.
 func (s *Server) handleUpdateCallStatus(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(ctxUserID).(string)
 	callID := r.PathValue("id")
@@ -163,7 +201,8 @@ func (s *Server) handleUpdateCallStatus(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "call not found")
 		return
 	}
-	if peerOf(call, userID) == "" {
+	others := call.Others(userID)
+	if others == nil {
 		writeError(w, http.StatusForbidden, "not a participant")
 		return
 	}
@@ -173,14 +212,17 @@ func (s *Server) handleUpdateCallStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Уведомляем второго участника о смене статуса.
-	s.hub.Push(peerOf(call, userID), ws.Event{
-		Type: "call_status",
-		Data: callStatusEvent{CallID: callID, Status: string(status)},
-	})
-	// Гасим экран входящего на телефоне, который разбудили звонком.
-	if status == model.CallEnded || status == model.CallDeclined || status == model.CallMissed {
-		s.notifyCallEnded(peerOf(call, userID), callID, string(status))
+	ended := status == model.CallEnded || status == model.CallDeclined || status == model.CallMissed
+	for _, peer := range others {
+		// Уведомляем остальных участников о смене статуса.
+		s.hub.Push(peer, ws.Event{
+			Type: "call_status",
+			Data: callStatusEvent{CallID: callID, Status: string(status), From: userID},
+		})
+		// Гасим экран входящего на телефоне, который разбудили звонком.
+		if ended {
+			s.notifyCallEnded(peer, callID, string(status))
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
@@ -203,16 +245,17 @@ func (s *Server) handleListCalls(w http.ResponseWriter, r *http.Request) {
 
 // ---------- утилиты ----------
 
-// peerOf возвращает id второго участника звонка для данного userID, или "" если
-// пользователь не участник.
-func peerOf(call *model.Call, userID string) string {
-	if call.CallerID == userID {
-		return call.CalleeID
+// containsID — есть ли id в списке участников.
+func containsID(ids []string, id string) bool {
+	if id == "" {
+		return false
 	}
-	if call.CalleeID == userID {
-		return call.CallerID
+	for _, cur := range ids {
+		if cur == id {
+			return true
+		}
 	}
-	return ""
+	return false
 }
 
 func callToResponse(c *model.Call) callResponse {
@@ -222,12 +265,13 @@ func callToResponse(c *model.Call) callResponse {
 		endedAt = &s
 	}
 	return callResponse{
-		ID:        c.ID,
-		CallerID:  c.CallerID,
-		CalleeID:  c.CalleeID,
-		Video:     c.Video,
-		Status:    string(c.Status),
-		CreatedAt: c.CreatedAt.Format(time.RFC3339),
-		EndedAt:   endedAt,
+		ID:           c.ID,
+		CallerID:     c.CallerID,
+		CalleeID:     c.CalleeID,
+		Participants: c.Everyone(),
+		Video:        c.Video,
+		Status:       string(c.Status),
+		CreatedAt:    c.CreatedAt.Format(time.RFC3339),
+		EndedAt:      endedAt,
 	}
 }

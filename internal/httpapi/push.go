@@ -184,26 +184,29 @@ func (s *Server) notifyMessage(recipientID, senderID, chatID, messageID string) 
 	}()
 }
 
-// notifyIncomingCall будит телефон вызываемого: высокий приоритет и короткий TTL.
-func (s *Server) notifyIncomingCall(call *model.Call) {
-	if s.pusher == nil || call == nil {
+// notifyIncomingCall будит телефон приглашённого: высокий приоритет и короткий TTL.
+// В групповом звонке вызывается по разу на каждого участника, кроме звонящего.
+func (s *Server) notifyIncomingCall(call *model.Call, calleeID string) {
+	if s.pusher == nil || call == nil || calleeID == "" {
 		return
 	}
-	if s.hub.Online(call.CalleeID) {
+	if s.hub.Online(calleeID) {
 		// Приложение открыто — экран звонка покажет событие по WebSocket.
 		return
 	}
 	callID, callerID, video := call.ID, call.CallerID, call.Video
-	calleeID := call.CalleeID
+	// Сколько всего людей в звонке — экран входящего покажет «групповой звонок».
+	participants := len(call.Everyone())
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
 		defer cancel()
 
 		data := map[string]string{
-			"kind":      "call",
-			"call_id":   callID,
-			"caller_id": callerID,
-			"video":     strconv.FormatBool(video),
+			"kind":         "call",
+			"call_id":      callID,
+			"caller_id":    callerID,
+			"video":        strconv.FormatBool(video),
+			"participants": strconv.Itoa(participants),
 		}
 		if name := s.pushDisplayName(ctx, callerID); name != "" {
 			data["caller_name"] = name

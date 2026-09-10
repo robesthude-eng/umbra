@@ -35,6 +35,18 @@ data class MessageContent(
          * неподдерживаемое: у них нет ни этой ветки, ни проигрывателя.
          */
         const val KIND_VOICE = "voice"
+
+        /**
+         * Вложения: `media.id` — файл в `/v1/media`, `media.name` — имя,
+         * `media.mime` — тип, `media.size` — размер. У фото и видео заполнены
+         * `media.width` и `media.height`, у видео — ещё `media.durationMs`.
+         *
+         * Клиенты 0.8.0 и старше этих kind не знают и покажут сообщение как
+         * неподдерживаемое: ни просмотра, ни скачивания у них нет.
+         */
+        const val KIND_IMAGE = "image"
+        const val KIND_VIDEO = "video"
+        const val KIND_FILE = "file"
     }
 }
 
@@ -44,8 +56,11 @@ data class MediaContent(
     val mime: String = "application/octet-stream",
     val size: Long = 0,
     val name: String? = null,
-    /** Длительность звука в миллисекундах; 0 — неизвестна. */
+    /** Длительность звука или видео в миллисекундах; 0 — неизвестна. */
     val durationMs: Long = 0,
+    /** Размеры фото или видео в точках; 0 — неизвестны. */
+    val width: Int = 0,
+    val height: Int = 0,
 ) {
     companion object {
         const val KIND_PHOTO = "photo"
@@ -66,6 +81,17 @@ fun voiceDurationText(millis: Long): String {
 fun MessageContent.voice(): MediaContent? =
     media?.takeIf { kind == MessageContent.KIND_VOICE && it.id.isNotBlank() }
 
+/** Типы конвертов, которые показываются как вложение. */
+val ATTACHMENT_KINDS: Set<String> = setOf(
+    MessageContent.KIND_IMAGE,
+    MessageContent.KIND_VIDEO,
+    MessageContent.KIND_FILE,
+)
+
+/** Вложение конверта (фото, видео, файл); null — вложения нет. */
+fun MessageContent.attachment(): MediaContent? =
+    media?.takeIf { kind in ATTACHMENT_KINDS && it.id.isNotBlank() }
+
 object MessageCodec {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -82,6 +108,18 @@ object MessageCodec {
     /** Голосовая часть конверта или null, если это не голосовое сообщение. */
     fun voice(ciphertextB64: String): MediaContent? = decode(ciphertextB64)?.voice()
 
+    /** Тип вложения и его описание или null, если вложения нет. */
+    fun attachment(ciphertextB64: String): Pair<String, MediaContent>? =
+        decode(ciphertextB64)?.let { c -> c.attachment()?.let { Pair(c.kind, it) } }
+
+    /** Подпись вложения для списка чатов и для пузыря. */
+    fun attachmentLabel(kind: String, media: MediaContent): String = when (kind) {
+        MessageContent.KIND_IMAGE -> "Фото"
+        MessageContent.KIND_VIDEO ->
+            if (media.durationMs > 0) "Видео · " + voiceDurationText(media.durationMs) else "Видео"
+        else -> media.name?.takeIf { it.isNotBlank() } ?: "Файл"
+    }
+
     /** Подпись голосового сообщения для списка чатов и для пузыря. */
     fun voiceLabel(durationMs: Long): String =
         if (durationMs > 0) "Голосовое сообщение · ${voiceDurationText(durationMs)}" else "Голосовое сообщение"
@@ -91,6 +129,7 @@ object MessageCodec {
         val c = decode(ciphertextB64) ?: return "Сообщение из другой версии приложения: содержимое недоступно"
         if (c.v != 1) return "Обновите приложение, чтобы прочитать это сообщение"
         c.voice()?.let { return voiceLabel(it.durationMs) }
+        c.attachment()?.let { return attachmentLabel(c.kind, it) }
         if (c.kind == MessageContent.KIND_MEDIA) {
             return listOf(c.text, c.media?.name?.let { "Вложение: $it" } ?: "Вложение")
                 .filter { it.isNotBlank() }.joinToString("\n") + "\nПросмотр вложений в этой версии пока недоступен."

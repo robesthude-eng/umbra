@@ -31,6 +31,13 @@ data class MessageEntity(
     @ColumnInfo(defaultValue = "NULL") val localMediaPath: String? = null,
     @ColumnInfo(defaultValue = "NULL") val localMediaMime: String? = null,
     @ColumnInfo(defaultValue = "0") val localMediaDurationMs: Long = 0,
+    // Вложения (фото, видео, файл): тип конверта, имя и размер файла,
+    // размеры кадра для превью. Файл лежит по localMediaPath.
+    @ColumnInfo(defaultValue = "NULL") val localMediaKind: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val localMediaName: String? = null,
+    @ColumnInfo(defaultValue = "0") val localMediaSize: Long = 0,
+    @ColumnInfo(defaultValue = "0") val localMediaWidth: Int = 0,
+    @ColumnInfo(defaultValue = "0") val localMediaHeight: Int = 0,
 )
 
 @Entity(tableName = "chats")
@@ -150,7 +157,7 @@ interface IdentityKeyDao {
 
 @Database(
     entities = [MessageEntity::class, ChatEntity::class, ContactEntity::class, IdentityKeyEntity::class, CryptoRecord::class],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -195,9 +202,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Вложения: тип конверта, имя и размер файла, размеры кадра.
+                // Старые строки (текст и голосовые) остаются как были: NULL и 0.
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaKind TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaName TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaSize INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaWidth INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localMediaHeight INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "umbra.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

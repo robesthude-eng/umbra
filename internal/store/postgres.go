@@ -449,9 +449,9 @@ func (p *PostgresStore) ListContacts(ctx context.Context, userID string) ([]stri
 
 func (p *PostgresStore) SaveCall(ctx context.Context, c *model.Call) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO calls (id, caller_id, callee_id, video, status, created_at, ended_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		c.ID, c.CallerID, c.CalleeID, c.Video, string(c.Status), c.CreatedAt, c.EndedAt)
+		`INSERT INTO calls (id, caller_id, callee_id, participants, video, status, created_at, ended_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		c.ID, c.CallerID, c.CalleeID, c.Everyone(), c.Video, string(c.Status), c.CreatedAt, c.EndedAt)
 	return mapErr(err)
 }
 
@@ -459,8 +459,9 @@ func (p *PostgresStore) GetCall(ctx context.Context, id string) (*model.Call, er
 	var c model.Call
 	var status string
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, caller_id, callee_id, video, status, created_at, ended_at FROM calls WHERE id = $1`, id).
-		Scan(&c.ID, &c.CallerID, &c.CalleeID, &c.Video, &status, &c.CreatedAt, &c.EndedAt)
+		`SELECT id, caller_id, callee_id, participants, video, status, created_at, ended_at
+		 FROM calls WHERE id = $1`, id).
+		Scan(&c.ID, &c.CallerID, &c.CalleeID, &c.Participants, &c.Video, &status, &c.CreatedAt, &c.EndedAt)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -478,8 +479,10 @@ func (p *PostgresStore) UpdateCallStatus(ctx context.Context, id string, status 
 
 func (p *PostgresStore) ListCallsForUser(ctx context.Context, userID string) ([]*model.Call, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, caller_id, callee_id, video, status, created_at, ended_at
-		 FROM calls WHERE caller_id = $1 OR callee_id = $1 ORDER BY created_at DESC`, userID)
+		`SELECT id, caller_id, callee_id, participants, video, status, created_at, ended_at
+		 FROM calls
+		 WHERE caller_id = $1 OR callee_id = $1 OR $1 = ANY(participants)
+		 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -489,7 +492,7 @@ func (p *PostgresStore) ListCallsForUser(ctx context.Context, userID string) ([]
 	for rows.Next() {
 		var c model.Call
 		var status string
-		if err := rows.Scan(&c.ID, &c.CallerID, &c.CalleeID, &c.Video, &status, &c.CreatedAt, &c.EndedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.CallerID, &c.CalleeID, &c.Participants, &c.Video, &status, &c.CreatedAt, &c.EndedAt); err != nil {
 			return nil, err
 		}
 		c.Status = model.CallStatus(status)

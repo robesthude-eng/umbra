@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -58,7 +60,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.umbra.app.data.call.CallEngine
+import com.umbra.app.data.call.CallPeer
 import com.umbra.app.data.repo.ActiveCall
+import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -165,7 +169,11 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
     BackHandler {}
 
     val state = media
-    val remoteVideoVisible = state?.remoteVideo == true && state.connected
+    val peers = state?.peers.orEmpty()
+    // В группе показываем сетку плиток, а вдвоём — привычное видео на весь экран.
+    val group = call.group || peers.size > 1
+    val remotePeerId = peers.firstOrNull()?.userId ?: call.peerUserId
+    val remoteVideoVisible = state?.remoteVideo == true && state.connected && !group
     val status = when {
         ringing -> if (call.video) "Входящий видеозвонок" else "Входящий звонок"
         call.ringing -> "Вызов…"
@@ -180,7 +188,7 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
     ) {
         Box(Modifier.fillMaxSize()) {
             if (remoteVideoVisible) {
-                VideoSurface(engine, remote = true, mirror = false, modifier = Modifier.fillMaxSize())
+                VideoSurface(engine, peerId = remotePeerId, mirror = false, modifier = Modifier.fillMaxSize())
             }
             Column(
                 Modifier.fillMaxSize().padding(24.dp),
@@ -188,7 +196,7 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Spacer(Modifier.height(24.dp))
-                if (!remoteVideoVisible) UserAvatar(repo, call.peerUserId, name, 96.dp)
+                if (!remoteVideoVisible && !group) UserAvatar(repo, call.peerUserId, name, 96.dp)
                 Text(
                     name,
                     style = MaterialTheme.typography.headlineSmall,
@@ -209,10 +217,22 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
                     }
                 }
                 if (busy) CircularProgressIndicator()
-                Spacer(Modifier.weight(1f))
+                if (group) {
+                    PeerGrid(
+                        repo = repo,
+                        engine = engine,
+                        peers = peers,
+                        names = peers.associate { peer ->
+                            peer.userId to (users[peer.userId]?.fullName() ?: repo.titleFor(peer.userId))
+                        },
+                        modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 8.dp),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
                 if (state?.cameraOn == true) {
                     VideoSurface(
-                        engine, remote = false, mirror = true,
+                        engine, peerId = null, mirror = true,
                         modifier = Modifier.size(120.dp, 170.dp).clip(RoundedCornerShape(16.dp)),
                     )
                 }
@@ -294,13 +314,16 @@ private fun CallControls(
 /**
  * Видеоповерхность WebRTC внутри Compose.
  *
+ * peerId == null — своя камера, иначе видео конкретного собеседника: в групповом
+ * звонке у каждого своя поверхность.
+ *
  * При удалении из дерева обязательно отвязываем поток и освобождаем поверхность,
  * иначе при повороте экрана теряется EGL-контекст.
  */
 @Composable
 private fun VideoSurface(
     engine: CallEngine,
-    remote: Boolean,
+    peerId: String?,
     mirror: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -312,7 +335,7 @@ private fun VideoSurface(
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
                 setEnableHardwareScaler(true)
                 setMirror(mirror)
-                if (remote) engine.bindRemoteVideo(this) else engine.bindLocalVideo(this)
+                if (peerId != null) engine.bindRemoteVideo(peerId, this) else engine.bindLocalVideo(this)
             }
         },
         modifier = modifier,
@@ -321,6 +344,83 @@ private fun VideoSurface(
             runCatching { view.release() }
         },
     )
+}
+
+/**
+ * Групповой звонок: у каждого собеседника своя плитка. Участников не больше
+ * четырёх, поэтому сетка укладывается в два столбца без прокрутки.
+ */
+@Composable
+private fun PeerGrid(
+    repo: ChatRepository,
+    engine: CallEngine,
+    peers: List<CallPeer>,
+    names: Map<String, String>,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        peers.chunked(2).forEach { rowPeers ->
+            Row(
+                Modifier.fillMaxWidth().weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowPeers.forEach { peer ->
+                    PeerTile(
+                        repo = repo,
+                        engine = engine,
+                        peer = peer,
+                        name = names[peer.userId].orEmpty(),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    )
+                }
+                // Нечётный ряд: пустое место, чтобы плитка не растягивалась на весь ряд.
+                if (rowPeers.size == 1 && peers.size > 2) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** Плитка участника: видео, если оно есть, иначе аватарка и состояние связи. */
+@Composable
+private fun PeerTile(
+    repo: ChatRepository,
+    engine: CallEngine,
+    peer: CallPeer,
+    name: String,
+    modifier: Modifier = Modifier,
+) {
+    val label = when {
+        peer.reconnecting -> "Связь восстанавливается…"
+        !peer.connected -> "Подключается…"
+        else -> null
+    }
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (peer.video && peer.connected) {
+                VideoSurface(engine, peerId = peer.userId, mirror = false, modifier = Modifier.fillMaxSize())
+            } else {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    UserAvatar(repo, peer.userId, name, 64.dp)
+                    Text(name, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+                }
+            }
+            label?.let { text ->
+                Text(
+                    text,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp),
+                )
+            }
+        }
+    }
 }
 
 private fun granted(context: Context, permission: String): Boolean =

@@ -1,3 +1,38 @@
+# Umbra 0.9.0 — вложения в переписке и групповые звонки (10 сентября 2026)
+
+Сервер:
+
+- Таблица `call_participants` и миграция `013_call_participants.sql`: у звонка
+  теперь список участников, старые записи переносятся автоматически
+  (`internal/model/model.go`, `internal/store/memory.go`, `internal/store/postgres.go`).
+- `POST /v1/calls` принимает `callee_ids`: до четырёх участников вместе с
+  звонящим, дубли и сам звонящий отбрасываются, пятый даёт
+  `400 too many participants` (`internal/httpapi/calls.go`).
+- Сигналинг стал адресным: в группе `to` обязателен, посторонний
+  получает 403, чужой адресат — 400. Событие `call_status` несёт поле `from`,
+  поэтому выход одного участника не завершает разговор остальным.
+- `GET /v1/calls` и push о входящем звонке отдают `participants`; журнал виден
+  всем участникам, а не только двоим (`internal/httpapi/push.go`).
+- Тесты: `TestGroupCallLifecycle`, `TestGroupCallLimits`,
+  `TestGroupCallSignalRouting` в `internal/httpapi/calls_test.go`.
+
+Клиент:
+
+- Фото, видео и файлы в чате: выбор из галереи и проводника, превью в
+  пузыре, открытие и сохранение через системный диалог, предел 48 МБ
+  (`data/msg/MessageContent.kt`, `data/media/Attachments.kt`,
+  `data/repo/ChatRepository.kt`, `ui/ChatView.kt`, схема Room 5).
+- Групповые звонки: `CallEngine` держит по соединению на каждого
+  собеседника (mesh), экран звонка показывает сетку плиток с видео,
+  аватаркой и состоянием связи, а в групповом чате участников выбирают в
+  диалоге (до трёх, `ui/CallScreen.kt`, `ui/ChatView.kt`).
+- Версия Android: versionCode 13, versionName 0.9.0.
+
+Документация: `docs/api.md` описывает `callee_ids`, `participants`, поле
+`from` и виды сообщений `image`, `video`, `file`; `docs/deploy.md` — миграцию 013.
+Ограничения: конференций больше четырёх участников нет (нужен SFU),
+вложения уходят без сжатия и подписей, сквозного шифрования по-прежнему нет.
+
 # Umbra 0.8.0 — push-уведомления и системный экран звонка (9 сентября 2026)
 
 Сервер:

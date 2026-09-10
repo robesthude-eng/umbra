@@ -18,7 +18,7 @@ curl http://127.0.0.1:8080/healthz
 
 В автоматически собираемом Compose DSN используйте пароль без специальных символов
 URL, например hex. PostgreSQL хранится в томе pgdata, файлы — blobdata. Новый
-PostgreSQL-том получает все миграции 001–012 автоматически. На существующем томе
+PostgreSQL-том получает все миграции 001–013 автоматически. На существующем томе
 init-скрипты повторно не выполняются.
 
 Порт API опубликован только на 127.0.0.1. Для внешнего подключения настройте
@@ -47,13 +47,15 @@ docker inspect "$(docker compose ps -q server)" --format '{{range .NetworkSettin
 
 Сделайте резервную копию БД и файлов. Остановите все прежние экземпляры сервера,
 сохранив тома. Примените недостающие миграции в порядке номеров. При обновлении
-с 0.4.1 (схема 001–010) нужны 011 и 012, при обновлении с 0.7.0 — только 012:
+с 0.4.1 (схема 001–010) нужны 011, 012 и 013, при обновлении с 0.7.0 — 012 и 013,
+а с 0.8.0 — только 013:
 
 ```bash
 docker compose stop server
 docker compose up -d db
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/011_revoke_legacy_sessions.sql
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/012_push_devices.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/013_call_participants.sql
 docker compose up -d --build server
 ```
 
@@ -64,12 +66,21 @@ docker compose up -d --build server
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/011_revoke_legacy_sessions.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/012_push_devices.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/013_call_participants.sql
 ```
 
 Миграция 011 **однократно отзывает старые сессии и коды переноса**: прежние токены
 могли быть получены через неподтверждённый номер. Аккаунты, переписка и файлы
 сохраняются. Пользователям нужно войти заново по коду владельца. Не применяйте 011
 повторно после новых входов. Зафиксируйте применение: автоматического журнала миграций нет.
+
+Миграция 013 добавляет таблицу `call_participants` и переносит в неё уже
+существующие звонки (звонящий и `callee_id`). Без неё сервер 0.9.0 не создаст
+групповой звонок, а `GET /v1/calls` не покажет вызов третьему участнику.
+Новых переменных окружения для групповых звонков не нужно: медиа идёт
+напрямую между телефонами, поэтому важен только TURN — четыре участника
+дают до шести одновременных парных соединений, и если ретранслятор
+слабый, групповой звонок почувствует это раньше личного.
 
 Обновите прежний `.env`/`umbra.env`: `TOKEN_TTL_SECONDS=2592000` (30 дней),
 `ALLOW_LEGACY_AUTH=false`, точные `TRUSTED_PROXIES`. Android продлевает действующую

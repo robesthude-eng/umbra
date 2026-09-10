@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Пути, которые FileProvider отдаёт наружу по временной ссылке: только
+  приватные каталоги вложений. Ничего лишнего из filesDir не открываем.
+-->
+<paths>
+    <files-path name="umbra_media" path="media/" />
+    <files-path name="umbra_attach" path="attach/" />
+    <files-path name="umbra_voice" path="voice/" />
+</paths>

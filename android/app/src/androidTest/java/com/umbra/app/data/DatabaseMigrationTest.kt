@@ -30,7 +30,12 @@ class DatabaseMigrationTest {
                 db.version = 1
             }
             val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4).build()
+                .addMigrations(
+                    AppDatabase.MIGRATION_1_2,
+                    AppDatabase.MIGRATION_2_3,
+                    AppDatabase.MIGRATION_3_4,
+                    AppDatabase.MIGRATION_4_5,
+                ).build()
             try {
                 runBlocking {
                     val row = db.messageDao().get("old")!!
@@ -41,6 +46,12 @@ class DatabaseMigrationTest {
                     assertNull(row.localMediaPath)
                     assertNull(row.localMediaMime)
                     assertEquals(0L, row.localMediaDurationMs)
+                    // MIGRATION_4_5: у старых строк поля вложений пустые.
+                    assertNull(row.localMediaKind)
+                    assertNull(row.localMediaName)
+                    assertEquals(0L, row.localMediaSize)
+                    assertEquals(0L, row.localMediaWidth.toLong())
+                    assertEquals(0L, row.localMediaHeight.toLong())
                     assertEquals("Alice", db.chatDao().get("alice")!!.title)
                     // После назначения owner таймер удаляет и ciphertext, и локальную копию.
                     db.messageDao().upsert(row.copy(ownerId = "bob", localBody = "encrypted", expiresAtMillis = 100))

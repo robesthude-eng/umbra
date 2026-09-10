@@ -183,14 +183,24 @@ data class DiscoverResponse(val matches: List<DiscoveredUser> = emptyList())
 
 // ---------- DTO: звонки (сигналинг; статусный автомат) ----------
 
+/**
+ * Запрос звонка. callee_id — первый собеседник (совместимость со старыми сборками),
+ * callee_ids — остальные приглашённые: всего в звонке не больше четырёх человек.
+ */
 @Serializable
-data class InitiateCallRequest(@SerialName("callee_id") val calleeId: String, val video: Boolean = false)
+data class InitiateCallRequest(
+    @SerialName("callee_id") val calleeId: String,
+    @SerialName("callee_ids") val calleeIds: List<String> = emptyList(),
+    val video: Boolean = false,
+)
 
 @Serializable
 data class CallDto(
     val id: String,
     @SerialName("caller_id") val callerId: String = "",
     @SerialName("callee_id") val calleeId: String = "",
+    /** Все участники звонка, включая звонящего. */
+    val participants: List<String> = emptyList(),
     val video: Boolean = false,
     val status: String = "ringing",
     @SerialName("created_at") val createdAt: String = "",
@@ -229,7 +239,7 @@ data class PushDeviceResponse(
 @Serializable
 data class CallStatusRequest(val status: String)
 
-/** Сигнал WebRTC второму участнику: kind = offer | answer | ice. */
+/** Сигнал WebRTC конкретному участнику: kind = offer | answer | ice. */
 @Serializable
 data class CallSignalRequest(val to: String, val kind: String, val payload: JsonObject)
 
