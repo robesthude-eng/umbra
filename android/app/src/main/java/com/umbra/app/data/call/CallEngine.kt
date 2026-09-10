@@ -9,6 +9,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.umbra.app.BuildConfig
 import com.umbra.app.data.api.CallSignalEvent
@@ -137,13 +138,24 @@ class CallEngine(
     private var selfId = ""
     private var callerId = ""
     private var outgoing = false
-    /** Offer может обогнать поднятие сессии — придерживаем его по отправителю. */
-    private val pendingOffers = mutableMapOf<String, Pair<String, JsonObject>>()
+    /**
+     * Сигналы, обогнавшие поднятие сессии, придерживаем по отправителю.
+     * Раньше сохранялся только offer, а answer и ICE-кандидаты выбрасывались:
+     * если собеседник успевал ответить раньше, соединение не собиралось.
+     */
+    private val pendingSignals = mutableMapOf<String, PendingSignals>()
     private var watchdogJob: Job? = null
     private var reconnectDeadlineJob: Job? = null
     private var iceServers: List<PeerConnection.IceServer> = emptyList()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var focusRequest: AudioFocusRequest? = null
+
+    /** Придержанные сигналы одного собеседника до старта сессии. */
+    private class PendingSignals(val callId: String) {
+        var offer: JsonObject? = null
+        var answer: JsonObject? = null
+        val ice = mutableListOf<JsonObject>()
+    }
 
     /** Одно соединение mesh-сети: своё согласование и свой видеопоток. */
     private inner class PeerSession(val peerId: String) {
@@ -283,7 +295,10 @@ class CallEngine(
 
     /** Первый шаг согласования: предлагаем мы или ждём offer собеседника. */
     private suspend fun startNegotiation(session: PeerSession) {
-        if (shouldOffer(session.peerId)) sendOffer(session) else applyPendingOffer(session)
+        // Сначала разбираем придержанные сигналы: собеседник мог ответить
+        // раньше нас, и его offer уже лежит в очереди.
+        val answered = applyPendingSignals(session)
+        if (!answered && shouldOffer(session.peerId)) sendOffer(session)
     }
 
     /**
@@ -375,7 +390,7 @@ class CallEngine(
         watchdogJob = null
         reconnectDeadlineJob?.cancel()
         reconnectDeadlineJob = null
-        pendingOffers.clear()
+        pendingSignals.clear()
         for (session in sessions.values) session.releaseLocked()
         sessions.clear()
         sessionCallId = null
@@ -447,17 +462,22 @@ class CallEngine(
         }
     }
 
-    /** Offer мог прийти раньше, чем поднялась медиасессия. */
-    private suspend fun applyPendingOffer(session: PeerSession) {
-        val pending = mutex.withLock {
-            val held = pendingOffers[session.peerId] ?: return@withLock null
-            if (held.first != sessionCallId) {
-                pendingOffers.remove(session.peerId)
-                return@withLock null
-            }
-            pendingOffers.remove(session.peerId)
-        } ?: return
-        handleOffer(session, pending.second)
+    /**
+     * Сигналы могли прийти раньше, чем поднялась медиасессия: разбираем всё
+     * придержанное — offer, ответ и ICE-кандидаты.
+     *
+     * @return true, если обработали offer собеседника и уже ответили answer.
+     */
+    private suspend fun applyPendingSignals(session: PeerSession): Boolean {
+        val held = mutex.withLock {
+            val pending = pendingSignals.remove(session.peerId) ?: return@withLock null
+            if (pending.callId != sessionCallId) return@withLock null
+            pending
+        } ?: return false
+        val offer = held.offer
+        if (offer != null) handleOffer(session, offer) else held.answer?.let { handleAnswer(session, it) }
+        for (candidate in held.ice) handleRemoteIce(session, candidate)
+        return offer != null
     }
 
     private suspend fun onSignal(signal: CallSignalEvent) {
@@ -465,8 +485,8 @@ class CallEngine(
         if (from.isEmpty()) return
         val session = mutex.withLock {
             if (sessionCallId != signal.callId) {
-                // Сессия ещё не поднята (идёт гудок) — придержим offer от этого собеседника.
-                if (signal.kind == "offer") pendingOffers[from] = signal.callId to signal.payload
+                // Сессия ещё не поднята (идёт гудок) — придерживаем сигнал.
+                bufferSignalLocked(from, signal)
                 return@withLock null
             }
             // В группе собеседник может принять вызов позже нас — поднимаем соединение по его сигналу.
@@ -476,6 +496,19 @@ class CallEngine(
             "offer" -> handleOffer(session, signal.payload)
             "answer" -> handleAnswer(session, signal.payload)
             "ice" -> handleRemoteIce(session, signal.payload)
+        }
+    }
+
+    /** Вызывать только под [mutex]. */
+    private fun bufferSignalLocked(from: String, signal: CallSignalEvent) {
+        // Сигналы прошлых звонков не нужны: держим только текущий callId.
+        for (peer in pendingSignals.filterValues { it.callId != signal.callId }.keys) pendingSignals.remove(peer)
+        val held = pendingSignals.getOrPut(from) { PendingSignals(signal.callId) }
+        when (signal.kind) {
+            "offer" -> held.offer = signal.payload
+            "answer" -> held.answer = signal.payload
+            // Кандидатов может быть много: держим разумный запас.
+            "ice" -> if (held.ice.size < 64) held.ice.add(signal.payload)
         }
     }
 
@@ -685,7 +718,14 @@ class CallEngine(
         val intent = Intent(context, CallService::class.java)
             .putExtra(CallService.EXTRA_TITLE, call.peerName)
             .putExtra(CallService.EXTRA_VIDEO, call.video)
-        runCatching { ContextCompat.startForegroundService(context, intent) }
+        // Служба переднего плана держит микрофон и камеру, пока приложение
+        // свёрнуто. Раньше отказ системы молча проглатывался, и разговор глох
+        // при сворачивании. Теперь пробуем обычный старт и пишем в лог.
+        val started = runCatching { ContextCompat.startForegroundService(context, intent) }
+        val error = started.exceptionOrNull() ?: return
+        Log.w("CallEngine", "foreground call service rejected", error)
+        runCatching { context.startService(intent) }
+            .onFailure { Log.w("CallEngine", "call service start failed", it) }
     }
 
     private fun stopForegroundService() {
@@ -697,7 +737,7 @@ class CallEngine(
 
     /**
      * ICE-серверы: сначала спрашиваем сервер (GET /v1/turn) — учётка TURN там
-     * временная и в APK не хранится. Если сервер недоступен, берём адреса сборки.
+     * вре��енная и в APK не хранится. Если сервер недоступен, берём адреса сборки.
      */
     private suspend fun fetchIceServers(): List<PeerConnection.IceServer> {
         val remote: List<IceServerDto> = try {

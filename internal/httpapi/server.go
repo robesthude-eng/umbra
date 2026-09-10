@@ -34,6 +34,9 @@ type Server struct {
 	otpSender  OTPSender
 	pusher     pushSender
 	handler    http.Handler
+
+	// callLeavers помнит, кто уже вышел из группового звонка (см. calls.go).
+	callLeavers *callLeaverStore
 }
 
 // NewServer сохраняет прежний контракт; без BlobStore медиа возвращает 503.
@@ -48,7 +51,7 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 
 // NewServerForMain собирает сервер с OTP-доставкой кодов (Telegram) и готов к запуску.
 func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender) *http.Server {
-	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg)}
+	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg), callLeavers: newCallLeaverStore()}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)

@@ -64,6 +64,7 @@ import com.umbra.app.data.voice.VoiceRecordingState
 import com.umbra.app.di.AppContainer
 import com.umbra.app.ui.theme.UmbraColors
 import kotlinx.coroutines.launch
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -152,6 +153,54 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> sendPicked(uri) }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> sendPicked(uri) }
+    // Запись видеосообщения прямо из чата: камера пишет в приватный каталог,
+    // оттуда запись уходит обычным вложением, а временный файл удаляется.
+    var captureTarget by remember { mutableStateOf<File?>(null) }
+    fun sendCaptured(file: File) {
+        if (sending) return
+        sending = true; error = null
+        scope.launch {
+            try {
+                repo.sendAttachment(chatId, Attachments.uriFor(context, file))
+                listState.animateScrollToItem(0)
+            } catch (e: Exception) { error = e.userMessage() }
+            finally {
+                sending = false
+                runCatching { file.delete() }
+            }
+        }
+    }
+    val captureVideo = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { saved ->
+        val file = captureTarget
+        captureTarget = null
+        if (file != null) {
+            if (saved) sendCaptured(file) else runCatching { file.delete() }
+        }
+    }
+    fun beginVideoCapture() {
+        if (sending) return
+        error = null
+        val file = repo.videoCaptureFile()
+        val uri = runCatching { Attachments.uriFor(context, file) }.getOrNull()
+        if (uri == null) {
+            error = "Не удалось подготовить запись видео."
+            return
+        }
+        captureTarget = file
+        runCatching { captureVideo.launch(uri) }.onFailure {
+            captureTarget = null
+            runCatching { file.delete() }
+            error = "На устройстве нет приложения камеры для записи видео."
+        }
+    }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginVideoCapture()
+        else error = "Разрешите доступ к камере, чтобы записывать видеосообщения."
+    }
+    fun requestVideoCapture() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) beginVideoCapture()
+        else cameraPermission.launch(Manifest.permission.CAMERA)
+    }
     // Сохранение через системный выбор папки: разрешения на галерею не нужны.
     var pendingSave by remember { mutableStateOf<UiAttachment?>(null) }
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
@@ -163,7 +212,11 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
             catch (e: Exception) { error = e.userMessage() }
         }
     }
-    fun openAttachment(attachment: UiAttachment) {
+    // Фото и видео теперь открываются внутри Umbra (см. MediaViewer.kt):
+    // раньше чат всегда отдавал файл стороннему приложению.
+    var viewing by remember(chatId) { mutableStateOf<UiAttachment?>(null) }
+    /** Внешнее приложение осталось запасным путём для любых форматов. */
+    fun openExternally(attachment: UiAttachment) {
         error = null
         scope.launch {
             try {
@@ -171,6 +224,10 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                 context.startActivity(Attachments.openIntent(context, file, attachment.mime))
             } catch (e: Exception) { error = e.userMessage() }
         }
+    }
+    fun openAttachment(attachment: UiAttachment) {
+        error = null
+        if (attachment.isImage || attachment.isVideo) viewing = attachment else openExternally(attachment)
     }
     fun shareAttachment(attachment: UiAttachment) {
         error = null
@@ -289,6 +346,10 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                                 showAttachMenu = false
                                 pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                             })
+                            DropdownMenuItem(text = { Text("Записать видео") }, onClick = {
+                                showAttachMenu = false
+                                requestVideoCapture()
+                            })
                             DropdownMenuItem(text = { Text("Файл") }, onClick = {
                                 showAttachMenu = false
                                 pickFile.launch(arrayOf("*/*"))
@@ -328,6 +389,18 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
             }
         }
     }
+    val viewed = viewing
+    if (viewed != null) AttachmentViewerDialog(
+        repo = repo,
+        attachment = viewed,
+        onDismiss = { viewing = null },
+        onOpenExternally = {
+            viewing = null
+            openExternally(viewed)
+        },
+        onShare = { shareAttachment(viewed) },
+        onSave = { saveAttachment(viewed) },
+    )
     if (showMembers) GroupMembersDialog(repo, chatId) { showMembers = false }
     if (showGroupCall) GroupCallDialog(repo, chatId, groupCallVideo, { showGroupCall = false }) { invited ->
         showGroupCall = false
@@ -483,8 +556,19 @@ private fun AttachmentBubble(
 ) {
     val preview = Attachments.hasPreview(attachment.kind)
     // Миниатюра готовится вне кадра отрисовки и переиспользуется из кэша репозитория.
-    val thumb by produceState<Bitmap?>(null, attachment.mediaId, attachment.localPath) {
-        value = if (preview) runCatching { repo.attachmentThumbnail(attachment) }.getOrNull() else null
+    var attempt by remember(attachment.mediaId, attachment.localPath) { mutableIntStateOf(0) }
+    var thumbFailed by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
+    val thumb by produceState<Bitmap?>(null, attachment.mediaId, attachment.localPath, attempt) {
+        if (!preview) {
+            value = null
+            return@produceState
+        }
+        value = null
+        thumbFailed = false
+        val loaded = runCatching { repo.attachmentThumbnail(attachment) }.getOrNull()
+        // Раньше при ошибке загрузки оставался бесконечный индикатор.
+        thumbFailed = loaded == null
+        value = loaded
     }
     Column(Modifier.widthIn(max = 272.dp)) {
         if (preview) {
@@ -499,11 +583,24 @@ private fun AttachmentBubble(
                 contentAlignment = Alignment.Center,
             ) {
                 val bitmap = thumb
-                if (bitmap != null) Image(
-                    bitmap.asImageBitmap(), contentDescription = null,
-                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-                ) else CircularProgressIndicator(Modifier.size(28.dp))
-                if (attachment.isVideo) Icon(
+                when {
+                    bitmap != null -> Image(
+                        bitmap.asImageBitmap(), contentDescription = null,
+                        modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                    )
+                    // Ошибка и кнопка повтора вместо бесконечного кружка.
+                    thumbFailed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "Превью не загрузилось",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                        TextButton({ attempt++ }) { Text("Повторить") }
+                    }
+                    else -> CircularProgressIndicator(Modifier.size(28.dp))
+                }
+                if (attachment.isVideo && bitmap != null) Icon(
                     Icons.Filled.PlayCircle, contentDescription = "Воспроизвести",
                     modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.onSurface,
                 )

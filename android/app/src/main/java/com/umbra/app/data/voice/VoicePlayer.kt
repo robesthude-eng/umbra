@@ -58,6 +58,9 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
     suspend fun toggle(key: String, mediaId: String?, localPath: String?, durationMs: Long) {
         val handled = mutex.withLock {
             val active = player
+            // Файл для этого же сообщения уже готовится: повторное нажатие
+            // не должно начинать вторую загрузку и второй плеер.
+            if (currentKey == key && active == null) return@withLock true
             if (currentKey != key || active == null) return@withLock false
             if (active.isPlaying) {
                 active.pause()
@@ -97,25 +100,27 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
             throw e
         }
 
+        // Плеер готовим вне мьютекса: prepare() блокирующий, и под замком он
+        // подвешивал все остальные нажатия на время подготовки.
+        val created = try {
+            withContext(Dispatchers.IO) { prepared(file) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            mutex.withLock {
+                if (currentKey == key) {
+                    currentKey = null
+                    _state.value = null
+                }
+            }
+            throw IllegalStateException("Не удалось воспроизвести запись. Попробуйте ещё раз.")
+        }
+
         mutex.withLock {
-            // Пока файл загружался, пользователь мог нажать на другое сообщение.
-            if (currentKey != key) return
-            val created = MediaPlayer()
-            try {
-                created.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                created.setDataSource(file.absolutePath)
-                withContext(Dispatchers.IO) { created.prepare() }
-            } catch (e: Throwable) {
+            // Пока файл готовился, пользователь мог нажать на другое сообщение.
+            if (currentKey != key) {
                 runCatching { created.release() }
-                currentKey = null
-                _state.value = null
-                if (e is CancellationException) throw e
-                throw IllegalStateException("Не удалось воспроизвести запись. Попробуйте ещё раз.")
+                return
             }
             val total = durationOf(created, durationMs)
             created.setOnCompletionListener {
@@ -123,11 +128,47 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
                 ticker = null
                 _state.value = _state.value?.copy(playing = false, positionMs = total)
             }
+            // Ошибка прошивки или битый файл: раньше пузырь навсегда
+            // оставался «играющим», а MediaPlayer держал файл до перезапуска.
+            created.setOnErrorListener { _, _, _ ->
+                onPlaybackError(key)
+                true
+            }
             player = created
             created.start()
             applySpeedLocked(created)
             _state.value = VoicePlayback(key, 0, total, playing = true, loading = false, speed = speed)
             startTickerLocked()
+        }
+    }
+
+    /** Создание и подготовка MediaPlayer — блокирующая часть без общего замка. */
+    private fun prepared(file: File): MediaPlayer {
+        val created = MediaPlayer()
+        try {
+            created.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            created.setDataSource(file.absolutePath)
+            created.prepare()
+        } catch (e: Throwable) {
+            runCatching { created.release() }
+            throw e
+        }
+        return created
+    }
+
+    /** Ошибка проигрывания: освобождаем плеер и гасим состояние пузыря. */
+    private fun onPlaybackError(key: String) {
+        scope.launch {
+            mutex.withLock {
+                if (currentKey != key) return@withLock
+                releaseLocked()
+                _state.value = null
+            }
         }
     }
 
@@ -200,6 +241,7 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
         ticker = null
         player?.let { active ->
             runCatching { active.setOnCompletionListener(null) }
+            runCatching { active.setOnErrorListener(null) }
             runCatching { if (active.isPlaying) active.stop() }
             runCatching { active.reset() }
             runCatching { active.release() }
@@ -212,8 +254,16 @@ class VoicePlayer(private val resolve: suspend (String) -> File) {
         runCatching { active.duration.toLong() }.getOrNull()?.takeIf { it > 0 } ?: fallbackMs
 
     fun close() {
+        // Сначала тикер и обратные вызовы, иначе они стреляют в освобождённый плеер.
+        ticker?.cancel()
+        ticker = null
         scope.cancel()
-        runCatching { player?.release() }
+        player?.let { active ->
+            runCatching { active.setOnCompletionListener(null) }
+            runCatching { active.setOnErrorListener(null) }
+            runCatching { active.reset() }
+            runCatching { active.release() }
+        }
         player = null
         currentKey = null
         _state.value = null

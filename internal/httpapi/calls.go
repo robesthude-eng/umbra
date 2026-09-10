@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 
 	"umbra/server/internal/crypto"
@@ -207,20 +208,35 @@ func (s *Server) handleUpdateCallStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.UpdateCallStatus(r.Context(), callID, status); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+	ended := status == model.CallEnded || status == model.CallDeclined || status == model.CallMissed
+	// В группе выход одного участника не заканчивает разговор: звук идёт
+	// напрямую между телефонами. Раньше первый же ended/declined закрывал
+	// запись и гасил звонок у всех остальных.
+	remaining := len(call.Everyone())
+	if ended {
+		remaining = s.callLeavers.leave(callID, userID, call.Everyone())
+	}
+	// Звонящий отменил вызов до ответа — вызов снят у всех сразу.
+	cancelled := ended && userID == call.CallerID && call.Status == model.CallRinging
+	// Статус касается всего звонка, а не одного участника.
+	whole := !ended || cancelled || remaining <= 1
+	if whole {
+		if err := s.store.UpdateCallStatus(r.Context(), callID, status); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		s.callLeavers.forget(callID)
 	}
 
-	ended := status == model.CallEnded || status == model.CallDeclined || status == model.CallMissed
 	for _, peer := range others {
 		// Уведомляем остальных участников о смене статуса.
 		s.hub.Push(peer, ws.Event{
 			Type: "call_status",
 			Data: callStatusEvent{CallID: callID, Status: string(status), From: userID},
 		})
-		// Гасим экран входящего на телефоне, который разбудили звонком.
-		if ended {
+		// Гасим экран входящего только когда звонок закончился для всех:
+		// иначе отказ одного участника снимал вызов у остальных.
+		if ended && whole {
 			s.notifyCallEnded(peer, callID, string(status))
 		}
 	}
@@ -273,5 +289,77 @@ func callToResponse(c *model.Call) callResponse {
 		Status:       string(c.Status),
 		CreatedAt:    c.CreatedAt.Format(time.RFC3339),
 		EndedAt:      endedAt,
+	}
+}
+
+// ---------- учёт ушедших из звонка ----------
+
+// callLeaverTTL — сколько держим след незакрытого звонка.
+const callLeaverTTL = 6 * time.Hour
+
+// callLeaverStore помнит, кто уже вышел из звонка.
+//
+// Групповой звонок идёт напрямую между телефонами, а в записи звонка
+// статус один на всех. Чтобы выход одного человека не закрывал разговор
+// остальным, сервер держит список ушедших в па��яти процесса: эти данные
+// нужны только на время разговора, а история звонка остаётся в хранилище.
+// Перезапуск сервера в середине звонка лишь возвращает старое поведение
+// для ещё идущих разговоров и ничего не теряет.
+type callLeaverStore struct {
+	mu    sync.Mutex
+	calls map[string]*callLeaveState
+}
+
+type callLeaveState struct {
+	left    map[string]struct{}
+	touched time.Time
+}
+
+func newCallLeaverStore() *callLeaverStore {
+	return &callLeaverStore{calls: make(map[string]*callLeaveState)}
+}
+
+// leave отмечает выход участника и возвращает, сколько людей осталось
+// в звонке. Повторный вызов для того же участника ничего не меняет.
+func (s *callLeaverStore) leave(callID, userID string, everyone []string) int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked()
+	entry := s.calls[callID]
+	if entry == nil {
+		entry = &callLeaveState{left: make(map[string]struct{})}
+		s.calls[callID] = entry
+	}
+	entry.left[userID] = struct{}{}
+	entry.touched = time.Now()
+	remaining := 0
+	for _, id := range everyone {
+		if _, gone := entry.left[id]; !gone {
+			remaining++
+		}
+	}
+	return remaining
+}
+
+// forget убирает законченный звонок из памяти.
+func (s *callLeaverStore) forget(callID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.calls, callID)
+}
+
+// evictLocked чистит записи забытых звонков, если кто-то так и не вышел.
+func (s *callLeaverStore) evictLocked() {
+	deadline := time.Now().Add(-callLeaverTTL)
+	for id, entry := range s.calls {
+		if entry.touched.Before(deadline) {
+			delete(s.calls, id)
+		}
 	}
 }

@@ -131,6 +131,13 @@ data class ActiveCall(
     val callerUserId: String = "",
     /** Собеседники без себя: в групповом звонке их до трёх. */
     val peers: List<String> = emptyList(),
+    /**
+     * Этот телефон уже принял звонок (или сам его начал). Признак
+     * свой, а не общий: в группе статус записи становится «active» от ответа
+     * любого участника, и раньше это снимало гудок у ещё не ответившего
+     * человека — движок включал ему микрофон без согласия.
+     */
+    val accepted: Boolean = false,
 ) {
     /** Звонок больше чем на двоих. */
     val group: Boolean get() = peers.size > 1
@@ -628,6 +635,8 @@ class ChatRepository(
                 selfUserId = key.owner,
                 callerUserId = key.owner,
                 peers = everyone,
+                // Свой звонок принимать не нужно: гудок снимет ответ собеседника.
+                accepted = true,
             )
         }
     }
@@ -638,7 +647,10 @@ class ChatRepository(
         val result = request(key) { api.updateCallStatus(it, call.callId, CallStatusRequest(status)) }
         commit(key) {
             if (_activeCall.value?.callId == call.callId) {
-                _activeCall.value = if (result.status == "active") call.copy(ringing = false) else null
+                // accepted ставим по своему действию: только этот телефон знает,
+                // что человек нажал «Ответить».
+                _activeCall.value = if (status == "active" || result.status == "active")
+                    call.copy(ringing = false, accepted = true) else null
             }
         }
     }
@@ -648,10 +660,18 @@ class ChatRepository(
      * а в группе — выход этого человека: остальные продолжают говорить.
      */
     private fun applyCallStatus(call: ActiveCall, status: String?, from: String): ActiveCall? {
-        if (status == "active") return call.copy(ringing = false)
-        if (from.isEmpty() || !call.group) return null
+        if (status == "active") {
+            // Ответил кто-то другой: пока трубку здесь не взяли, звонок
+            // продолжает звонить и микрофон не включается.
+            return if (call.accepted) call.copy(ringing = false) else call
+        }
+        if (from.isEmpty()) return null
+        // Звонящий отменил вызов до ответа — гасим экран входящего.
+        if (!call.accepted && from == call.callerUserId) return null
         val rest = call.peers.filter { it != from }
-        if (rest.isEmpty()) return null
+        // Вдвоём выход собеседника — конец разговора, а в группе это
+        // минус один участник: остальные продолжают говорить.
+        if (rest.isEmpty() || (!call.group && call.accepted)) return null
         return call.copy(peers = rest, peerUserId = rest.first(), peerName = callTitle(rest, rest.first()))
     }
 
@@ -765,9 +785,14 @@ class ChatRepository(
             _calls.value = result
             _activeCall.value?.let { active ->
                 remote.firstOrNull { it.id == active.callId }?.let { c ->
-                    _activeCall.value = when (c.status) {
-                        "ringing" -> active
-                        "active" -> active.copy(ringing = false)
+                    _activeCall.value = when {
+                        c.status == "ringing" -> active
+                        // Общий статус записи — не состояние этого телефона:
+                        // «active» выставляет и ответ другого участника.
+                        c.status == "active" -> if (active.accepted) active.copy(ringing = false) else active
+                        // Закрытая запись из-за выхода одного участника не должна
+                        // ронять групповой разговор у остальных (старые серверы).
+                        active.accepted && active.group -> active
                         else -> null
                     }
                 }
@@ -908,7 +933,7 @@ class ChatRepository(
      * Голосовое сообщение уходит той же очередью, что и текст: строка появляется
      * сразу со статусом «Ожидает отправки», файл записи переносится в приватный
      * каталог приложения, а загрузка в /v1/media и отправка конверта происходят
-     * в flushOutbox — с теми же повторами и сохранением порядка.
+     * �� flushOutbox — с теми же повторами и сохранением порядка.
      */
     suspend fun sendVoice(chatId: String, recording: VoiceRecording) {
         val key = key()
@@ -1110,11 +1135,21 @@ class ChatRepository(
                 height = m.localMediaHeight,
             ),
         ))
-        // Свою копию оставляем на устройстве как кэш — уже под именем media id.
-        val cached = withContext(Dispatchers.IO) { runCatching { moveTo(file, mediaCacheFile(up.id)) }.getOrNull() }
-        val next = m.copy(ciphertext = envelope, localMediaPath = (cached ?: file).absolutePath)
+        // Сначала фиксируем конверт в базе и только потом трогаем файл. Раньше
+        // копия уезжала в кэш до записи нового пути, и обрыв между этими шагами
+        // оставлял строку со ссылкой на уже несуществующий файл: повторная
+        // отправка падала с «Файл потерян».
+        val next = m.copy(ciphertext = envelope)
         commit(key) { db.messageDao().upsert(next) }
-        return next
+        // Свою копию оставляем на устройстве как кэш — уже под именем media id.
+        val cached = withContext(NonCancellable + Dispatchers.IO) {
+            runCatching { copyToCache(file, mediaCacheFile(up.id)) }.getOrNull()
+        } ?: return next
+        val moved = next.copy(localMediaPath = cached.absolutePath)
+        commit(key) { db.messageDao().upsert(moved) }
+        // Файл из очереди удаляем последним: до этого он есть сразу в двух местах.
+        withContext(NonCancellable + Dispatchers.IO) { runCatching { if (file != cached) file.delete() } }
+        return moved
     }
 
     /** Файл голосового сообщения: из локального кэша либо скачивается с сервера. */
@@ -1147,6 +1182,15 @@ class ChatRepository(
         require(mediaId.isNotBlank()) { "Вложение недоступно" }
         val target = mediaCacheFile(mediaId)
         if (withContext(Dispatchers.IO) { target.isFile && target.length() > 0 }) return target
+        // Один файл — одна загрузка. Миниатюра и открытие вложения просят файл
+        // одновременно, а раньше оба скачивания писали в общий .part и портили
+        // друг другу содержимое кэша.
+        return mediaLock(mediaId).withLock { downloadMedia(mediaId, target, maxBytes, missing) }
+    }
+
+    private suspend fun downloadMedia(mediaId: String, target: File, maxBytes: Long, missing: String): File {
+        // Пока ждали замок, файл мог уже скачать другой запрос.
+        if (withContext(Dispatchers.IO) { target.isFile && target.length() > 0 }) return target
         val key = key()
         val file = request(key) { auth ->
             val response = api.downloadMedia(auth, mediaId)
@@ -1162,9 +1206,12 @@ class ChatRepository(
         return file
     }
 
-    /** Пишем через .part и переименовываем: недокачанный файл не попадёт в кэш. */
+    /**
+     * Пишем через .part и переименовываем: недокачанный файл не попадёт в кэш.
+     * Имя временного файла уникально для каждой загрузки.
+     */
     private fun saveMedia(input: InputStream, target: File, maxBytes: Long): File {
-        val temp = File(target.parentFile, target.name + ".part")
+        val temp = File(target.parentFile, target.name + "." + UUID.randomUUID().toString().take(8) + ".part")
         try {
             var total = 0L
             temp.outputStream().use { out ->
@@ -1189,12 +1236,46 @@ class ChatRepository(
         return target
     }
 
+    /** Замки по mediaId: параллельные запросы одного файла ждут первую загрузку. */
+    private val mediaLocks = mutableMapOf<String, Mutex>()
+    private val mediaLocksGuard = Mutex()
+
+    private suspend fun mediaLock(mediaId: String): Mutex =
+        mediaLocksGuard.withLock { mediaLocks.getOrPut(mediaId) { Mutex() } }
+
+    /** Копия в кэш через уникальный .part: обрезанный файл в кэше не появится. */
+    private fun copyToCache(source: File, target: File): File {
+        if (source == target) return target
+        target.parentFile?.mkdirs()
+        val temp = File(target.parentFile, target.name + "." + UUID.randomUUID().toString().take(8) + ".part")
+        try {
+            source.copyTo(temp, overwrite = true)
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
+            }
+        } catch (e: Throwable) {
+            temp.delete()
+            throw e
+        }
+        return target
+    }
+
     private fun mediaCacheDir(): File = File(context.filesDir, MEDIA_CACHE_DIR).apply { mkdirs() }
 
     private fun mediaCacheFile(mediaId: String): File =
         File(mediaCacheDir(), mediaId.replace(Regex("[^A-Za-z0-9_.-]"), "_"))
 
     private fun outboxDir(): File = File(context.filesDir, VOICE_OUTBOX_DIR).apply { mkdirs() }
+
+    /**
+     * Файл под запись видеосообщения камерой. Лежит в приватном каталоге
+     * вложений, поэтому доступен камере через FileProvider (res/xml/file_paths.xml).
+     */
+    fun videoCaptureFile(): File {
+        val dir = File(File(context.filesDir, ATTACH_DIR), "capture").apply { mkdirs() }
+        return File(dir, "video_${UUID.randomUUID()}.mp4")
+    }
 
     private fun attachOutboxDir(): File = File(context.filesDir, ATTACH_OUTBOX_DIR).apply { mkdirs() }
 
@@ -1210,7 +1291,8 @@ class ChatRepository(
 
     /** Кэш записей не должен расти бесконечно: держим бюджет, удаляя самые старые файлы. */
     private fun pruneMediaCache() {
-        val files = mediaCacheDir().listFiles()?.filter { it.isFile } ?: return
+        // .part — файлы текущих загрузок, их убирает сама загрузка.
+        val files = mediaCacheDir().listFiles()?.filter { it.isFile && !it.name.endsWith(".part") } ?: return
         var total = files.sumOf { it.length() }
         if (total <= MEDIA_CACHE_BUDGET_BYTES) return
         for (file in files.sortedBy { it.lastModified() }) {
