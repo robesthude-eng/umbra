@@ -1,4 +1,4 @@
-# Umbra Android 0.16.0
+# Umbra Android 0.16.4
 
 Клиент на Kotlin 2.0.20, Compose, Room 2.6.1 и Retrofit. Минимальная версия
 Android — 8 (API 26), целевая — API 35. В этой ветке используется облачная
@@ -21,7 +21,7 @@ Android — 8 (API 26), целевая — API 35. В этой ветке исп
 Существующий тестовый HTTP-адрес сохранён в debug network security config.
 Для другого сетевого адреса используйте HTTPS; release допускает только HTTPS.
 
-Текущая версия в исходниках — **versionCode 23, versionName 0.16.0**
+Текущая версия в исходниках — **versionCode 27, versionName 0.16.4**
 (`android/app/build.gradle.kts`). Номер предыдущей версии по архиву не
 восстанавливается: здесь ранее был указан versionCode 7, а в `USER_FIXES.md` — 6;
 сверьте с историей репозитория. Для установки поверх прежней версии

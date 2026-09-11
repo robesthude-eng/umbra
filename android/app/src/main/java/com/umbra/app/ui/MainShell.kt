@@ -46,6 +46,7 @@ fun MainShell(
     twoPane: Boolean = false,
     onCloseChat: () -> Unit = {},
     sharedChatStateHolder: SaveableStateHolder? = null,
+    onCommands: () -> Unit = {},
 ) {
     val visual = LocalUmbraVisuals.current
     val stateHolder = rememberSaveableStateHolder()
@@ -101,6 +102,7 @@ fun MainShell(
                                     onSettings = { onTab(3) },
                                     onOpenChat = onOpenChat,
                                     selectedChatId = selectedChatId,
+                                    onCommands = onCommands,
                                     modifier = Modifier.widthIn(min = 320.dp, max = 400.dp).fillMaxHeight(),
                                 )
                                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -119,7 +121,11 @@ fun MainShell(
                                     }
                                 }
                             }
-                        } else ChatsTab(container, initiallyGroups = tab == 1, onSettings = { onTab(3) }, onOpenChat = onOpenChat)
+                        } else ChatsTab(
+                            container, initiallyGroups = tab == 1,
+                            onSettings = { onTab(3) }, onOpenChat = onOpenChat,
+                            onCommands = onCommands,
+                        )
                             2 -> CallsTab(container)
                             else -> SettingsTab(container)
                         }
@@ -163,6 +169,7 @@ private fun ChatsTab(
     onOpenChat: (String) -> Unit,
     selectedChatId: String? = null,
     modifier: Modifier = Modifier,
+    onCommands: () -> Unit = {},
 ) {
     val repo = container.chatRepository
     val flow = remember(repo) { repo.conversations() }
@@ -183,6 +190,7 @@ private fun ChatsTab(
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             PageHeading("Чаты") {
+                IconButton(onClick = onCommands) { Icon(Icons.Filled.Bolt, "Command Center") }
                 IconButton(onClick = onSettings, modifier = Modifier.size(48.dp).semantics { contentDescription = "Настройки профиля" }) {
                     Avatar(repo, me.avatarMediaId, me.displayName, 40.dp)
                 }

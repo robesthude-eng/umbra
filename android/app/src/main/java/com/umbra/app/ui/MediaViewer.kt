@@ -7,12 +7,15 @@ import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -45,6 +48,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +72,9 @@ import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.abs
 
 /** Длинная сторона распакованного кадра: больше экрана телефона не нужно. */
 private const val VIEWER_MAX_PX = 2048
@@ -87,9 +93,20 @@ fun AttachmentViewerDialog(
     onShare: () -> Unit,
     onSave: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        val reducedMotion = LocalUmbraReducedMotion.current
-        var appeared by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
+    val reducedMotion = LocalUmbraReducedMotion.current
+    var appeared by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
+    var closing by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
+    var dragY by remember(attachment.mediaId, attachment.localPath) { mutableFloatStateOf(0f) }
+    val scope = rememberCoroutineScope()
+    fun closeViewer() {
+        if (closing) return
+        if (reducedMotion) onDismiss() else {
+            closing = true
+            appeared = false
+            scope.launch { delay(190); onDismiss() }
+        }
+    }
+    Dialog(onDismissRequest = { closeViewer() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         LaunchedEffect(Unit) { appeared = true }
         val key = attachment.mediaId ?: attachment.localPath ?: attachment.name
         var file by remember(key) { mutableStateOf<File?>(null) }
@@ -110,11 +127,33 @@ fun AttachmentViewerDialog(
             visible = appeared,
             enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(180)) +
                 scaleIn(initialScale = 0.96f, animationSpec = tween(220, easing = FastOutSlowInEasing)),
+            exit = if (reducedMotion) androidx.compose.animation.ExitTransition.None else fadeOut(tween(160)) +
+                scaleOut(targetScale = 0.96f, animationSpec = tween(190, easing = FastOutSlowInEasing)),
         ) {
-            Surface(Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.94f)) {
+            Surface(
+                Modifier.fillMaxSize().graphicsLayer {
+                    translationY = dragY
+                    val distance = abs(dragY)
+                    alpha = (1f - distance / 900f).coerceIn(0.45f, 1f)
+                    val scale = (1f - distance / 2600f).coerceIn(0.90f, 1f)
+                    scaleX = scale; scaleY = scale
+                }.pointerInput(closing) {
+                    if (!closing) detectVerticalDragGestures(
+                        onVerticalDrag = { change, amount ->
+                            change.consume()
+                            dragY += amount
+                        },
+                        onDragEnd = {
+                            if (abs(dragY) > 150.dp.toPx()) closeViewer() else dragY = 0f
+                        },
+                        onDragCancel = { dragY = 0f },
+                    )
+                },
+                color = Color.Black.copy(alpha = 0.94f),
+            ) {
                 Column(Modifier.fillMaxSize()) {
                     Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onDismiss) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
+                        IconButton({ closeViewer() }) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
                         Text(
                             attachment.name,
                             Modifier.weight(1f),

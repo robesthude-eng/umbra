@@ -9,9 +9,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.umbra.app.data.repo.SessionPhase
 import com.umbra.app.data.update.UpdateInfo
@@ -51,9 +56,36 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
             var openChatId by rememberSaveable { mutableStateOf<String?>(null) }
             var tab by rememberSaveable { mutableIntStateOf(0) }
             var minimizedCallId by rememberSaveable { mutableStateOf<String?>(null) }
+            var showCommands by rememberSaveable { mutableStateOf(false) }
             val screens = rememberSaveableStateHolder()
             val call by repo.activeCall.collectAsState()
-            BoxWithConstraints(Modifier.fillMaxSize()) {
+            BoxWithConstraints(Modifier.fillMaxSize().onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.K &&
+                    (event.isCtrlPressed || event.isMetaPressed)
+                ) {
+                    showCommands = true
+                    true
+                } else false
+            }.pointerInput(Unit) {
+                var eligible = false
+                var distance = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { start ->
+                        eligible = start.y <= 72.dp.toPx()
+                        distance = 0f
+                    },
+                    onVerticalDrag = { change, amount ->
+                        if (eligible && amount > 0f) {
+                            distance += amount
+                            change.consume()
+                        }
+                    },
+                    onDragEnd = {
+                        if (eligible && distance >= 96.dp.toPx()) showCommands = true
+                    },
+                    onDragCancel = { eligible = false },
+                )
+            }) {
                 val twoPane = maxWidth >= 840.dp
                 val chatId = openChatId
                 Box(Modifier.fillMaxSize()) {
@@ -67,12 +99,16 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
                             twoPane = true,
                             onCloseChat = { openChatId = null },
                             sharedChatStateHolder = screens,
+                            onCommands = { showCommands = true },
                         )
                     } else ScreenEntrance(chatId ?: "main", Modifier.fillMaxSize()) {
                         if (chatId != null) screens.SaveableStateProvider("chat:$chatId") {
                             ChatView(container, chatId) { openChatId = null }
                         } else screens.SaveableStateProvider("main") {
-                            MainShell(container, tab, { tab = it }, { openChatId = it })
+                            MainShell(
+                                container, tab, { tab = it }, { openChatId = it },
+                                onCommands = { showCommands = true },
+                            )
                         }
                     }
                     call?.let { active ->
@@ -86,6 +122,15 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
                     }
                 }
             }
+            if (showCommands) CommandCenter(
+                repo = repo,
+                onDismiss = { showCommands = false },
+                onOpenChat = { openChatId = it; tab = 0 },
+                onDestination = { destination ->
+                    tab = destination
+                    if (destination != 0) openChatId = null
+                },
+            )
         }
     }
 
@@ -116,6 +161,14 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
                 }
             },
         )
+    }
+    (updateUi as? UpdateUi.Downloading)?.let { downloading ->
+        Box(
+            Modifier.fillMaxSize().statusBarsPadding().padding(top = 8.dp),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            ActivityIsland(Icons.Filled.Download, "Обновление ${downloading.percent}%")
+        }
     }
 }
 

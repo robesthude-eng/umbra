@@ -21,8 +21,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -84,11 +87,14 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.umbra.app.data.InputRules
 import com.umbra.app.data.api.UserCard
@@ -108,6 +114,7 @@ import com.umbra.app.ui.theme.UmbraChatColors
 import com.umbra.app.ui.theme.rememberUmbraChatColors
 import kotlinx.coroutines.launch
 import java.io.File
+import kotlin.math.abs
 
 /** Сообщения одного автора с разницей меньше этого склеиваются в группу. */
 private const val GROUP_WINDOW_MS = 5 * 60 * 1000L
@@ -545,6 +552,22 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
                     )
                 }
             }
+        }
+        val islandLabel = when {
+            sending -> "Отправляем…"
+            recording != null -> "Идёт запись"
+            else -> null
+        }
+        AnimatedVisibility(
+            visible = islandLabel != null,
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 54.dp),
+            enter = if (reducedMotion) EnterTransition.None else fadeIn() + scaleIn(initialScale = 0.92f),
+            exit = if (reducedMotion) ExitTransition.None else fadeOut() + scaleOut(targetScale = 0.92f),
+        ) {
+            ActivityIsland(
+                icon = if (recording != null) Icons.Filled.Mic else Icons.AutoMirrored.Filled.Send,
+                label = islandLabel.orEmpty(),
+            )
         }
     }
     if (showAttachMenu) AttachSheet(
@@ -1014,8 +1037,26 @@ private fun MessageRow(
     val attachment = message.attachment
     val voice = message.voice
     val preview = attachment != null && Attachments.hasPreview(attachment.kind)
+    val fresh = remember(message.stableId) {
+        abs(System.currentTimeMillis() - message.createdAtMillis) < 6_000L
+    }
+    var landed by remember(message.stableId) { mutableStateOf(reducedMotion || !fresh) }
+    LaunchedEffect(message.stableId) { landed = true }
+    val landing by animateFloatAsState(
+        targetValue = if (landed) 1f else 0f,
+        animationSpec = spring(
+            stiffness = Spring.StiffnessMediumLow,
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+        ),
+        label = "message-landing",
+    )
     Row(
-        modifier.fillMaxWidth().padding(top = if (item.first) 10.dp else 2.dp),
+        modifier.graphicsLayer {
+            alpha = landing
+            scaleX = 0.96f + 0.04f * landing
+            scaleY = 0.96f + 0.04f * landing
+            translationY = (1f - landing) * 12.dp.toPx()
+        }.fillMaxWidth().padding(top = if (item.first) 10.dp else 2.dp),
         horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
@@ -1138,7 +1179,23 @@ private fun MessageRow(
                     )
                 }
             }
-            DropdownMenu(menu, { menu = false }) {
+            val wideContext = LocalConfiguration.current.screenWidthDp >= 840
+            val contextActions: @Composable ColumnScope.() -> Unit = {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Действия", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                    IconButton({ menu = false }) { Icon(Icons.Filled.Close, "Закрыть панель") }
+                }
+                Text(
+                    message.text,
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = palette.incomingMeta,
+                )
                 if (!message.deleted) DropdownMenuItem(
                     text = { Text("Ответить") },
                     leadingIcon = { Icon(Icons.Filled.Reply, null) },
@@ -1198,6 +1255,33 @@ private fun MessageRow(
                     leadingIcon = { Icon(Icons.Filled.Replay, null) },
                     onClick = { menu = false; onRetry() },
                 )
+            }
+            if (menu) {
+                if (wideContext) Dialog(
+                    onDismissRequest = { menu = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false),
+                ) {
+                    Box(
+                        Modifier.fillMaxSize().padding(end = 20.dp, top = 24.dp, bottom = 24.dp),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        GlassPanel(Modifier.width(380.dp).fillMaxHeight(), strong = true) {
+                            Column(
+                                Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                                    .navigationBarsPadding().padding(vertical = 16.dp),
+                                content = contextActions,
+                            )
+                        }
+                    }
+                } else ModalBottomSheet(
+                    onDismissRequest = { menu = false },
+                    containerColor = palette.bar,
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 8.dp),
+                        content = contextActions,
+                    )
+                }
             }
         }
     }

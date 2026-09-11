@@ -303,13 +303,11 @@ fun MinimizedCallBar(container: AppContainer, call: ActiveCall, onRestore: () ->
     val name = users[call.peerUserId]?.fullName() ?: call.peerName.ifBlank { "Активный звонок" }
     val scope = rememberCoroutineScope()
     var ending by remember(call.callId) { mutableStateOf(false) }
-    Surface(
+    GlassPanel(
         modifier = Modifier.statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp)
             .fillMaxWidth().widthIn(max = 560.dp).clip(RoundedCornerShape(20.dp))
             .clickable(enabled = !ending, onClick = onRestore),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        shadowElevation = 6.dp,
+        strong = true,
     ) {
         Row(
             Modifier.padding(start = 14.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
@@ -322,7 +320,7 @@ fun MinimizedCallBar(container: AppContainer, call: ActiveCall, onRestore: () ->
                 Text(
                     if (media?.connected == true) "Нажмите, чтобы вернуться" else "Соединение…",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             FilledTonalIconButton(
