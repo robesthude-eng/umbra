@@ -17,11 +17,26 @@
 | nginx | `location = /app/latest.json` (json, no-cache) и `location /app/` (apk) добавлены во все три server-блока (80, 8081, 8443) |
 | Бэкап vhost | `/root/umbra-deploy-bak/umbra.vhost.pre-app-update.<TS>` |
 | Проверка | `latest.json` = 200 на 80/8081/8443 и снаружи по IP; APK = 200, `Content-Type: application/vnd.android.package-archive`, Content-Length совпадает |
-| Текущая версия | versionCode 32 (0.16.9 — см. секцию выше), sha256 `2c745d4cafa3c1455743722016c009430ba6b6405a3103c7eb77f29268cf3817`; раздача обновлена 2026-09-11 18:16 MSK |
+| Текущая версия | versionCode 33 (0.16.10 — см. секцию выше), sha256 `12e88ec450a7177b1715dc07680404e4a4b8db8371b927dac517e5b84cd5dad5`; раздача обновлена 2026-09-11 20:48 MSK |
 
 Порядок обновления при новых релизах: собрать APK в CI → скопировать в
 `/opt/umbra/app/umbra-latest.apk` → перезаписать `latest.json` (versionCode,
 versionName, sha256, notes). Клиенты при следующем запуске предложат обновление.
+
+## 2026-09-11 — клиент 0.16.10 (vc33): снапшот Alien Interface II
+
+Внешний снапшот (Drive, без корневой папки). Сетевые фиксы 0.16.5–0.16.8 подтверждены
+в коде снапшота до интеграции: IsoTime (3 места, 0 сырых Instant.parse), независимый
+outbox, таймаут 30 с + счётчик попыток, DiagLog + wiring, инкрементальный refresh,
+«Медленный режим», сетевой монитор ConnectivityManager. Новое: Alien Interface II —
+три интенсивности (`alien_intensity`), AlienVisuals.kt, HUD, стилизация переписки.
+
+| Параметр | Значение |
+|---|---|
+| Коммиты | `b1cc429` (снапшот), `58fb34c` (импорт remember в ChatKit + роадмап 0.16.10), `2c8288b` (убрать illegal-импорт layout.weight в AlienVisuals) |
+| CI | Оба воркфлоу зелёные на `2c8288b` |
+| APK | sha256 `12e88ec450a7177b1715dc07680404e4a4b8db8371b927dac517e5b84cd5dad5`, 61 336 469 Б, versionCode 33 |
+| Текущая версия | versionCode 33 (0.16.10), раздача обновлена 2026-09-11 20:48 MSK |
 
 ## 2026-09-11 — клиент 0.16.9 (vc32): снапшот 0.16.7–0.16.9 — Network Recovery, Motion, Alien Interface
 
