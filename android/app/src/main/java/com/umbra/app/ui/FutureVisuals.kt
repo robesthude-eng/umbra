@@ -8,6 +8,15 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -32,17 +41,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.umbra.app.ui.theme.LocalUmbraReducedMotion
+import com.umbra.app.ui.theme.LocalUmbraAlienMode
 import com.umbra.app.ui.theme.LocalUmbraVisuals
+import com.umbra.app.ui.theme.LocalUmbraMotion
+import kotlin.math.sin
 
 /** Лёгкий Canvas-фон: два градиента без bitmap, шейдерных эффектов и blur. */
 @Composable
 internal fun FutureBackdrop(modifier: Modifier = Modifier) {
     val visual = LocalUmbraVisuals.current
     val reduced = LocalUmbraReducedMotion.current
+    val alien = LocalUmbraAlienMode.current
     val transition = rememberInfiniteTransition(label = "umbra-aura")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -71,6 +87,21 @@ internal fun FutureBackdrop(modifier: Modifier = Modifier) {
             radius * 0.85f,
             Offset(size.width * (0.08f + phase * 0.12f), size.height * 0.88f),
         )
+        if (alien) {
+            val center = Offset(size.width * 0.52f, size.height * (0.40f + phase * 0.04f))
+            drawCircle(visual.auraPrimary.copy(alpha = 0.15f), size.minDimension * 0.32f, center, style = Stroke(1.dp.toPx()))
+            drawCircle(visual.auraSecondary.copy(alpha = 0.10f), size.minDimension * 0.43f, center, style = Stroke(0.7.dp.toPx()))
+            repeat(34) { index ->
+                val x = size.width * (((index * 47) % 101) / 100f)
+                val baseY = size.height * (((index * 71) % 103) / 102f)
+                val y = baseY + sin((phase * 6.283f + index).toDouble()).toFloat() * 5.dp.toPx()
+                drawCircle(
+                    color = if (index % 3 == 0) visual.auraSecondary.copy(alpha = 0.28f) else visual.auraPrimary.copy(alpha = 0.22f),
+                    radius = if (index % 7 == 0) 1.5.dp.toPx() else 0.8.dp.toPx(),
+                    center = Offset(x, y),
+                )
+            }
+        }
     }
 }
 
@@ -82,9 +113,12 @@ internal fun GlassPanel(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val visual = LocalUmbraVisuals.current
+    val alien = LocalUmbraAlienMode.current
     val shape = RoundedCornerShape(if (strong) 26.dp else 22.dp)
+    val edge = if (alien) Brush.linearGradient(listOf(visual.auraPrimary.copy(alpha = 0.78f), visual.auraSecondary.copy(alpha = 0.54f), visual.glassBorder))
+        else SolidColor(visual.glassBorder)
     Surface(
-        modifier = modifier.border(1.dp, visual.glassBorder, shape),
+        modifier = modifier.border(BorderStroke(if (alien) 1.25.dp else 1.dp, edge), shape),
         shape = shape,
         color = if (strong) visual.glassStrong else visual.glass,
         tonalElevation = if (strong) 3.dp else 1.dp,
@@ -116,11 +150,47 @@ internal fun ActivityIsland(
     modifier: Modifier = Modifier,
 ) {
     val visual = LocalUmbraVisuals.current
+    val motion = LocalUmbraMotion.current
+    val reduced = LocalUmbraReducedMotion.current
     GlassPanel(modifier, strong = true) {
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
-            Icon(icon, null, Modifier.size(18.dp), tint = visual.auraPrimary)
-            Spacer(Modifier.width(8.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge)
+        AnimatedContent(
+            targetState = icon to label,
+            transitionSpec = {
+                if (reduced) EnterTransition.None togetherWith ExitTransition.None
+                else (fadeIn(tween(motion.quickMs)) + scaleIn(initialScale = 0.94f)) togetherWith
+                    (fadeOut(tween(motion.quickMs)) + scaleOut(targetScale = 0.94f))
+            },
+            label = "activity-island-morph",
+        ) { (stateIcon, stateLabel) ->
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
+                Icon(stateIcon, null, Modifier.size(18.dp), tint = visual.auraPrimary)
+                Spacer(Modifier.width(8.dp))
+                Text(stateLabel, style = MaterialTheme.typography.labelLarge)
+            }
         }
     }
+}
+
+/** Selected destinations become a quiet orbital object only in Alien mode. */
+@Composable
+internal fun OrbitalNavIcon(icon: ImageVector, label: String, selected: Boolean) {
+    val alien = LocalUmbraAlienMode.current
+    val reduced = LocalUmbraReducedMotion.current
+    val visual = LocalUmbraVisuals.current
+    val transition = rememberInfiniteTransition(label = "alien-orbit")
+    val pulse by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (alien && selected && !reduced) 1f else 0f,
+        animationSpec = infiniteRepeatable(tween(2_600), RepeatMode.Reverse),
+        label = "alien-orbit-pulse",
+    )
+    Box(
+        Modifier.size(42.dp).drawBehind {
+            if (alien && selected) {
+                drawCircle(visual.auraPrimary.copy(alpha = 0.20f + pulse * 0.10f), radius = size.minDimension * (0.36f + pulse * 0.04f))
+                drawCircle(visual.auraSecondary.copy(alpha = 0.52f), radius = size.minDimension * 0.45f, style = Stroke(1.dp.toPx()))
+            }
+        },
+        contentAlignment = androidx.compose.ui.Alignment.Center,
+    ) { Icon(icon, label, tint = if (alien && selected) visual.auraPrimary else androidx.compose.ui.graphics.Color.Unspecified) }
 }

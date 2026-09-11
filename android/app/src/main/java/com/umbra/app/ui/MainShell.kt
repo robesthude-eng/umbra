@@ -67,7 +67,7 @@ fun MainShell(
                     destinations.forEach { (id, label, icon) ->
                         NavigationBarItem(
                             selected = selectedTab == id, onClick = { onTab(id) },
-                            icon = { Icon(icon, null) }, label = { Text(label) },
+                            icon = { OrbitalNavIcon(icon, label, selectedTab == id) }, label = { Text(label) },
                         )
                     }
                 }
@@ -82,7 +82,7 @@ fun MainShell(
                         NavigationRailItem(
                             selected = selectedTab == id,
                             onClick = { onTab(id) },
-                            icon = { Icon(icon, label) },
+                            icon = { OrbitalNavIcon(icon, label, selectedTab == id) },
                             label = { Text(label) },
                         )
                     }
@@ -141,10 +141,14 @@ internal fun SyncBanner(repo: ChatRepository) {
     val connected by repo.connected.collectAsState()
     val error by repo.syncError.collectAsState()
     val syncing by repo.syncing.collectAsState()
+    val alien = com.umbra.app.ui.theme.LocalUmbraAlienMode.current
+    val visual = LocalUmbraVisuals.current
     val scope = rememberCoroutineScope()
     // Normal connectivity is not a user-presence status and needs no permanent toolbar.
     if (connected && error == null && !syncing) return
-    Surface(color = if (error != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(color = if (error != null) MaterialTheme.colorScheme.errorContainer
+        else if (alien) visual.auraPrimary.copy(alpha = 0.12f)
+        else MaterialTheme.colorScheme.surfaceContainer) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 error ?: if (syncing) "Обновление сообщений…" else "Медленный режим: обмен каждые 5 секунд (прямое соединение прервано)",

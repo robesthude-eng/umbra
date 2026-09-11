@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.activity.ExperimentalActivityApi
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.fadeIn
@@ -12,7 +14,15 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -52,24 +62,29 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.umbra.app.data.media.Attachments
 import com.umbra.app.data.msg.voiceDurationText
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.UiAttachment
 import com.umbra.app.ui.theme.LocalUmbraReducedMotion
+import com.umbra.app.ui.theme.LocalUmbraMotion
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -84,105 +99,166 @@ private const val VIEWER_MAX_PX = 2048
  * и перемоткой. Раньше чат всегда отдавал файл стороннему приложению,
  * поэтому внешний просмотр оставлен запасным вариантом.
  */
+@OptIn(ExperimentalActivityApi::class)
 @Composable
-fun AttachmentViewerDialog(
+fun AttachmentViewerOverlay(
     repo: ChatRepository,
     attachment: UiAttachment,
+    sourceBounds: Rect?,
     onDismiss: () -> Unit,
     onOpenExternally: () -> Unit,
     onShare: () -> Unit,
     onSave: () -> Unit,
 ) {
     val reducedMotion = LocalUmbraReducedMotion.current
-    var appeared by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
+    val motion = LocalUmbraMotion.current
+    var appeared by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(reducedMotion) }
     var closing by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
     var dragY by remember(attachment.mediaId, attachment.localPath) { mutableFloatStateOf(0f) }
+    var predictiveProgress by remember(attachment.mediaId, attachment.localPath) { mutableFloatStateOf(0f) }
+    var contentZoomed by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val transitionProgress by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (appeared) 1f else 0f,
+        animationSpec = tween(if (reducedMotion) 0 else motion.standardMs, easing = FastOutSlowInEasing),
+        label = "media-source-transition",
+    )
+    val visualProgress = (transitionProgress * (1f - predictiveProgress)).coerceIn(0f, 1f)
+
     fun closeViewer() {
         if (closing) return
         if (reducedMotion) onDismiss() else {
             closing = true
             appeared = false
-            scope.launch { delay(190); onDismiss() }
+            scope.launch { delay(motion.standardMs.toLong()); onDismiss() }
         }
     }
-    Dialog(onDismissRequest = { closeViewer() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        LaunchedEffect(Unit) { appeared = true }
-        val key = attachment.mediaId ?: attachment.localPath ?: attachment.name
-        var file by remember(key) { mutableStateOf<File?>(null) }
-        var problem by remember(key) { mutableStateOf<String?>(null) }
-        var attempt by remember(key) { mutableIntStateOf(0) }
-        // Файла может ещё не быть на телефоне — репозиторий скачает и расшифрует его.
-        LaunchedEffect(key, attempt) {
-            problem = null
-            file = null
-            file = try {
-                repo.attachmentLocalFile(attachment)
-            } catch (e: Exception) {
-                problem = e.userMessage()
-                null
+
+    LaunchedEffect(Unit) { appeared = true }
+    PredictiveBackHandler(enabled = !closing) { events ->
+        try {
+            events.collect { event ->
+                predictiveProgress = if (reducedMotion) 0f else event.progress.coerceIn(0f, 1f)
             }
+            closeViewer()
+        } catch (_: CancellationException) {
+            val start = predictiveProgress
+            Animatable(start).animateTo(
+                0f,
+                spring(dampingRatio = motion.springDamping, stiffness = motion.springStiffness),
+            ) { predictiveProgress = value }
         }
-        AnimatedVisibility(
-            visible = appeared,
-            enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(180)) +
-                scaleIn(initialScale = 0.96f, animationSpec = tween(220, easing = FastOutSlowInEasing)),
-            exit = if (reducedMotion) androidx.compose.animation.ExitTransition.None else fadeOut(tween(160)) +
-                scaleOut(targetScale = 0.96f, animationSpec = tween(190, easing = FastOutSlowInEasing)),
-        ) {
-            Surface(
-                Modifier.fillMaxSize().graphicsLayer {
-                    translationY = dragY
-                    val distance = abs(dragY)
-                    alpha = (1f - distance / 900f).coerceIn(0.45f, 1f)
-                    val scale = (1f - distance / 2600f).coerceIn(0.90f, 1f)
-                    scaleX = scale; scaleY = scale
-                }.pointerInput(closing) {
-                    if (!closing) detectVerticalDragGestures(
-                        onVerticalDrag = { change, amount ->
-                            change.consume()
-                            dragY += amount
-                        },
-                        onDragEnd = {
-                            if (abs(dragY) > 150.dp.toPx()) closeViewer() else dragY = 0f
-                        },
-                        onDragCancel = { dragY = 0f },
-                    )
+    }
+
+    val key = attachment.mediaId ?: attachment.localPath ?: attachment.name
+    var file by remember(key) { mutableStateOf<File?>(null) }
+    var problem by remember(key) { mutableStateOf<String?>(null) }
+    var attempt by remember(key) { mutableIntStateOf(0) }
+    LaunchedEffect(key, attempt) {
+        problem = null
+        file = null
+        file = try {
+            repo.attachmentLocalFile(attachment)
+        } catch (e: Exception) {
+            problem = e.userMessage()
+            null
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize().zIndex(50f).graphicsLayer {
+            val p = visualProgress
+            val source = sourceBounds
+            val sourceScale = if (source != null && size.width > 0f && size.height > 0f) {
+                minOf(source.width / size.width, source.height / size.height).coerceIn(0.12f, 0.92f)
+            } else 0.96f
+            val transitionScale = sourceScale + (1f - sourceScale) * p
+            val distance = abs(dragY)
+            val dragScale = (1f - distance / 2600f).coerceIn(0.90f, 1f)
+            scaleX = transitionScale * dragScale
+            scaleY = transitionScale * dragScale
+            translationX = if (source != null) (source.center.x - size.width / 2f) * (1f - p) else 0f
+            translationY = (if (source != null) (source.center.y - size.height / 2f) * (1f - p) else 0f) + dragY
+            alpha = p * (1f - distance / 900f).coerceIn(0.45f, 1f)
+        }.pointerInput(closing, contentZoomed) {
+            val tracker = VelocityTracker()
+            if (!closing && !contentZoomed) detectVerticalDragGestures(
+                onDragStart = { tracker.resetTracking() },
+                onVerticalDrag = { change, amount ->
+                    change.consume()
+                    tracker.addPosition(change.uptimeMillis, change.position)
+                    dragY = (dragY + amount).coerceIn(-size.height * 0.9f, size.height * 0.9f)
                 },
-                color = Color.Black.copy(alpha = 0.94f),
-            ) {
-                Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton({ closeViewer() }) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
-                        Text(
-                            attachment.name,
-                            Modifier.weight(1f),
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        IconButton(onShare) { Icon(Icons.Filled.Share, "Поделиться", tint = Color.White) }
-                        IconButton(onSave) { Icon(Icons.Filled.Download, "Сохранить в файлы", tint = Color.White) }
-                    }
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        val ready = file
-                        val failure = problem
-                        when {
-                            failure != null -> ViewerProblem(failure) { attempt++ }
-                            ready == null -> CircularProgressIndicator(color = Color.White)
-                            attachment.isVideo -> VideoViewer(ready, attachment) { problem = it }
-                            else -> ImageViewer(ready) { problem = it }
+                onDragEnd = {
+                    val velocity = tracker.calculateVelocity().y
+                    if (abs(dragY) > 150.dp.toPx() || abs(velocity) >= motion.dismissVelocity) {
+                        closeViewer()
+                    } else {
+                        val start = dragY
+                        scope.launch {
+                            Animatable(start).animateTo(
+                                0f,
+                                spring(dampingRatio = motion.springDamping, stiffness = motion.springStiffness),
+                            ) { dragY = value }
                         }
                     }
-                    TextButton(
-                        onOpenExternally,
-                        Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp),
-                    ) { Text("Открыть во внешнем приложении", color = Color.White) }
+                },
+                onDragCancel = {
+                    val start = dragY
+                    scope.launch { Animatable(start).animateTo(0f) { dragY = value } }
+                },
+            )
+        },
+        shape = RoundedCornerShape((24f * (1f - visualProgress)).dp),
+        color = Color.Black.copy(alpha = 0.94f),
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton({ closeViewer() }) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
+                Text(
+                    attachment.name,
+                    Modifier.weight(1f),
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                IconButton(onShare) { Icon(Icons.Filled.Share, "Поделиться", tint = Color.White) }
+                IconButton(onSave) { Icon(Icons.Filled.Download, "Сохранить в файлы", tint = Color.White) }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val ready = file
+                val failure = problem
+                when {
+                    failure != null -> ViewerProblem(failure) { attempt++ }
+                    ready == null -> MediaLoadingSkeleton()
+                    attachment.isVideo -> VideoViewer(ready, attachment) { problem = it }
+                    else -> ImageViewer(ready, onZoomChanged = { contentZoomed = it }) { problem = it }
                 }
             }
+            TextButton(
+                onOpenExternally,
+                Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp),
+            ) { Text("Открыть во внешнем приложении", color = Color.White) }
         }
     }
+}
+
+/** Спокойный skeleton без layout-скачка; reduced motion оставляет статичное состояние. */
+@Composable
+private fun MediaLoadingSkeleton() {
+    val reduced = LocalUmbraReducedMotion.current
+    val shimmer = rememberInfiniteTransition(label = "media-skeleton")
+    val alpha by shimmer.animateFloat(
+        initialValue = 0.24f,
+        targetValue = if (reduced) 0.24f else 0.62f,
+        animationSpec = infiniteRepeatable(tween(850), RepeatMode.Reverse),
+        label = "media-skeleton-alpha",
+    )
+    Box(
+        Modifier.width(220.dp).height(160.dp).clip(RoundedCornerShape(28.dp))
+            .background(Color.White.copy(alpha = alpha)),
+    )
 }
 
 /** Сообщение вместо бесконечного индикатора: с явной повторной попыткой. */
@@ -197,7 +273,7 @@ private fun ViewerProblem(message: String, onRetry: () -> Unit) {
 
 /** Фото: щипок для увеличения, перетаскивание и двойное касание для сброса. */
 @Composable
-private fun ImageViewer(file: File, onProblem: (String) -> Unit) {
+private fun ImageViewer(file: File, onZoomChanged: (Boolean) -> Unit, onProblem: (String) -> Unit) {
     var bitmap by remember(file.path) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(file.path) {
         // Распаковка картинки тяжёлая — делаем её вне потока отрисовки.
@@ -213,6 +289,8 @@ private fun ImageViewer(file: File, onProblem: (String) -> Unit) {
     }
     var scale by remember(file.path) { mutableFloatStateOf(1f) }
     var offset by remember(file.path) { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(scale) { onZoomChanged(scale > 1.01f) }
+    DisposableEffect(file.path) { onDispose { onZoomChanged(false) } }
     Image(
         image.asImageBitmap(),
         contentDescription = null,
@@ -223,7 +301,15 @@ private fun ImageViewer(file: File, onProblem: (String) -> Unit) {
                 detectTransformGestures { _, pan, zoom, _ ->
                     scale = (scale * zoom).coerceIn(1f, 6f)
                     // На исходном масштабе кадр снова по центру.
-                    offset = if (scale <= 1f) Offset.Zero else offset + pan
+                    if (scale <= 1f) offset = Offset.Zero else {
+                        val limitX = size.width * (scale - 1f) / 2f
+                        val limitY = size.height * (scale - 1f) / 2f
+                        val moved = offset + pan
+                        offset = Offset(
+                            moved.x.coerceIn(-limitX, limitX),
+                            moved.y.coerceIn(-limitY, limitY),
+                        )
+                    }
                 }
             }
             .pointerInput(file.path) {

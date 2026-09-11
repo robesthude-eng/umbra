@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = appearance.dynamicColor,
                 messageTextSize = appearance.messageTextSize,
                 reduceMotion = appearance.reduceMotion,
+                alienInterface = appearance.alienInterface,
             ) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Box(Modifier.fillMaxSize()) {

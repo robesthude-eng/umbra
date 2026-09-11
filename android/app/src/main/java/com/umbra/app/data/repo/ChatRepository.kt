@@ -2,7 +2,11 @@ package com.umbra.app.data.repo
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.SystemClock
 import android.util.LruCache
 import androidx.room.withTransaction
 import com.umbra.app.data.AvatarImages
@@ -38,6 +42,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.SerializationException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -48,6 +53,11 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.time.Instant
+import java.time.DateTimeException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import java.util.UUID
 
 /** Фаза приложения относительно сессии. */
@@ -157,6 +167,32 @@ data class ActiveCall(
     val group: Boolean get() = peers.size > 1
 }
 
+enum class NetworkMode { ONLINE, POLLING, OFFLINE }
+
+data class NetworkSnapshot(
+    val available: Boolean = false,
+    val validated: Boolean = false,
+    val transport: String = "нет сети",
+    val metered: Boolean = true,
+    val vpn: Boolean = false,
+)
+
+data class NetworkCheckItem(val name: String, val ok: Boolean, val detail: String, val durationMs: Long = 0)
+
+data class NetworkCheckReport(
+    val createdAtMillis: Long,
+    val network: NetworkSnapshot,
+    val items: List<NetworkCheckItem>,
+) {
+    val successful get() = items.all { it.ok }
+    fun asText(): String = buildString {
+        appendLine("Umbra network report")
+        appendLine("time=${Instant.ofEpochMilli(createdAtMillis)}")
+        appendLine("transport=${network.transport} validated=${network.validated} metered=${network.metered} vpn=${network.vpn}")
+        items.forEach { appendLine("${if (it.ok) "OK" else "FAIL"} ${it.name}: ${it.detail} (${it.durationMs} ms)") }
+    }.trimEnd()
+}
+
 /** Cloud messenger repository. Message envelopes are not end-to-end encrypted. */
 private const val EDIT_WINDOW_MS = 15 * 60_000L
 
@@ -174,6 +210,10 @@ class ChatRepository(
     private val sendMutex = Mutex()
     private val profileMutex = Mutex()
     private val callMutex = Mutex()
+    private val networkCheckMutex = Mutex()
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    private var networkRecoveryJob: Job? = null
+    private var lastNetworkSignature = ""
     private var pollJob: Job? = null
     private var eventJob: Job? = null
     private var outboxJob: Job? = null
@@ -185,6 +225,15 @@ class ChatRepository(
     private val waveformMutex = Mutex()
     private val readPrefs = context.getSharedPreferences("umbra_read_state", Context.MODE_PRIVATE)
     private val _readState = MutableStateFlow<Map<String, Long>>(emptyMap())
+    private val _networkSnapshot = MutableStateFlow(NetworkSnapshot())
+    val networkSnapshot = _networkSnapshot.asStateFlow()
+    private val _lastNetworkReport = MutableStateFlow<NetworkCheckReport?>(null)
+    val lastNetworkReport = _lastNetworkReport.asStateFlow()
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = handleNetworkChange(network, "available", true)
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = handleNetworkChange(network, "capabilities", true)
+        override fun onLost(network: Network) = handleNetworkChange(connectivity.activeNetwork, "lost", false)
+    }
 
     private data class SessionKey(val owner: String, val token: String) {
         val auth get() = "Bearer $token"
@@ -195,6 +244,44 @@ class ChatRepository(
     )
     private fun isCurrent(key: SessionKey) = session.userId() == key.owner && session.token() == key.token
 
+    private class SyncStepException(val step: String, cause: Throwable) : Exception(cause)
+
+    private suspend fun <T> syncStep(step: String, block: suspend () -> T): T = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: SyncStepException) {
+        throw e
+    } catch (e: Throwable) {
+        throw SyncStepException(step, e)
+    }
+
+    /** Пользователь видит причину и этап, а полный стек остаётся только в DiagLog. */
+    private fun syncFailureText(error: Throwable, fallbackStep: String? = null): String {
+        val wrapped = error as? SyncStepException
+        val cause = wrapped?.cause ?: error
+        val step = wrapped?.step ?: fallbackStep
+        val where = step?.let { " · этап: $it" }.orEmpty()
+        return when (cause) {
+            is HttpException -> when (cause.code()) {
+                401 -> "Сессия истекла (HTTP 401). Войдите снова$where"
+                403 -> "Сервер запретил синхронизацию (HTTP 403)$where"
+                404 -> "Метод синхронизации не найден (HTTP 404)$where"
+                409 -> "Конфликт данных на сервере (HTTP 409)$where"
+                429 -> "Слишком много запросов (HTTP 429). Повторим позже$where"
+                in 500..599 -> "Ошибка сервера (HTTP ${cause.code()})$where"
+                else -> "Сервер ответил HTTP ${cause.code()}$where"
+            }
+            is UnknownHostException -> "Не найден сервер: ошибка DNS$where"
+            is SocketTimeoutException -> "Сервер не ответил вовремя$where"
+            is ConnectException -> "Не удалось открыть соединение с сервером$where"
+            is SSLException -> "Не удалось проверить защищённое соединение TLS$where"
+            is SerializationException, is DateTimeException -> "Сервер прислал несовместимые данные$where"
+            is IOException -> "Сетевая ошибка ${cause.javaClass.simpleName}$where"
+            else -> "Ошибка синхронизации ${cause.javaClass.simpleName}$where"
+        }
+    }
+
     private fun currentPhase() = when {
         !session.isLoggedIn() -> SessionPhase.LOGGED_OUT
         !session.profileComplete() -> SessionPhase.NEEDS_PROFILE
@@ -203,10 +290,20 @@ class ChatRepository(
     private val _phase = MutableStateFlow(currentPhase())
     val phase: StateFlow<SessionPhase> = _phase.asStateFlow()
     val connected = ws.connected
+    val realtimeDiagnostics = ws.diagnostics
     private val _syncProblem = MutableStateFlow<String?>(null)
     val syncError = _syncProblem.asStateFlow()
+    private val _lastSuccessfulSyncAtMillis = MutableStateFlow<Long?>(null)
+    val lastSuccessfulSyncAtMillis = _lastSuccessfulSyncAtMillis.asStateFlow()
     private val _syncing = MutableStateFlow(false)
     val syncing = _syncing.asStateFlow()
+    val networkMode: StateFlow<NetworkMode> = combine(_networkSnapshot, connected, _syncProblem) { network, realtime, problem ->
+        when {
+            !network.available || !network.validated || problem != null -> NetworkMode.OFFLINE
+            realtime -> NetworkMode.ONLINE
+            else -> NetworkMode.POLLING
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, NetworkMode.OFFLINE)
     private val _userCache = MutableStateFlow<Map<String, UserCard>>(emptyMap())
     val userCache = _userCache.asStateFlow()
     private val _activeCall = MutableStateFlow<ActiveCall?>(null)
@@ -224,6 +321,90 @@ class ChatRepository(
     val callSignals = _callSignals.asSharedFlow()
     private val _account = MutableStateFlow(accountInfo())
     val account = _account.asStateFlow()
+
+    init {
+        updateNetworkSnapshot(connectivity.activeNetwork)
+        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback) }
+            .onFailure { DiagLog.log("network-monitor", it) }
+    }
+
+    private fun readNetworkSnapshot(network: Network?): NetworkSnapshot {
+        val capabilities = network?.let { connectivity.getNetworkCapabilities(it) }
+        val transports = buildList {
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) add("Wi-Fi")
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) add("мобильная сеть")
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) add("Ethernet")
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) add("VPN")
+        }
+        return NetworkSnapshot(
+            available = capabilities != null,
+            validated = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+            transport = transports.joinToString(" + ").ifBlank { if (capabilities == null) "нет сети" else "другая сеть" },
+            metered = connectivity.isActiveNetworkMetered,
+            vpn = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+        )
+    }
+
+    private fun updateNetworkSnapshot(network: Network?): NetworkSnapshot = readNetworkSnapshot(network).also { _networkSnapshot.value = it }
+
+    private fun handleNetworkChange(network: Network?, reason: String, recover: Boolean) {
+        val snapshot = updateNetworkSnapshot(network)
+        val signature = "${network?.hashCode()}:${snapshot.transport}:${snapshot.validated}"
+        val changed = signature != lastNetworkSignature
+        lastNetworkSignature = signature
+        DiagLog.log("network-$reason", note = "transport=${snapshot.transport} validated=${snapshot.validated} metered=${snapshot.metered}")
+        if (!recover || !changed || !snapshot.available || !snapshot.validated || pollJob?.isActive != true) return
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = scope.launch {
+            delay(700)
+            val token = session.token() ?: return@launch
+            DiagLog.log("network-recovery", note = "recreate websocket and refresh")
+            ws.reconnect(token)
+            try { refresh(forceFull = false) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { DiagLog.log("network-recovery", e) }
+        }
+    }
+
+    suspend fun reconnectNow() {
+        val token = requireNotNull(session.token()) { "Войдите в аккаунт" }
+        DiagLog.log("manual-reconnect", note = "requested")
+        ws.reconnect(token)
+        refresh(forceFull = true)
+    }
+
+    suspend fun runNetworkCheck(): NetworkCheckReport = networkCheckMutex.withLock {
+        val key = key()
+        val snapshot = updateNetworkSnapshot(connectivity.activeNetwork)
+        val results = mutableListOf<NetworkCheckItem>()
+        results += NetworkCheckItem("Сеть Android", snapshot.available && snapshot.validated,
+            "${snapshot.transport}; validated=${snapshot.validated}; metered=${snapshot.metered}; vpn=${snapshot.vpn}")
+        suspend fun probe(name: String, block: suspend () -> Unit) {
+            val started = SystemClock.elapsedRealtime()
+            try {
+                block()
+                results += NetworkCheckItem(name, true, "успешно", SystemClock.elapsedRealtime() - started)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                results += NetworkCheckItem(name, false, syncFailureText(e, name), SystemClock.elapsedRealtime() - started)
+                DiagLog.log("network-check", e, "step=$name")
+            }
+        }
+        probe("Авторизованный REST") { request(key) { api.account(it) }; Unit }
+        probe("Список чатов") { request(key) { api.chats(it) }; Unit }
+        probe("Очередь отправки") { db.messageDao().pending(key.owner); Unit }
+        val wsStarted = SystemClock.elapsedRealtime()
+        ws.reconnect(key.token)
+        val websocketOk = withTimeoutOrNull(8_000L) { ws.connected.filter { it }.first() } == true
+        val wsInfo = ws.diagnostics.value
+        results += NetworkCheckItem("WebSocket", websocketOk,
+            if (websocketOk) "подключён" else wsInfo.lastFailure ?: "не подключился за 8 секунд",
+            SystemClock.elapsedRealtime() - wsStarted)
+        val report = NetworkCheckReport(System.currentTimeMillis(), snapshot, results)
+        _lastNetworkReport.value = report
+        DiagLog.log("network-check", note = "successful=${report.successful} transport=${snapshot.transport}")
+        report
+    }
 
     fun me(): String? = session.userId()
     fun accountInfo() = AccountView(
@@ -261,6 +442,8 @@ class ChatRepository(
         _userCache.value = emptyMap()
         avatarCache.evictAll()
         _syncProblem.value = null
+        _lastSuccessfulSyncAtMillis.value = null
+        _lastNetworkReport.value = null
         lastFullSyncMillis = 0L
         _phase.value = SessionPhase.LOGGED_OUT
     }
@@ -443,7 +626,7 @@ class ChatRepository(
                 }
                 catch (e: Exception) {
                     DiagLog.log("ws-event", e)
-                    if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Повторим при восстановлении связи."
+                    if (isCurrent(key)) _syncProblem.value = syncFailureText(e, "онлайн-событие")
                 }
             }
         }
@@ -469,13 +652,16 @@ class ChatRepository(
                         } catch (e: CancellationException) { throw e }
                         catch (e: Exception) {
                             DiagLog.log("poll-sync", e)
-                            if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Повторим при восстановлении связи."
+                            if (isCurrent(key)) _syncProblem.value = syncFailureText(e, "фоновое обновление")
                         }
                         // Флаш очереди выполняется и при упавшей тихой синхронизации.
                         try { flushOutbox() }
                         catch (e: CancellationException) { throw e }
                         catch (_: Exception) { /* poll повторит; refresh публикует ошибку */ }
-                        if (syncOk) commit(key) { _syncProblem.value = null }
+                        if (syncOk) commit(key) {
+                            _syncProblem.value = null
+                            _lastSuccessfulSyncAtMillis.value = System.currentTimeMillis()
+                        }
                     } else {
                         refresh()
                     }
@@ -505,13 +691,16 @@ class ChatRepository(
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             DiagLog.log("refresh", e)
-            if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Проверьте подключение и повторите."
+            if (isCurrent(key)) _syncProblem.value = syncFailureText(e)
         }
         // Отправка не должна зависеть от приёма: даже если история не догрузилась
         // (например, сервер вернул метку времени в неожиданном формате), очередь
         // уходит — иначе сообщения висят «часиками» до ручного действия.
         flushOutbox()
-        if (syncOk) commit(key) { _syncProblem.value = null }
+        if (syncOk) commit(key) {
+            _syncProblem.value = null
+            _lastSuccessfulSyncAtMillis.value = System.currentTimeMillis()
+        }
     }
 
     private suspend fun syncNow(key: SessionKey, forceFull: Boolean, notify: Boolean = true) = syncMutex.withLock {
@@ -521,14 +710,15 @@ class ChatRepository(
             val now = System.currentTimeMillis()
             val full = forceFull || newest == 0L || now - lastFullSyncMillis >= 15 * 60_000L
             if (full) {
-                try { request(key) { api.refreshSession(it) } }
-                catch (e: HttpException) {
+                try { syncStep("продление сессии") { request(key) { api.refreshSession(it) } } }
+                catch (e: SyncStepException) {
                     // Permit a gradual rollout against an older server. It keeps
                     // its original fixed token lifetime until the server is updated.
-                    if (e.code() != 404 && e.code() != 405) throw e
+                    val code = (e.cause as? HttpException)?.code()
+                    if (code != 404 && code != 405) throw e
                 }
             }
-            val groups = request(key) { api.chats(it).chats }
+            val groups = syncStep("список чатов") { request(key) { api.chats(it).chats } }
             commit(key) { db.withTransaction {
                 val remoteIds = groups.map { it.id }.toSet()
                 for (old in db.chatDao().snapshot()) {
@@ -543,9 +733,9 @@ class ChatRepository(
             var pages = 0
             val peers = linkedSetOf<String>()
             while (true) {
-                val page = request(key) { api.messages(it, since, afterId, 200).messages }
+                val page = syncStep("загрузка истории") { request(key) { api.messages(it, since, afterId, 200).messages } }
                 for (dto in page) {
-                    persist(key, dto)
+                    syncStep("обработка сообщения") { persist(key, dto) }
                     if (dto.chatId.isEmpty()) peers.add(if (dto.senderId == key.owner) dto.recipientId else dto.senderId)
                 }
                 if (page.size < 200) break
@@ -557,7 +747,7 @@ class ChatRepository(
                 check(++pages <= 2000) { "История слишком велика для одного обновления" }
             }
             if (full) profileMutex.withLock {
-                val a = request(key) { api.account(it) }
+                val a = syncStep("профиль аккаунта") { request(key) { api.account(it) } }
                 commit(key) {
                     session.saveProfile(a.username, a.displayName, a.lastName, a.avatarMediaId)
                     _account.value = accountInfo()
@@ -1592,7 +1782,13 @@ class ChatRepository(
         commit(key) { db.messageDao().deleteExpired(System.currentTimeMillis()) }
     }
 
-    fun close() { stopRealtime(); scope.cancel(); ws.close() }
+    fun close() {
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        networkRecoveryJob?.cancel()
+        stopRealtime()
+        scope.cancel()
+        ws.close()
+    }
 
     companion object {
         const val MEDIA_CACHE_DIR = "media"

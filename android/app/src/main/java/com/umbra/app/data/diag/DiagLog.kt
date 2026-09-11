@@ -50,4 +50,9 @@ object DiagLog {
     /** Текст журнала для отправки. */
     fun text(): String =
         runCatching { file?.readText() }.getOrNull()?.ifBlank { "журнал пуст" } ?: "журнал недоступен"
+
+    @Synchronized
+    fun clear() {
+        runCatching { file?.writeText("") }
+    }
 }

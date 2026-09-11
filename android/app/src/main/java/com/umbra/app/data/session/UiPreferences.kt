@@ -11,6 +11,7 @@ data class AppearancePreferences(
     val dynamicColor: Boolean = false,
     val messageTextSize: Int = 16,
     val reduceMotion: Boolean = false,
+    val alienInterface: Boolean = false,
 )
 
 /** Device-local appearance. Contains no account data and survives signing out. */
@@ -23,6 +24,7 @@ class UiPreferences(context: Context) {
             dynamicColor = prefs.getBoolean("dynamic_color", false),
             messageTextSize = prefs.getInt("message_text_size", 16).coerceIn(16, 22),
             reduceMotion = prefs.getBoolean("reduce_motion", false),
+            alienInterface = prefs.getBoolean("alien_interface", false),
         ),
     )
     val state = mutableState.asStateFlow()
@@ -46,5 +48,10 @@ class UiPreferences(context: Context) {
     fun setReduceMotion(value: Boolean) {
         prefs.edit().putBoolean("reduce_motion", value).apply()
         mutableState.value = mutableState.value.copy(reduceMotion = value)
+    }
+
+    fun setAlienInterface(value: Boolean) {
+        prefs.edit().putBoolean("alien_interface", value).apply()
+        mutableState.value = mutableState.value.copy(alienInterface = value)
     }
 }

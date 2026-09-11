@@ -30,6 +30,7 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
+        android:enableOnBackInvokedCallback="true"
         android:name=".UmbraApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

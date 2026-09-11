@@ -84,8 +84,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
@@ -343,6 +346,8 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     }
     // Фото и видео открываются внутри Umbra (см. MediaViewer.kt).
     var viewing by remember(chatId) { mutableStateOf<UiAttachment?>(null) }
+    var viewingOrigin by remember(chatId) { mutableStateOf<Rect?>(null) }
+    var viewerRootBounds by remember(chatId) { mutableStateOf<Rect?>(null) }
     /** Внешнее приложение осталось запасным путём для любых форматов. */
     fun openExternally(attachment: UiAttachment) {
         error = null
@@ -353,9 +358,12 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
             } catch (e: Exception) { error = e.userMessage() }
         }
     }
-    fun openAttachment(attachment: UiAttachment) {
+    fun openAttachment(attachment: UiAttachment, origin: Rect? = null) {
         error = null
-        if (attachment.isImage || attachment.isVideo) viewing = attachment else openExternally(attachment)
+        if (attachment.isImage || attachment.isVideo) {
+            viewingOrigin = origin
+            viewing = attachment
+        } else openExternally(attachment)
     }
     fun shareAttachment(attachment: UiAttachment) {
         error = null
@@ -402,7 +410,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     }
 
     BackHandler(onBack = onBack)
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().onGloballyPositioned { viewerRootBounds = it.boundsInWindow() }) {
         ChatBackground(Modifier.matchParentSize())
         Scaffold(
             containerColor = Color.Transparent,
@@ -469,7 +477,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
                                         users[item.message.senderId]?.fullName() ?: "Участник" else null,
                                     playback = playback?.takeIf { it.key == item.message.stableId },
                                     modifier = if (reducedMotion) Modifier else Modifier.animateItem(),
-                                    onOpen = { openAttachment(it) },
+                                    onOpen = { attachment, bounds -> openAttachment(attachment, bounds) },
                                     onShare = { shareAttachment(it) },
                                     onSave = { saveAttachment(it) },
                                     onTogglePlay = {
@@ -570,6 +578,27 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
                 label = islandLabel.orEmpty(),
             )
         }
+        val viewed = viewing
+        if (viewed != null) {
+            val origin = viewingOrigin
+            val root = viewerRootBounds
+            val sourceInRoot = if (origin != null && root != null) Rect(
+                origin.left - root.left, origin.top - root.top,
+                origin.right - root.left, origin.bottom - root.top,
+            ) else null
+            AttachmentViewerOverlay(
+                repo = repo,
+                attachment = viewed,
+                sourceBounds = sourceInRoot,
+                onDismiss = { viewing = null; viewingOrigin = null },
+                onOpenExternally = {
+                    viewing = null; viewingOrigin = null
+                    openExternally(viewed)
+                },
+                onShare = { shareAttachment(viewed) },
+                onSave = { saveAttachment(viewed) },
+            )
+        }
     }
     if (showAttachMenu) AttachSheet(
         onDismiss = { showAttachMenu = false },
@@ -585,18 +614,6 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
             showAttachMenu = false
             pickFile.launch(arrayOf("*/*"))
         },
-    )
-    val viewed = viewing
-    if (viewed != null) AttachmentViewerDialog(
-        repo = repo,
-        attachment = viewed,
-        onDismiss = { viewing = null },
-        onOpenExternally = {
-            viewing = null
-            openExternally(viewed)
-        },
-        onShare = { shareAttachment(viewed) },
-        onSave = { saveAttachment(viewed) },
     )
     if (showMembers) GroupMembersDialog(repo, chatId) { showMembers = false }
     if (showGroupCall) GroupCallDialog(repo, chatId, groupCallVideo, { showGroupCall = false }) { invited ->
@@ -1013,7 +1030,7 @@ private fun MessageRow(
     senderName: String?,
     playback: VoicePlayback?,
     modifier: Modifier = Modifier,
-    onOpen: (UiAttachment) -> Unit,
+    onOpen: (UiAttachment, Rect?) -> Unit,
     onShare: (UiAttachment) -> Unit,
     onSave: (UiAttachment) -> Unit,
     onTogglePlay: () -> Unit,
@@ -1038,6 +1055,7 @@ private fun MessageRow(
     val attachment = message.attachment
     val voice = message.voice
     val preview = attachment != null && Attachments.hasPreview(attachment.kind)
+    var attachmentBounds by remember(message.stableId) { mutableStateOf<Rect?>(null) }
     val fresh = remember(message.stableId) {
         abs(System.currentTimeMillis() - message.createdAtMillis) < 6_000L
     }
@@ -1069,6 +1087,7 @@ private fun MessageRow(
         Box {
             Column(
                 Modifier.widthIn(max = 300.dp)
+                    .onGloballyPositioned { attachmentBounds = it.boundsInWindow() }
                     .clip(bubbleShape(outgoing, item.first, item.last))
                     .background(
                         if (outgoing) Brush.linearGradient(palette.outgoing)
@@ -1079,7 +1098,7 @@ private fun MessageRow(
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             menu = true
                         },
-                        onClick = { if (attachment != null) onOpen(attachment) },
+                        onClick = { if (attachment != null) onOpen(attachment, attachmentBounds) },
                     ),
             ) {
                 message.forwardedFrom?.let { from ->
@@ -1238,7 +1257,7 @@ private fun MessageRow(
                     DropdownMenuItem(
                         text = { Text("Открыть") },
                         leadingIcon = { Icon(Icons.Filled.OpenInNew, null) },
-                        onClick = { menu = false; onOpen(attachment) },
+                        onClick = { menu = false; onOpen(attachment, attachmentBounds) },
                     )
                     DropdownMenuItem(
                         text = { Text("Поделиться") },

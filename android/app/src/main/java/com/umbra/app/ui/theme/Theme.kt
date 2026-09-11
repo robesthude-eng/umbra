@@ -117,7 +117,21 @@ val UmbraChatLight = UmbraChatColors(
 
 val LocalUmbraChatColors = staticCompositionLocalOf { UmbraChatDark }
 val LocalUmbraReducedMotion = staticCompositionLocalOf { false }
+val LocalUmbraAlienMode = staticCompositionLocalOf { false }
 val LocalUmbraMessageTextStyle = staticCompositionLocalOf { TextStyle(fontSize = 16.sp, lineHeight = 22.sp) }
+
+/** Единые параметры движения вместо случайных duration/spring по экранам. */
+@Immutable
+data class UmbraMotionTokens(
+    val quickMs: Int = 120,
+    val standardMs: Int = 220,
+    val expressiveMs: Int = 360,
+    val dismissVelocity: Float = 1_600f,
+    val springStiffness: Float = 500f,
+    val springDamping: Float = 0.78f,
+)
+
+val LocalUmbraMotion = staticCompositionLocalOf { UmbraMotionTokens() }
 
 /** Семантические токены Future UI: экраны не хранят собственные случайные alpha. */
 @Immutable
@@ -228,6 +242,7 @@ fun UmbraTheme(
     dynamicColor: Boolean = false,
     messageTextSize: Int = 16,
     reduceMotion: Boolean = false,
+    alienInterface: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -237,14 +252,24 @@ fun UmbraTheme(
         darkTheme -> UmbraDarkColors
         else -> UmbraLightColors
     }
-    val chat = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) dynamicChatColors(scheme)
+    val baseChat = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) dynamicChatColors(scheme)
         else if (darkTheme) UmbraChatDark else UmbraChatLight
-    val visuals = futureVisuals(scheme)
+    val chat = if (alienInterface) baseChat.copy(
+        screen = if (darkTheme) listOf(Color(0xFF02050B), Color(0xFF081226), Color(0xFF100A26))
+            else listOf(Color(0xFFF4FAFF), Color(0xFFF2F3FF), Color(0xFFF9F2FF)),
+        glowTop = Color(0x3326F7FF),
+        glowBottom = Color(0x2EE842FF),
+        outgoing = listOf(Color(0xFF4B38FF), Color(0xFF008DA8), Color(0xFF00A98F)),
+        accent = if (darkTheme) Color(0xFF6EFFF2) else Color(0xFF005F70),
+    ) else baseChat
+    val visuals = futureVisuals(scheme, alienInterface)
     val size = messageTextSize.coerceIn(16, 22)
     CompositionLocalProvider(
         LocalUmbraChatColors provides chat,
         LocalUmbraVisuals provides visuals,
+        LocalUmbraMotion provides UmbraMotionTokens(),
         LocalUmbraReducedMotion provides reduceMotion,
+        LocalUmbraAlienMode provides alienInterface,
         LocalUmbraMessageTextStyle provides UmbraTypography.bodyLarge.copy(fontSize = size.sp, lineHeight = (size + 6).sp),
     ) {
         MaterialTheme(
@@ -256,16 +281,18 @@ fun UmbraTheme(
     }
 }
 
-private fun futureVisuals(scheme: ColorScheme): UmbraVisualTokens {
+private fun futureVisuals(scheme: ColorScheme, alien: Boolean = false): UmbraVisualTokens {
     val dark = scheme.background.luminance() < 0.45f
     return UmbraVisualTokens(
-        backdrop = if (dark) listOf(Color(0xFF090F1A), Color(0xFF101C2C), Color(0xFF0C1421))
+        backdrop = if (alien && dark) listOf(Color(0xFF010309), Color(0xFF061224), Color(0xFF120823), Color(0xFF03141B))
+            else if (alien) listOf(Color(0xFFF4FBFF), Color(0xFFF2F3FF), Color(0xFFFFF3FD))
+            else if (dark) listOf(Color(0xFF090F1A), Color(0xFF101C2C), Color(0xFF0C1421))
             else listOf(Color(0xFFF6F8FC), Color(0xFFEDF4FA), Color(0xFFF4F1FB)),
-        glass = if (dark) Color(0xD9162335) else Color(0xE8FFFFFF),
-        glassStrong = if (dark) Color(0xF21B2A3D) else Color(0xF8FFFFFF),
-        glassBorder = if (dark) Color(0x307EC9FF) else Color(0x50698AAF),
-        auraPrimary = scheme.primary,
-        auraSecondary = scheme.secondary,
+        glass = if (alien && dark) Color(0xB80A1628) else if (alien) Color(0xCCF8FCFF) else if (dark) Color(0xD9162335) else Color(0xE8FFFFFF),
+        glassStrong = if (alien && dark) Color(0xE80B1930) else if (alien) Color(0xECFFFFFF) else if (dark) Color(0xF21B2A3D) else Color(0xF8FFFFFF),
+        glassBorder = if (alien) Color(0x8072FFF1) else if (dark) Color(0x307EC9FF) else Color(0x50698AAF),
+        auraPrimary = if (alien) Color(0xFF72FFF1) else scheme.primary,
+        auraSecondary = if (alien) Color(0xFFE957FF) else scheme.secondary,
         success = if (dark) Color(0xFF57E0B5) else Color(0xFF087D68),
         warning = if (dark) Color(0xFFFFC66D) else Color(0xFF925900),
     )
