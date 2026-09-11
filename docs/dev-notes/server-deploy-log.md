@@ -6,7 +6,25 @@
 
 Автоматического журнала миграций нет, поэтому применённые миграции фиксируются здесь.
 
+## 2026-09-11 — самообновление приложения (раздача /app/)
+
+Клиент 0.15.0 (vc22) при запуске сверяет versionCode с `/app/latest.json`.
+Серверная часть — только статика через nginx, Go-код не менялся.
+
+| Параметр | Значение |
+|---|---|
+| Файлы | `/opt/umbra/app/latest.json` (версия+sha256+примечание) и `/opt/umbra/app/umbra-latest.apk` |
+| nginx | `location = /app/latest.json` (json, no-cache) и `location /app/` (apk) добавлены во все три server-блока (80, 8081, 8443) |
+| Бэкап vhost | `/root/umbra-deploy-bak/umbra.vhost.pre-app-update.<TS>` |
+| Проверка | `latest.json` = 200 на 80/8081/8443 и снаружи по IP; APK = 200, `Content-Type: application/vnd.android.package-archive`, Content-Length совпадает |
+| Текущая версия | versionCode 22 (0.15.0), sha256 `552820faf3d380ae869b6286c78024150322de98e51073d3d6661323a306daaf` |
+
+Порядок обновления при новых релизах: собрать APK в CI → скопировать в
+`/opt/umbra/app/umbra-latest.apk` → перезаписать `latest.json` (versionCode,
+versionName, sha256, notes). Клиенты при следующем запуске предложат обновление.
+
 ## 0.9.1 — исправления звонков и медиа (фикс-пак)
+
 
 | Параметр | Значение |
 |---|---|
