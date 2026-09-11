@@ -105,6 +105,7 @@ import com.umbra.app.ui.theme.LocalUmbraChatColors
 import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import com.umbra.app.ui.theme.LocalUmbraMessageTextStyle
 import com.umbra.app.ui.theme.UmbraChatColors
+import com.umbra.app.ui.theme.rememberUmbraChatColors
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -151,6 +152,14 @@ private fun buildChatItems(messages: List<UiMessage>, isGroup: Boolean): List<Ch
 
 @Composable
 fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
+    val palette = rememberUmbraChatColors(chatId)
+    CompositionLocalProvider(LocalUmbraChatColors provides palette) {
+        ChatViewContent(container, chatId, onBack)
+    }
+}
+
+@Composable
+private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () -> Unit) {
     val repo = container.chatRepository
     val recorder = container.voiceRecorder
     val player = container.voicePlayer
@@ -995,6 +1004,7 @@ private fun MessageRow(
 ) {
     val message = item.message
     val palette = LocalUmbraChatColors.current
+    val reducedMotion = LocalUmbraReducedMotion.current
     val haptics = LocalHapticFeedback.current
     val clipboard = LocalClipboardManager.current
     var menu by remember(message.stableId) { mutableStateOf(false) }
@@ -1108,7 +1118,12 @@ private fun MessageRow(
                 if (message.reactions.isNotEmpty()) Row(
                     Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) { message.reactions.forEach { (emoji, count) -> Text("$emoji $count", style = MaterialTheme.typography.labelMedium, color = onBubble) } }
+                ) { message.reactions.forEach { (emoji, count) ->
+                    if (reducedMotion) Text("$emoji $count", style = MaterialTheme.typography.labelMedium, color = onBubble)
+                    else AnimatedContent(targetState = count, label = "reaction-$emoji") { value ->
+                        Text("$emoji $value", style = MaterialTheme.typography.labelMedium, color = onBubble)
+                    }
+                } }
                 if (message.failed) Row(
                     Modifier.padding(start = 10.dp, end = 10.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1145,7 +1160,11 @@ private fun MessageRow(
                 if (!message.deleted && !message.pending && !message.failed) Column(Modifier.padding(horizontal = 8.dp)) {
                     listOf("👍", "❤️", "😂", "😮", "😢").chunked(3).forEach { reactions ->
                         Row { reactions.forEach { emoji ->
-                            TextButton({ menu = false; onReact(emoji) }, contentPadding = PaddingValues(4.dp)) { Text(emoji) }
+                            TextButton({
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                menu = false
+                                onReact(emoji)
+                            }, contentPadding = PaddingValues(4.dp)) { Text(emoji) }
                         } }
                     }
                 }

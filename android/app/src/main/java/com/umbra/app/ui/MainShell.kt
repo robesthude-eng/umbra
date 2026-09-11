@@ -32,6 +32,7 @@ import com.umbra.app.data.InputRules
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.Conversation
 import com.umbra.app.di.AppContainer
+import com.umbra.app.ui.theme.LocalUmbraVisuals
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -46,6 +47,7 @@ fun MainShell(
     onCloseChat: () -> Unit = {},
     sharedChatStateHolder: SaveableStateHolder? = null,
 ) {
+    val visual = LocalUmbraVisuals.current
     val stateHolder = rememberSaveableStateHolder()
     val localChatStateHolder = rememberSaveableStateHolder()
     val detailStateHolder = sharedChatStateHolder ?: localChatStateHolder
@@ -57,10 +59,10 @@ fun MainShell(
         Triple(3, "Настройки", Icons.Filled.Settings),
     )
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
         bottomBar = {
             if (!twoPane) {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                NavigationBar(containerColor = visual.glassStrong, tonalElevation = 0.dp) {
                     destinations.forEach { (id, label, icon) ->
                         NavigationBarItem(
                             selected = selectedTab == id, onClick = { onTab(id) },
@@ -73,7 +75,7 @@ fun MainShell(
     ) { padding ->
         Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             if (twoPane) {
-                NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
+                NavigationRail(containerColor = visual.glassStrong) {
                     Spacer(Modifier.weight(1f))
                     destinations.forEach { (id, label, icon) ->
                         NavigationRailItem(
@@ -251,9 +253,13 @@ private fun ChatsTab(
 
 @Composable
 private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boolean, onClick: () -> Unit) {
+    val visual = LocalUmbraVisuals.current
+    val interaction = rememberFutureInteraction()
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
-        .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-        .clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 12.dp),
+        .background(if (selected) visual.auraPrimary.copy(alpha = 0.16f) else Color.Transparent)
+        .futurePress(interaction)
+        .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+        .padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if (c.isGroup) GroupAvatar(c.title) else UserAvatar(repo, c.chatId, c.title, 52.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

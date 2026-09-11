@@ -14,9 +14,12 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
@@ -116,6 +119,32 @@ val LocalUmbraChatColors = staticCompositionLocalOf { UmbraChatDark }
 val LocalUmbraReducedMotion = staticCompositionLocalOf { false }
 val LocalUmbraMessageTextStyle = staticCompositionLocalOf { TextStyle(fontSize = 16.sp, lineHeight = 22.sp) }
 
+/** Семантические токены Future UI: экраны не хранят собственные случайные alpha. */
+@Immutable
+data class UmbraVisualTokens(
+    val backdrop: List<Color>,
+    val glass: Color,
+    val glassStrong: Color,
+    val glassBorder: Color,
+    val auraPrimary: Color,
+    val auraSecondary: Color,
+    val success: Color,
+    val warning: Color,
+)
+
+val LocalUmbraVisuals = staticCompositionLocalOf {
+    UmbraVisualTokens(
+        backdrop = listOf(UmbraColors.Deep, Color(0xFF111D2D)),
+        glass = Color(0xE6172334),
+        glassStrong = Color(0xF21B2A3D),
+        glassBorder = Color(0x267EC9FF),
+        auraPrimary = Color(0xFF6574FF),
+        auraSecondary = UmbraColors.Mint,
+        success = Color(0xFF57E0B5),
+        warning = Color(0xFFFFC66D),
+    )
+}
+
 val UmbraLightColors = lightColorScheme(
     primary = Color(0xFF1668D8),
     onPrimary = Color.White,
@@ -210,9 +239,11 @@ fun UmbraTheme(
     }
     val chat = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) dynamicChatColors(scheme)
         else if (darkTheme) UmbraChatDark else UmbraChatLight
+    val visuals = futureVisuals(scheme)
     val size = messageTextSize.coerceIn(16, 22)
     CompositionLocalProvider(
         LocalUmbraChatColors provides chat,
+        LocalUmbraVisuals provides visuals,
         LocalUmbraReducedMotion provides reduceMotion,
         LocalUmbraMessageTextStyle provides UmbraTypography.bodyLarge.copy(fontSize = size.sp, lineHeight = (size + 6).sp),
     ) {
@@ -221,6 +252,45 @@ fun UmbraTheme(
             typography = UmbraTypography,
             shapes = UmbraShapes,
             content = content,
+        )
+    }
+}
+
+private fun futureVisuals(scheme: ColorScheme): UmbraVisualTokens {
+    val dark = scheme.background.luminance() < 0.45f
+    return UmbraVisualTokens(
+        backdrop = if (dark) listOf(Color(0xFF090F1A), Color(0xFF101C2C), Color(0xFF0C1421))
+            else listOf(Color(0xFFF6F8FC), Color(0xFFEDF4FA), Color(0xFFF4F1FB)),
+        glass = if (dark) Color(0xD9162335) else Color(0xE8FFFFFF),
+        glassStrong = if (dark) Color(0xF21B2A3D) else Color(0xF8FFFFFF),
+        glassBorder = if (dark) Color(0x307EC9FF) else Color(0x50698AAF),
+        auraPrimary = scheme.primary,
+        auraSecondary = scheme.secondary,
+        success = if (dark) Color(0xFF57E0B5) else Color(0xFF087D68),
+        warning = if (dark) Color(0xFFFFC66D) else Color(0xFF925900),
+    )
+}
+
+/** Стабильная персональная палитра диалога без сохранения дополнительных данных. */
+@Composable
+fun rememberUmbraChatColors(seed: String): UmbraChatColors {
+    val base = LocalUmbraChatColors.current
+    return remember(seed, base) {
+        val accents = listOf(
+            Color(0xFF7587FF), Color(0xFF30C9B0), Color(0xFFB879FF),
+            Color(0xFF3DA7FF), Color(0xFFFF7CA8), Color(0xFFFFA95E),
+        )
+        val accent = accents[(seed.hashCode() and Int.MAX_VALUE) % accents.size]
+        val dark = base.screen.first().luminance() < 0.45f
+        base.copy(
+            screen = if (dark) listOf(lerp(base.screen.first(), accent, 0.055f), base.screen.last())
+                else listOf(lerp(base.screen.first(), accent, 0.035f), base.screen.last()),
+            glowTop = accent.copy(alpha = if (dark) 0.12f else 0.07f),
+            glowBottom = base.accent.copy(alpha = if (dark) 0.08f else 0.045f),
+            outgoing = listOf(lerp(base.outgoing.first(), accent, 0.44f), lerp(base.outgoing.last(), accent, 0.22f)),
+            bar = lerp(base.bar, accent, if (dark) 0.055f else 0.025f).copy(alpha = 0.96f),
+            field = lerp(base.field, accent, if (dark) 0.075f else 0.035f),
+            accent = accent,
         )
     }
 }

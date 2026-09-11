@@ -11,6 +11,7 @@ import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -26,6 +27,7 @@ import com.umbra.app.data.call.CallNotifications
 import com.umbra.app.di.AppContainer
 import com.umbra.app.data.session.ThemeMode
 import com.umbra.app.ui.UmbraRoot
+import com.umbra.app.ui.FutureBackdrop
 import com.umbra.app.ui.theme.UmbraTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,7 +74,10 @@ class MainActivity : ComponentActivity() {
                 reduceMotion = appearance.reduceMotion,
             ) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    UmbraRoot(container, inPictureInPicture)
+                    Box(Modifier.fillMaxSize()) {
+                        FutureBackdrop(Modifier.matchParentSize())
+                        UmbraRoot(container, inPictureInPicture)
+                    }
                 }
             }
         }

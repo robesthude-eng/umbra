@@ -31,6 +31,14 @@ push=text(Path('android/app/src/main/java/com/umbra/app/data/push/PushService.kt
 manifest=text(Path('android/app/src/main/AndroidManifest.xml'))
 
 # 0.12
+future=text(Path('android/app/src/main/java/com/umbra/app/ui/FutureVisuals.kt'))
+theme=text(Path('android/app/src/main/java/com/umbra/app/ui/theme/Theme.kt'))
+check('Future UI semantic tokens', 'data class UmbraVisualTokens' in theme and 'LocalUmbraVisuals' in theme)
+check('Future UI ambient aura', 'FutureBackdrop' in future and '18_000' in future and 'LocalUmbraReducedMotion' in future)
+check('Future UI glass fallback', 'GlassPanel' in future and 'glassStrong' in future)
+check('Per-chat dynamic palette', 'rememberUmbraChatColors' in theme and 'rememberUmbraChatColors(chatId)' in chat)
+check('Future UI microinteractions', 'futurePress' in future and 'reaction-$emoji' in chat)
+
 check('Smooth media enter', 'scaleIn(initialScale = 0.96f' in viewer and 'LocalUmbraReducedMotion' in viewer)
 check('Call minimizes and restores', 'MinimizedCallBar' in root and 'onMinimize' in call)
 check('PiP overrides minimized bar', '!pictureInPicture' in root)

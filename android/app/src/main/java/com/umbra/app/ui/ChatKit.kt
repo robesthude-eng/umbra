@@ -3,6 +3,11 @@
 package com.umbra.app.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -24,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +46,7 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import com.umbra.app.ui.theme.LocalUmbraChatColors
+import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -75,27 +82,35 @@ internal fun bubbleShape(outgoing: Boolean, first: Boolean, last: Boolean): Roun
 @Composable
 internal fun ChatBackground(modifier: Modifier = Modifier) {
     val chat = LocalUmbraChatColors.current
+    val reduced = LocalUmbraReducedMotion.current
+    val transition = rememberInfiniteTransition(label = "chat-aura")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (reduced) 0f else 1f,
+        animationSpec = infiniteRepeatable(tween(20_000), RepeatMode.Reverse),
+        label = "chat-aura-phase",
+    )
     Canvas(modifier) {
         drawRect(brush = Brush.verticalGradient(chat.screen))
         val topRadius = size.minDimension * 0.85f
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(chat.glowTop, Color.Transparent),
-                center = Offset(size.width * 0.86f, size.height * 0.02f),
+                center = Offset(size.width * (0.86f - phase * 0.12f), size.height * 0.02f),
                 radius = topRadius,
             ),
             radius = topRadius,
-            center = Offset(size.width * 0.86f, size.height * 0.02f),
+            center = Offset(size.width * (0.86f - phase * 0.12f), size.height * 0.02f),
         )
         val bottomRadius = size.minDimension * 0.75f
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(chat.glowBottom, Color.Transparent),
-                center = Offset(size.width * 0.05f, size.height * 0.92f),
+                center = Offset(size.width * (0.05f + phase * 0.10f), size.height * 0.92f),
                 radius = bottomRadius,
             ),
             radius = bottomRadius,
-            center = Offset(size.width * 0.05f, size.height * 0.92f),
+            center = Offset(size.width * (0.05f + phase * 0.10f), size.height * 0.92f),
         )
     }
 }
