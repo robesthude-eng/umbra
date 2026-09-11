@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Самообновление: системный установщик требует разового разрешения «устанавливать
+         неизвестные приложения» (Android 8+), экран настроек открывает AppUpdater. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Смена сети во время звонка: пересобираем маршрут вместо обрыва. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Контакты: поиск друзей, уже зарегистрированных в Umbra. -->

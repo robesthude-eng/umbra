@@ -3,15 +3,22 @@ package com.umbra.app.ui
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.umbra.app.data.repo.SessionPhase
+import com.umbra.app.data.update.UpdateInfo
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
@@ -26,6 +33,18 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
             }
         } else repo.stopRealtime()
     }
+
+    // Проверка обновления — один раз за холодный старт, молча при ошибке
+    // и никогда в режиме «картинка в картинке».
+    val updater = container.appUpdater
+    val scope = rememberCoroutineScope()
+    var updateUi by remember { mutableStateOf<UpdateUi?>(null) }
+    LaunchedEffect(Unit) {
+        if (!pictureInPicture) {
+            updater.check()?.let { updateUi = UpdateUi.Offer(it) }
+        }
+    }
+
     when (phase) {
         SessionPhase.LOGGED_OUT, SessionPhase.NEEDS_PROFILE -> AuthScreen(container, onDone = {})
         SessionPhase.READY -> key(repo.me()) {
@@ -69,4 +88,93 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
             }
         }
     }
+
+    // Диалог обновления поверх любой фазы: обновление касается и экрана входа.
+    updateUi?.let { state ->
+        UpdateDialog(
+            state = state,
+            onCancel = { updateUi = null },
+            onStart = { info ->
+                scope.launch {
+                    updateUi = UpdateUi.Downloading(info, 0)
+                    runCatching { updater.download(info) { percent -> updateUi = UpdateUi.Downloading(info, percent) } }
+                        .onSuccess { updateUi = UpdateUi.Ready(info, it) }
+                        .onFailure { updateUi = UpdateUi.Failed(info, it.message ?: "Не удалось скачать обновление") }
+                }
+            },
+            onInstall = { apk ->
+                // Если разрешения «неизвестных источников» нет, откроются
+                // настройки; диалог остаётся — после возврата нажать ещё раз.
+                updater.install(apk)
+            },
+            onRetry = { info ->
+                scope.launch {
+                    updateUi = UpdateUi.Downloading(info, 0)
+                    runCatching { updater.download(info) { percent -> updateUi = UpdateUi.Downloading(info, percent) } }
+                        .onSuccess { updateUi = UpdateUi.Ready(info, it) }
+                        .onFailure { updateUi = UpdateUi.Failed(info, it.message ?: "Не удалось скачать обновление") }
+                }
+            },
+        )
+    }
+}
+
+/** Состояния диалога самообновления. */
+private sealed interface UpdateUi {
+    data class Offer(val info: UpdateInfo) : UpdateUi
+    data class Downloading(val info: UpdateInfo, val percent: Int) : UpdateUi
+    data class Ready(val info: UpdateInfo, val apk: File) : UpdateUi
+    data class Failed(val info: UpdateInfo, val message: String) : UpdateUi
+}
+
+@Composable
+private fun UpdateDialog(
+    state: UpdateUi,
+    onCancel: () -> Unit,
+    onStart: (UpdateInfo) -> Unit,
+    onInstall: (File) -> Unit,
+    onRetry: (UpdateInfo) -> Unit,
+) {
+    val info = when (state) {
+        is UpdateUi.Offer -> state.info
+        is UpdateUi.Downloading -> state.info
+        is UpdateUi.Ready -> state.info
+        is UpdateUi.Failed -> state.info
+    }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Доступно обновление") },
+        text = {
+            when (state) {
+                is UpdateUi.Offer -> Text(
+                    "Версия ${info.versionName} (сборка ${info.versionCode}).\n" +
+                        (info.notes.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: ""),
+                )
+                is UpdateUi.Downloading -> Column {
+                    Text("Скачивается версия ${info.versionName}… ${state.percent}%")
+                    LinearProgressIndicator(
+                        progress = { state.percent / 100f },
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    )
+                }
+                is UpdateUi.Ready -> Text("Обновление скачано. Нажмите «Установить» — откроется системный установщик.")
+                is UpdateUi.Failed -> Text("${state.message}\n\nПовторить скачивание?")
+            }
+        },
+        confirmButton = {
+            when (state) {
+                is UpdateUi.Offer -> TextButton({ onStart(info) }) { Text("Обновить") }
+                is UpdateUi.Downloading -> TextButton({}, enabled = false) { Text("Скачивание…") }
+                is UpdateUi.Ready -> TextButton({ onInstall(state.apk) }) { Text("Установить") }
+                is UpdateUi.Failed -> TextButton({ onRetry(info) }) { Text("Повторить") }
+            }
+        },
+        dismissButton = {
+            when (state) {
+                is UpdateUi.Downloading -> TextButton({}, enabled = false) { Text("Подождите") }
+                is UpdateUi.Ready -> TextButton({ onInstall(state.apk) }) { Text("Установить") }
+                else -> TextButton(onCancel) { Text("Позже") }
+            }
+        },
+    )
 }

@@ -9,6 +9,7 @@ import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.session.SessionStore
 import com.umbra.app.data.session.UiPreferences
+import com.umbra.app.data.update.AppUpdater
 import com.umbra.app.data.voice.VoicePlayer
 import com.umbra.app.data.voice.VoiceRecorder
 import com.umbra.app.data.ws.WebSocketClient

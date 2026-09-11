@@ -7,4 +7,6 @@
     <files-path name="umbra_media" path="media/" />
     <files-path name="umbra_attach" path="attach/" />
     <files-path name="umbra_voice" path="voice/" />
+    <!-- Скачанные обновления приложения: отдаются системному установщику. -->
+    <cache-path name="umbra_updates" path="updates/" />
 </paths>
