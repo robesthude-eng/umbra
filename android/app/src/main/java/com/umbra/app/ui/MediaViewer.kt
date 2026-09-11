@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import androidx.activity.ExperimentalActivityApi
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
@@ -99,7 +98,6 @@ private const val VIEWER_MAX_PX = 2048
  * и перемоткой. Раньше чат всегда отдавал файл стороннему приложению,
  * поэтому внешний просмотр оставлен запасным вариантом.
  */
-@OptIn(ExperimentalActivityApi::class)
 @Composable
 fun AttachmentViewerOverlay(
     repo: ChatRepository,
