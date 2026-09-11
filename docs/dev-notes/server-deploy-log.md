@@ -23,6 +23,20 @@
 `/opt/umbra/app/umbra-latest.apk` → перезаписать `latest.json` (versionCode,
 versionName, sha256, notes). Клиенты при следующем запуске предложат обновление.
 
+## 2026-09-11 — хотфикс latest.json: путь к APK без ведущего слэша ломал скачивание 0.16.6
+
+После выкладки 0.16.6 тест-телефон четыре раза проверил latest.json, но скачивание
+падало мгновенно без единого запроса к APK: в json был `"apk": "umbra-latest.apk"`
+(без `/`), а клиент строит URL как `base + apk` → `http://194.226.126.253:8081umbra-latest.apk`
+— недопустимый адрес, IllegalArgumentException до HTTP. В json для vc28 путь был
+корректный (`/app/umbra-latest.apk`), поэтому предыдущие обновления работали.
+
+| Параметр | Значение |
+|---|---|
+| Фикс | `"apk": "/app/umbra-latest.apk"` в `/opt/umbra/app/latest.json`; бэкап `/root/umbra-deploy-bak/latest.json.pre-apk-path-fix.20260911` |
+| Проверка | curl снаружи: json 200 с корректным путём; APK 206 на range-запрос |
+| На будущее | В клиенте (план 0.16.7): терпимый path-join в AppUpdater.download + DiagLog ошибок обновления; в latest.json всегда путь от корня со слэшем |
+
 ## 2026-09-11 — клиент 0.16.6 (vc29): починка синхронизации/отправки после рестарта сервера в TZ Europe/Moscow
 
 Инцидент «test-устройство принимает, но не отправляет»: 2026-09-10 ~09:36/20:44
