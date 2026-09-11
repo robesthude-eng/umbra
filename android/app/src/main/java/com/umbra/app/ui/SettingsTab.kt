@@ -1,5 +1,6 @@
 package com.umbra.app.ui
 
+import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -18,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.Role
@@ -27,6 +29,7 @@ import com.umbra.app.data.InputRules
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.di.AppContainer
 import com.umbra.app.data.session.ThemeMode
+import com.umbra.app.data.diag.DiagLog
 import com.umbra.app.data.session.UiPreferences
 import com.umbra.app.ui.theme.LocalUmbraChatColors
 import com.umbra.app.ui.theme.LocalUmbraMessageTextStyle
@@ -191,6 +194,32 @@ private fun AppearanceSettings(preferences: UiPreferences) {
     }
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         PreferenceSwitch("Уменьшить анимацию", "Спокойные переходы между экранами", appearance.reduceMotion, preferences::setReduceMotion, Modifier.padding(16.dp))
+    }
+    DiagnosticsCard()
+}
+
+@Composable
+private fun DiagnosticsCard() {
+    val context = LocalContext.current
+    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Диагностика", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Журнал технических событий: ошибки синхронизации и отправки (содержимое сообщений не записывается). Если что-то работает не так — отправьте журнал разработчику.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = {
+                runCatching {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TITLE, "Umbra — журнал диагностики")
+                        putExtra(Intent.EXTRA_TEXT, DiagLog.text())
+                    }
+                    context.startActivity(Intent.createChooser(send, "Отправить журнал"))
+                }
+            }) { Text("Отправить журнал") }
+        }
     }
 }
 

@@ -10,6 +10,7 @@ import com.umbra.app.data.InputRules
 import com.umbra.app.data.api.*
 import com.umbra.app.data.call.CallNotifications
 import com.umbra.app.data.db.AppDatabase
+import com.umbra.app.data.diag.DiagLog
 import com.umbra.app.data.db.ChatEntity
 import com.umbra.app.data.db.CryptoRecord
 import com.umbra.app.data.db.MessageEntity
@@ -28,6 +29,7 @@ import com.umbra.app.data.voice.VoiceRecording
 import com.umbra.app.data.voice.AudioWaveform
 import com.umbra.app.data.ws.WebSocketClient
 import kotlinx.coroutines.*
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -413,7 +415,7 @@ class ChatRepository(
                 if (!isCurrent(key) || event.token != key.token) return@collect
                 try {
                     when (event.type) {
-                        "connected" -> refresh(forceFull = true)
+                        "connected" -> refresh(forceFull = false) // инкрементально: полная не нужна при каждом переподключении
                         "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
                         "call" -> handleCallEvent(key, json.decodeFromJsonElement(CallDto.serializer(), event.data))
                         "call_signal" -> {
@@ -434,8 +436,15 @@ class ChatRepository(
                             fetchCalls()
                         }
                     }
-                } catch (e: CancellationException) { throw e }
-                catch (_: Exception) { if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Повторим при восстановлении связи." }
+                } catch (e: CancellationException) {
+                    // Реальная отмена цикла — прокидываем; «Session changed» из
+                    // commit/request при живом контексте проходит тихо.
+                    if (!coroutineContext.isActive) throw e
+                }
+                catch (e: Exception) {
+                    DiagLog.log("ws-event", e)
+                    if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Повторим при восстановлении связи."
+                }
             }
         }
         pollJob = scope.launch {
@@ -484,6 +493,7 @@ class ChatRepository(
             commit(key) { _syncProblem.value = null }
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
+            DiagLog.log("refresh", e)
             if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Проверьте подключение и повторите."
             throw e
         }
@@ -1203,7 +1213,30 @@ class ChatRepository(
         }
     }
 
-    internal suspend fun flushOutbox() = sendMutex.withLock {
+    // Счётчик неудачных попыток отправки по clientId: после MAX_ATTEMPTS попыток
+    // сообщение помечается ошибкой с настоящей причиной — очередь не стоит вечно,
+    // а пользователь видит, что именно сломалось, вместо вечных «часиков».
+    private val sendAttempts = HashMap<String, Int>()
+
+    /**
+     * Отправка очереди. Мьютекс берётся с таймаутом: если предыдущая попытка
+     * зависла (например, после обрыва сети в неудачный момент), новая не ждёт
+     * вечно, а фиксирует это в диагностике и возвращается — poll повторит.
+     */
+    internal suspend fun flushOutbox() {
+        val acquired = withTimeoutOrNull(30_000L) { sendMutex.lock() }
+        if (acquired == null) {
+            DiagLog.log("outbox", note = "мьютекс отправки занят дольше 30 с — предыдущая попытка зависла")
+            throw IOException("Отправка занята предыдущей попыткой, повторим.")
+        }
+        try {
+            flushOutboxLocked()
+        } finally {
+            sendMutex.unlock()
+        }
+    }
+
+    private suspend fun flushOutboxLocked() {
         val key = key()
         while (isCurrent(key)) {
             val pending = db.messageDao().pending(key.owner)
@@ -1221,17 +1254,26 @@ class ChatRepository(
                         if (ready.recipientId.isEmpty()) api.sendChatMessage(auth, ready.chatId, SendChatMessageRequest(ready.ciphertext, clientId))
                         else api.sendMessage(auth, SendMessageRequest(ready.recipientId, ready.ciphertext, clientId))
                     }
+                    sendAttempts.remove(clientId)
                     persist(key, sent.copy(clientMessageId = clientId))
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     val code = (e as? HttpException)?.code()
                     val retryable = e is IOException || code != null && (code >= 500 && code != 507 || code in listOf(408, 429))
+                    val attempts = (sendAttempts[clientId] ?: 0) + 1
+                    sendAttempts[clientId] = attempts
+                    // Реальная причина попадает в диагностику — ключ к удалённому разбору.
+                    DiagLog.log("outbox-item", e, note = "попытка $attempts, retryable=$retryable, kind=${m.localMediaKind ?: "text"}")
+                    val giveUp = retryable && attempts >= 5
                     val mediaUpload = m.ciphertext.isBlank() && m.localMediaPath != null
                     val voiceUpload = mediaUpload && m.localMediaKind == null
                     commit(key) { db.messageDao().get(m.id)?.let { current ->
                         if (current.deliveryState == "pending") db.messageDao().upsert(current.copy(
-                            deliveryState = if (retryable) "pending" else "failed",
-                            error = if (retryable) null else when {
+                            deliveryState = if (retryable && !giveUp) "pending" else "failed",
+                            error = when {
+                                giveUp -> "Не отправлено за $attempts попыток: ${e.javaClass.simpleName}" +
+                                    (e.message?.let { " ($it)" } ?: "") + ". Повторите отправку."
+                                retryable -> null
                                 code == 413 -> "Сервер не принял файл: он слишком большой или закончилась квота."
                                 code == 507 -> "На сервере нет места для файлов. Сообщите владельцу Umbra."
                                 voiceUpload -> "Голосовое сообщение не отправлено. Повторите отправку."
@@ -1240,13 +1282,16 @@ class ChatRepository(
                             },
                         ))
                     } }
+                    if (giveUp) sendAttempts.remove(clientId)
                     if (!retryable && MessageCodec.decode(m.ciphertext)?.kind?.let {
                             it in MessageContent.CONTROL_KINDS
                         } == true
                     ) {
                         _syncProblem.value = "Изменение сообщения не отправлено. Повторите действие."
                     }
-                    if (retryable) throw e // Preserve ordering and retry later instead of hammering an offline server.
+                    // Порядок сохраняем, только пока есть смысл повторять: после
+                    // giveUp сообщение помечено failed и больше не блокирует очередь.
+                    if (retryable && !giveUp) throw e
                 }
             }
         }

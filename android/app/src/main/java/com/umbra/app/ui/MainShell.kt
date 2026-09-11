@@ -147,7 +147,7 @@ internal fun SyncBanner(repo: ChatRepository) {
     Surface(color = if (error != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainer) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                error ?: if (syncing) "Обновление сообщений…" else "Подключение…",
+                error ?: if (syncing) "Обновление сообщений…" else "Медленный режим: обмен каждые 5 секунд (прямое соединение прервано)",
                 Modifier.weight(1f).padding(vertical = 10.dp),
                 color = if (error != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,

@@ -6,6 +6,7 @@ import com.umbra.app.data.api.UmbraApi
 import com.umbra.app.data.api.createUmbraApi
 import com.umbra.app.data.call.CallEngine
 import com.umbra.app.data.db.AppDatabase
+import com.umbra.app.data.diag.DiagLog
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.session.SessionStore
 import com.umbra.app.data.session.UiPreferences
@@ -17,6 +18,11 @@ import com.umbra.app.data.ws.WebSocketClient
 /** Простой граф зависимостей (service locator). */
 class AppContainer(context: Context) {
     private val baseUrl = BuildConfig.SERVER_URL
+
+    init {
+        // Журнал диагностики: ошибки синхронизации и отправки без содержимого сообщений.
+        DiagLog.init(context)
+    }
     val database: AppDatabase = AppDatabase.build(context)
     val session = SessionStore(context)
     val uiPreferences = UiPreferences(context)

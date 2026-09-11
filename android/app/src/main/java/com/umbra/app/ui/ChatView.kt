@@ -658,7 +658,7 @@ private fun ChatTopBar(
     val status = when {
         syncError != null -> "Нет связи с сервером"
         syncing -> "Обновление…"
-        !connected -> "Подключение…"
+        !connected -> "Медленный режим"
         isGroup -> "Группа"
         else -> "Личный чат"
     }
