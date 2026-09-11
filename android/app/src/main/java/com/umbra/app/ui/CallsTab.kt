@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 @Composable
 internal fun CallsTab(container: AppContainer) {
     val repo = container.chatRepository
+    val alien = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current.enabled
     val calls by repo.calls.collectAsState()
     val active by repo.activeCall.collectAsState()
     var loading by remember { mutableStateOf(false) }
@@ -76,7 +77,10 @@ internal fun CallsTab(container: AppContainer) {
         } else LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(start = 10.dp, end = 10.dp, bottom = 24.dp)) {
             sections.forEach { (day, entries) ->
                 item(key = "day:$day") {
-                    Text(dayLabel(entries.first().createdAtMillis), Modifier.padding(start = 10.dp, top = 18.dp, bottom = 8.dp),
+                    if (alien) AlienDivider(
+                        dayLabel(entries.first().createdAtMillis),
+                        Modifier.padding(start = 10.dp, end = 10.dp, top = 18.dp, bottom = 8.dp),
+                    ) else Text(dayLabel(entries.first().createdAtMillis), Modifier.padding(start = 10.dp, top = 18.dp, bottom = 8.dp),
                         style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 items(entries, key = { "call:${it.id}" }) { call ->
@@ -93,9 +97,12 @@ internal fun CallsTab(container: AppContainer) {
 
 @Composable
 private fun CallHistoryRow(repo: ChatRepository, call: CallUi, enabled: Boolean, onCall: () -> Unit) {
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     val missed = call.status == "missed" && call.incoming
     val detailColor = if (missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    // Пропущенный вызов в alien-режиме подсвечиваем контуром: цвет ошибки на тёмном фоне заметен слабо.
     Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+        .then(if (missed) Modifier.holoEdge(cornerRadius = 12.dp, width = 1.dp) else Modifier)
         .clickable(enabled = enabled, onClickLabel = if (call.video) "Повторить видеозвонок" else "Перезвонить", onClick = onCall)
         .padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -114,7 +121,11 @@ private fun CallHistoryRow(repo: ChatRepository, call: CallUi, enabled: Boolean,
                 )
             }
         }
-        Icon(if (call.video) Icons.Filled.Videocam else Icons.Filled.Call, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+        Icon(
+            if (call.video) Icons.Filled.Videocam else Icons.Filled.Call, null,
+            Modifier.size(22.dp).alienGlow(strength = 0.8f),
+            tint = if (tokens.enabled) tokens.primary else MaterialTheme.colorScheme.primary,
+        )
     }
 }
 

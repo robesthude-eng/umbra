@@ -5,12 +5,6 @@ import android.media.MediaPlayer
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.PredictiveBackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
@@ -211,7 +205,7 @@ fun AttachmentViewerOverlay(
         color = Color.Black.copy(alpha = 0.94f),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().alienTopEdge().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton({ closeViewer() }) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
                 Text(
                     attachment.name,

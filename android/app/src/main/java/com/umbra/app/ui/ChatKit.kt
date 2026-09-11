@@ -272,6 +272,7 @@ internal fun NoticeBar(text: String, color: Color, modifier: Modifier = Modifier
         modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(color.copy(alpha = 0.14f))
+            .holoEdge(cornerRadius = 16.dp, width = 1.dp)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),

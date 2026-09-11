@@ -23,6 +23,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
@@ -201,6 +203,9 @@ private fun ChatsTab(
     var filter by rememberSaveable { mutableStateOf(if (initiallyGroups) "groups" else "all") }
     var showNew by rememberSaveable { mutableStateOf(false) }
     var showCreate by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    // Ошибка быстрого действия свайпом показывается плашкой над списком, а не исчезает в тишине.
+    var rowProblem by remember { mutableStateOf<String?>(null) }
     val visible = remember(conversations, query, filter) {
         val needle = query.trim()
         conversations.filter { c ->
@@ -237,6 +242,11 @@ private fun ChatsTab(
                 }
                 IconButton({ showCreate = true }) { Icon(Icons.Filled.GroupAdd, "Создать группу", tint = MaterialTheme.colorScheme.primary) }
             }
+            rowProblem?.let { problem ->
+                NoticeBar(problem, MaterialTheme.colorScheme.error) {
+                    TextButton({ rowProblem = null }) { Text("Понятно") }
+                }
+            }
             if (visible.isEmpty()) {
                 AppEmptyState(
                     icon = if (query.isNotBlank()) Icons.Filled.Search else if (filter == "groups") Icons.Filled.Groups else Icons.Filled.Chat,
@@ -259,7 +269,26 @@ private fun ChatsTab(
                 contentPadding = PaddingValues(start = 10.dp, end = 10.dp, bottom = 108.dp),
             ) {
                 items(visible, key = { it.chatId }) { c ->
-                    ConversationRow(repo, c, selected = c.chatId == selectedChatId) { onOpenChat(c.chatId) }
+                    ConversationRow(
+                        repo = repo,
+                        c = c,
+                        selected = c.chatId == selectedChatId,
+                        onMarkRead = if (c.unreadCount > 0) ({ repo.markChatRead(c.chatId) }) else null,
+                        onCall = if (!c.isGroup) ({
+                            scope.launch {
+                                rowProblem = null
+                                try {
+                                    repo.startCall(c.chatId, false)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    rowProblem = e.userMessage()
+                                }
+                            }
+                            Unit
+                        }) else null,
+                        onClick = { onOpenChat(c.chatId) },
+                    )
                 }
             }
         }
@@ -284,12 +313,42 @@ private fun ChatsTab(
     }
 }
 
+/**
+ * Строка списка чатов со свайп-действиями: вправо — «Прочитано», влево — звонок.
+ *
+ * Действия передаются снаружи и могут быть `null`: непрочитанных нет — свайп вправо
+ * не тянется, групповой чат — свайп влево недоступен.
+ */
 @Composable
-private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boolean, onClick: () -> Unit) {
+private fun ConversationRow(
+    repo: ChatRepository,
+    c: Conversation,
+    selected: Boolean,
+    onMarkRead: (() -> Unit)? = null,
+    onCall: (() -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     val visual = LocalUmbraVisuals.current
     val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     val interaction = rememberFutureInteraction()
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+    val haptics = LocalHapticFeedback.current
+    val readTint = if (tokens.enabled) tokens.primary else MaterialTheme.colorScheme.primary
+    val callTint = if (tokens.enabled) tokens.secondary else MaterialTheme.colorScheme.tertiary
+    SwipeActionRow(
+        right = onMarkRead?.let { action ->
+            SwipeAction(Icons.Filled.DoneAll, "Прочитано", readTint) {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                action()
+            }
+        },
+        left = onCall?.let { action ->
+            SwipeAction(Icons.Filled.Call, "Позвонить", callTint) {
+                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                action()
+            }
+        },
+    ) { swipe ->
+    Row(swipe.fillMaxWidth().clip(RoundedCornerShape(20.dp))
         .background(
             if (selected && tokens.enabled) androidx.compose.ui.graphics.Brush.horizontalGradient(
                 listOf(tokens.primary.copy(alpha = 0.20f), tokens.secondary.copy(alpha = 0.10f), Color.Transparent),
@@ -315,6 +374,7 @@ private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boo
             if (tokens.enabled) Badge(containerColor = tokens.secondary, contentColor = Color(0xFF0B0216)) { Text(badgeText) }
             else Badge { Text(badgeText) }
         }
+    }
     }
 }
 

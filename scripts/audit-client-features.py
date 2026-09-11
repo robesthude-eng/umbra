@@ -128,7 +128,7 @@ check('REST sync stages', 'SyncStepException' in repo and 'список чато
 check('Precise sync errors', 'HTTP 401' in repo and 'ошибка DNS' in repo and 'TLS' in repo)
 check('Last successful sync', 'lastSuccessfulSyncAtMillis' in repo and 'Последняя успешная синхронизация' in settings)
 check('Settings realtime status', 'realtimeDiagnostics' in settings and 'Онлайн-канал' in settings)
-check('Merged release version', 'versionCode = 33' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.10"' in text(Path('android/app/build.gradle.kts')))
+check('Merged release version', 'versionCode = 34' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.11"' in text(Path('android/app/build.gradle.kts')))
 
 
 # 0.16.8 Network Recovery
@@ -141,7 +141,7 @@ check('Built-in network check', 'runNetworkCheck' in repo and 'Проверит�
 check('Network mode model', 'enum class NetworkMode' in repo and 'медленный REST' in settings and 'только локально' in settings)
 check('Safe network report', 'NetworkCheckReport' in repo and 'asText()' in repo and 'Отправить отчёт' in settings)
 check('Clear diagnostics', 'fun clear()' in diag and 'Очистить журнал' in settings)
-check('Network recovery version', 'versionCode = 33' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.10"' in text(Path('android/app/build.gradle.kts')))
+check('Network recovery version', 'versionCode = 34' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.11"' in text(Path('android/app/build.gradle.kts')))
 
 
 # 0.16.9 Alien Interface
@@ -160,7 +160,7 @@ check('Alien live preview', 'QuantumBackdrop' in settings and 'AlienSignalMeter'
 check('Alien chat palette', 'Color(0xFF4B38FF)' in theme and 'Color(0xFFE957FF)' in theme)
 check('Reduced alien motion', 'selected && !reduced' in visuals)
 check('Appearance repository wiring', 'AppearanceSettings(container.uiPreferences, repo)' in settings and 'preferences: UiPreferences, repo: ChatRepository' in settings)
-check('Alien release version', 'versionCode = 33' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.10"' in text(Path('android/app/build.gradle.kts')))
+check('Alien release version', 'versionCode = 34' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.11"' in text(Path('android/app/build.gradle.kts')))
 
 # 0.16.10 Alien Interface II
 alien=text(Path('android/app/src/main/java/com/umbra/app/ui/AlienVisuals.kt'))
@@ -182,6 +182,33 @@ check('Alien shared components', 'alienOrbitRing' in components and 'holoEdge' i
 check('Alien command center', 'AlienHudLabel' in command and 'AlienDivider' in command and 'holoEdge' in command)
 check('Alien intensity settings', 'Спокойный' in settings and 'Полный' in settings and 'CompositionLocalProvider' in settings)
 check('Alien docs updated', 'CALM' in text(Path('ALIEN_INTERFACE.md')) and '0.16.10' in text(Path('CHANGES.md')))
+calls_tab=text(Path('android/app/src/main/java/com/umbra/app/ui/CallsTab.kt'))
+auth=text(Path('android/app/src/main/java/com/umbra/app/ui/AuthFlow.kt'))
+alien_doc=text(Path('ALIEN_INTERFACE.md'))
+check('Alien call screen', 'AlienSignalMeter' in call and 'AlienHudLabel' in call and 'AlienDivider' in call and 'holoEdge' in call and 'alienGlow' in call)
+check('Alien call history', 'AlienDivider' in calls_tab and 'holoEdge' in calls_tab and 'alienGlow' in calls_tab)
+check('Alien auth screen', 'alienOrbitRing' in auth and 'AlienHudLabel' in auth and 'holoEdge' in auth)
+check('Alien media viewer', 'alienTopEdge' in viewer)
+check('Alien notice bar', 'holoEdge(cornerRadius = 16.dp' in chat_kit)
+check('Alien docs cover new surfaces', 'История звонков' in alien_doc and 'Просмотр вложений' in alien_doc)
+
+# 0.16.11 Interface polish
+media_kit=text(Path('android/app/src/main/java/com/umbra/app/ui/MediaKit.kt'))
+swipe=text(Path('android/app/src/main/java/com/umbra/app/ui/SwipeActions.kt'))
+ui_doc=text(Path('UI_REDESIGN.md'))
+check('Media toolkit', 'fun AttachmentPhoto' in media_kit and 'fun MediaBadge' in media_kit and 'fun mediaScrim' in media_kit)
+check('Soft media loading', 'mediaSkeleton' in media_kit and 'media-appear' in media_kit and 'blur(24.dp)' in media_kit)
+check('Whole frame media', 'ContentScale.Fit' in media_kit and 'MEDIA_MIN_RATIO' in media_kit and 'letterbox' in media_kit)
+check('Media retry state', 'Превью не загрузилось' in media_kit and 'Повторить' in media_kit)
+check('Message swipe actions', 'fun SwipeMessageActions' in swipe and 'detectHorizontalDragGestures' in swipe and 'HapticFeedbackType.LongPress' in swipe)
+check('Swipe accessibility', 'CustomAccessibilityAction' in swipe and 'customActions' in swipe)
+check('Swipe respects reduced motion', 'if (reduced || from == 0f)' in swipe)
+check('Chat swipe wiring', 'SwipeMessageActions(' in chat and 'AttachmentPhoto(' in chat and 'MediaBadge(' in chat)
+check('Double tap reaction', 'onDoubleClick' in chat and 'onReact("❤️")' in chat)
+check('Chat list swipes', 'fun SwipeActionRow' in swipe and 'SwipeActionRow(' in main_shell and 'markChatRead' in main_shell and 'Прочитано' in main_shell and 'Позвонить' in main_shell)
+check('Swipe errors visible', 'rowProblem' in main_shell and 'NoticeBar(problem' in main_shell)
+check('Scroll pill glow', 'alienGlow(strength = 1.1f)' in chat)
+check('Interface docs updated', '0.16.11' in text(Path('CHANGES.md')) and 'свайп' in ui_doc.lower())
 
 failed=[name for name,ok,_ in checks if not ok]
 for name,ok,detail in checks:

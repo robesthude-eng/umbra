@@ -7,7 +7,6 @@ package com.umbra.app.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,7 +32,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -83,10 +81,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -283,7 +279,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris -> sendPicked(uris) }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> sendPicked(listOfNotNull(uri)) }
-    // Запись видеосообщения прямо из чата: камера пиш��т в приватный каталог,
+    // Запись видеосообщения прямо из чата: кам��ра пиш��т в приватный каталог,
     // оттуда запись уходит обычным вложением, а временный файл удаляется.
     var captureTarget by remember { mutableStateOf<File?>(null) }
     fun sendCaptured(file: File) {
@@ -333,7 +329,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) beginVideoCapture()
         else cameraPermission.launch(Manifest.permission.CAMERA)
     }
-    // Сохранение через системный выбор папки: разрешения на галерею не нужны.
+    // Сохранение чере�� системный выбор папки: разрешения на галерею не нужны.
     var pendingSave by remember { mutableStateOf<UiAttachment?>(null) }
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
         val attachment = pendingSave
@@ -1091,13 +1087,22 @@ private fun MessageRow(
         ),
         label = "message-landing",
     )
-    Row(
-        modifier.graphicsLayer {
+    // Свайп по сообщению: вправо — ответить, влево — переслать.
+    SwipeMessageActions(
+        modifier = modifier.graphicsLayer {
             alpha = landing
             scaleX = 0.96f + 0.04f * landing
             scaleY = 0.96f + 0.04f * landing
             translationY = (1f - landing) * 12.dp.toPx()
         }.fillMaxWidth().padding(top = if (item.first) 10.dp else 2.dp),
+        canReply = !message.deleted,
+        canForward = !message.deleted && !message.pending,
+        accent = palette.accent,
+        onReply = onReply,
+        onForward = onForward,
+    ) { swipe ->
+    Row(
+        swipe.fillMaxWidth(),
         horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
@@ -1122,6 +1127,11 @@ private fun MessageRow(
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             menu = true
                         },
+                        // Двойной тап ставит ❤️ — привычный жест из других мессенджеров.
+                        onDoubleClick = if (!message.deleted && !message.pending && !message.failed) ({
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onReact("❤️")
+                        }) else null,
                         onClick = { if (attachment != null) onOpen(attachment, attachmentBounds) },
                     ),
             ) {
@@ -1157,31 +1167,26 @@ private fun MessageRow(
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 2.dp))
                     }
                     attachment != null && preview -> Column {
-                        Box {
-                            MediaPreview(repo, attachment, palette)
+                        AttachmentPhoto(repo, attachment, palette) {
+                            if (attachment.isVideo && attachment.durationMs > 0) MediaBadge(
+                                voiceDurationText(attachment.durationMs),
+                                Modifier.align(Alignment.TopStart).padding(8.dp),
+                                icon = Icons.Filled.Videocam,
+                            )
                             Row(
-                            Modifier.align(Alignment.BottomEnd).padding(8.dp)
-                                .clip(CircleShape).background(Color.Black.copy(alpha = 0.42f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (attachment.isVideo && attachment.durationMs > 0) {
+                                Modifier.align(Alignment.BottomEnd)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 Text(
-                                    voiceDurationText(attachment.durationMs),
+                                    clockText(message.createdAtMillis),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.White,
                                 )
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            Text(
-                                clockText(message.createdAtMillis),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White,
-                            )
-                            if (outgoing) {
-                                Spacer(Modifier.width(4.dp))
-                                MessageStatus(message.pending, message.failed, Color.White)
-                            }
+                                if (outgoing) {
+                                    Spacer(Modifier.width(4.dp))
+                                    MessageStatus(message.pending, message.failed, Color.White)
+                                }
                             }
                         }
                         if (attachment.caption.isNotBlank()) Text(
@@ -1329,6 +1334,7 @@ private fun MessageRow(
             }
         }
     }
+    }
 }
 
 @Composable
@@ -1343,55 +1349,6 @@ private fun MetaRow(message: UiMessage, tint: Color, modifier: Modifier = Modifi
                 if (message.failed) MaterialTheme.colorScheme.error else tint,
             )
         }
-    }
-}
-
-/**
- * Фото и видео занимают весь пузырь: кнопки «Открыть / Поделиться / Сохранить»
- * убраны в долгое нажатие, как в современных мессенджерах.
- */
-@Composable
-private fun MediaPreview(repo: ChatRepository, attachment: UiAttachment, palette: UmbraChatColors) {
-    var attempt by remember(attachment.mediaId, attachment.localPath) { mutableIntStateOf(0) }
-    var thumbFailed by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
-    val thumb by produceState<Bitmap?>(null, attachment.mediaId, attachment.localPath, attempt) {
-        value = null
-        thumbFailed = false
-        val loaded = runCatching { repo.attachmentThumbnail(attachment) }.getOrNull()
-        thumbFailed = loaded == null
-        value = loaded
-    }
-    // Собственные пропорции кадра, но без крайностей панорам и скриншотов.
-    val ratio = if (attachment.width > 0 && attachment.height > 0)
-        (attachment.width.toFloat() / attachment.height.toFloat()).coerceIn(0.62f, 1.7f) else 1.35f
-    Box(
-        Modifier.width(268.dp).aspectRatio(ratio).background(palette.field),
-        contentAlignment = Alignment.Center,
-    ) {
-        val bitmap = thumb
-        when {
-            bitmap != null -> Image(
-                bitmap.asImageBitmap(),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
-            // Ошибка и кнопка повтора вместо бесконечного кружка.
-            thumbFailed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    "Превью не загрузилось",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = palette.incomingMeta,
-                    textAlign = TextAlign.Center,
-                )
-                TextButton({ attempt++ }) { Text("Повторить") }
-            }
-            else -> CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp, color = palette.accent)
-        }
-        if (attachment.isVideo && bitmap != null) Box(
-            Modifier.size(52.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.42f)),
-            contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Filled.PlayArrow, "Воспроизвести", Modifier.size(30.dp), tint = Color.White) }
     }
 }
 
@@ -1618,8 +1575,9 @@ private fun ScrollToBottomPill(
         exit = if (reducedMotion) ExitTransition.None else fadeOut() + scaleOut(),
     ) {
         Box(
-            Modifier.size(44.dp).shadow(10.dp, CircleShape).clip(CircleShape)
+            Modifier.size(46.dp).shadow(12.dp, CircleShape).clip(CircleShape)
                 .background(palette.bar)
+                .alienGlow(strength = 1.1f)
                 .clickable(onClick = onScrollToEnd),
             contentAlignment = Alignment.Center,
         ) {

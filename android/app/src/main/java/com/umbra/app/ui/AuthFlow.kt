@@ -34,6 +34,7 @@ private enum class AuthStep { PHONE, CODE, PROFILE }
 @Composable
 fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
     val repo = container.chatRepository
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     val phase by repo.phase.collectAsState()
     var step by rememberSaveable { mutableStateOf(AuthStep.PHONE.name) }
     var phone by rememberSaveable { mutableStateOf(repo.accountInfo().phone) }
@@ -85,18 +86,31 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
     }
 
     Column(
-        Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer)))
+        Modifier.fillMaxSize().background(
+            if (tokens.enabled) Brush.verticalGradient(
+                listOf(
+                    MaterialTheme.colorScheme.background,
+                    tokens.primary.copy(alpha = 0.20f),
+                    tokens.secondary.copy(alpha = 0.26f),
+                ),
+            ) else Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer)),
+        )
             .safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(22.dp)), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.size(64.dp).alienOrbitRing(strength = 1.1f).alienGlow(strength = 1.2f)
+                .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(22.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
             Text("U", color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.headlineLarge)
         }
         Spacer(Modifier.height(12.dp))
         Text("Umbra", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onBackground)
         Text("Мессенджер для семьи", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (tokens.enabled) AlienHudLabel("защищённый вход · канал не установлен")
         Spacer(Modifier.height(24.dp))
-        Surface(Modifier.widthIn(max = 480.dp).fillMaxWidth(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f)) {
+        Surface(Modifier.widthIn(max = 480.dp).fillMaxWidth().holoEdge(cornerRadius = 24.dp), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 when (currentStep) {
                     AuthStep.PHONE -> {

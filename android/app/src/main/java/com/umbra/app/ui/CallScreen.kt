@@ -70,7 +70,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -104,6 +103,7 @@ fun CallScreen(
     val media by engine.media.collectAsState()
     val users by repo.userCache.collectAsState()
     val name = users[call.peerUserId]?.fullName() ?: call.peerName
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember(call.callId) { mutableStateOf(false) }
@@ -222,6 +222,28 @@ fun CallScreen(
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
                     )
+                    // В alien-режиме состояние соединения читается ещё и шкалой: её видно без чтения текста.
+                    if (tokens.enabled) Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AlienSignalMeter(
+                            level = when {
+                                state?.reconnecting == true -> 2
+                                state?.connected == true -> 4
+                                ringing || call.ringing -> 3
+                                else -> 1
+                            },
+                        )
+                        AlienHudLabel(
+                            when {
+                                state?.reconnecting == true -> "восстановление канала"
+                                state?.connected == true -> "канал шифрован · стабилен"
+                                ringing -> "входящий сигнал"
+                                else -> "поиск канала"
+                            },
+                        )
+                    }
                     state?.problem?.let { Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
                     error?.let { problem ->
                         Text(problem, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
@@ -231,7 +253,7 @@ fun CallScreen(
                 }
             }
             val stage: @Composable (Modifier) -> Unit = { modifier ->
-                Box(modifier.clip(RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
+                Box(modifier.clip(RoundedCornerShape(28.dp)).holoEdge(cornerRadius = 28.dp), contentAlignment = Alignment.Center) {
                     when {
                         group && peers.isNotEmpty() -> PeerGrid(
                             repo = repo, engine = engine, peers = peers,
@@ -249,7 +271,8 @@ fun CallScreen(
                     if (state?.cameraOn == true) {
                         Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)
                             .size(if (landscape) 80.dp else 96.dp, if (landscape) 100.dp else 132.dp)
-                            .clip(RoundedCornerShape(20.dp))) {
+                            .clip(RoundedCornerShape(20.dp))
+                            .holoEdge(cornerRadius = 20.dp, width = 1.dp)) {
                             VideoSurface(engine, peerId = null, mirror = true, modifier = Modifier.fillMaxSize())
                             if (!pictureInPicture) FilledTonalIconButton(
                                 onClick = { engine.switchCamera() }, enabled = !busy,
@@ -314,10 +337,17 @@ fun MinimizedCallBar(container: AppContainer, call: ActiveCall, onRestore: () ->
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(if (call.video) Icons.Filled.Videocam else Icons.Filled.PhoneInTalk, null)
+            val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
+            if (tokens.enabled) AlienSignalMeter(level = if (media?.connected == true) 4 else 2)
+            Icon(
+                if (call.video) Icons.Filled.Videocam else Icons.Filled.PhoneInTalk, null,
+                tint = if (tokens.enabled) tokens.primary else androidx.compose.material3.LocalContentColor.current,
+            )
             Column(Modifier.weight(1f)) {
                 Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
+                if (tokens.enabled) AlienHudLabel(
+                    if (media?.connected == true) "канал активен · вернуться" else "синхронизация канала…",
+                ) else Text(
                     if (media?.connected == true) "Нажмите, чтобы вернуться" else "Соединение…",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -360,9 +390,10 @@ private fun CallControls(
         contentColor = MaterialTheme.colorScheme.onError,
     )
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        AlienDivider(if (incomingRinging) "входящий канал" else "управление каналом")
         if (incomingRinging) {
             // Independent rows keep both actions visible with a large system font.
-            Button(onClick = onAccept, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            Button(onClick = onAccept, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).alienGlow(strength = 1.3f),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary),
                 shape = RoundedCornerShape(22.dp)) {
                 Icon(Icons.Filled.Call, null)
@@ -417,7 +448,7 @@ private fun CallToggle(
 ) {
     FilledTonalButton(
         onClick = onClick, enabled = enabled,
-        modifier = modifier.heightIn(min = 88.dp).semantics { stateDescription = stateLabel },
+        modifier = modifier.heightIn(min = 88.dp).holoEdge(cornerRadius = 22.dp, width = 1.dp).semantics { stateDescription = stateLabel },
         shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 12.dp),
         colors = ButtonDefaults.filledTonalButtonColors(
             containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
