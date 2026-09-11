@@ -17,11 +17,25 @@
 | nginx | `location = /app/latest.json` (json, no-cache) и `location /app/` (apk) добавлены во все три server-блока (80, 8081, 8443) |
 | Бэкап vhost | `/root/umbra-deploy-bak/umbra.vhost.pre-app-update.<TS>` |
 | Проверка | `latest.json` = 200 на 80/8081/8443 и снаружи по IP; APK = 200, `Content-Type: application/vnd.android.package-archive`, Content-Length совпадает |
-| Текущая версия | versionCode 35 (0.16.12 — см. секцию выше), sha256 `38148b7de9975a1fb515a98e1d498a5f95344841b8d54a192265f8bc0e81017e`; раздача обновлена 2026-09-11 23:32 MSK |
+| Текущая версия | versionCode 36 (0.16.13 — см. секцию выше), sha256 `eebcf7dffa482f6aa309ba9c80ef9d415018380d80a0b4bfe6fce7e69c98c33c`; раздача обновлена 2026-09-12 00:11 MSK |
 
 Порядок обновления при новых релизах: собрать APK в CI → скопировать в
 `/opt/umbra/app/umbra-latest.apk` → перезаписать `latest.json` (versionCode,
 versionName, sha256, notes). Клиенты при следующем запуске предложат обновление.
+
+## 2026-09-11 — клиент 0.16.13 (vc36): надёжное самообновление
+
+Инцидент: публикация vc35 не предлагалась телефону — проверка обновления
+выполнялась один раз за холодный старт процесса, а Android держит процесс
+неделями; «переоткрытие» без принудительной остановки проверку не запускало
+(в логах — ноль запросов /app/latest.json от живого процесса).
+
+| Параметр | Значение |
+|---|---|
+| Механика | Activity.onStart → AppUpdater.onAppStart: холодный старт и каждый возврат из фона; автокоoldown 15 мин; результат в AppUpdater.updateState; диалог из UmbraRoot; кнопка «Проверить обновление» (Настройки); ошибки в DiagLog (тег update-check) |
+| Коммиты | `adb9364` (патч), `d38ca0c` (возврат потерянных импортов), `fce3e4c` (UpdateCard: вызов из SettingsTab + определение) — CI зелёный на `fce3e4c` |
+| APK | sha256 `eebcf7dffa482f6aa309ba9c80ef9d415018380d80a0b4bfe6fce7e69c98c33c`, 61 402 005 Б, versionCode 36 |
+| Текущая версия | versionCode 36 (0.16.13), раздача обновлена 2026-09-12 00:11 MSK |
 
 ## 2026-09-11 — клиент 0.16.12 (vc35): мерж двух параллельных веток 0.16.11
 
