@@ -18,10 +18,14 @@ import com.umbra.app.data.msg.ATTACHMENT_KINDS
 import com.umbra.app.data.msg.MediaContent
 import com.umbra.app.data.msg.MessageCodec
 import com.umbra.app.data.msg.MessageContent
+import com.umbra.app.data.msg.ReplyContent
+import com.umbra.app.data.msg.attachment
+import com.umbra.app.data.msg.voice
 import com.umbra.app.data.push.PushService
 import com.umbra.app.data.session.SessionStore
 import com.umbra.app.data.voice.VoiceRecorder
 import com.umbra.app.data.voice.VoiceRecording
+import com.umbra.app.data.voice.AudioWaveform
 import com.umbra.app.data.ws.WebSocketClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -54,6 +58,7 @@ data class Conversation(
     val title: String,
     val subtitle: String,
     val lastAtMillis: Long,
+    val unreadCount: Int = 0,
 )
 
 /** Сообщение для UI. */
@@ -71,6 +76,12 @@ data class UiMessage(
     val voice: VoiceMessage? = null,
     /** Заполнено у сообщений с фото, видео или файлом. */
     val attachment: UiAttachment? = null,
+    val replyText: String? = null,
+    val forwardedFrom: String? = null,
+    val content: MessageContent? = null,
+    val edited: Boolean = false,
+    val reactions: Map<String, Int> = emptyMap(),
+    val deleted: Boolean = false,
 )
 
 /**
@@ -100,6 +111,7 @@ data class UiAttachment(
     val durationMs: Long = 0,
     val width: Int = 0,
     val height: Int = 0,
+    val caption: String = "",
 ) {
     val isImage: Boolean get() = kind == MessageContent.KIND_IMAGE
     val isVideo: Boolean get() = kind == MessageContent.KIND_VIDEO
@@ -144,6 +156,8 @@ data class ActiveCall(
 }
 
 /** Cloud messenger repository. Message envelopes are not end-to-end encrypted. */
+private const val EDIT_WINDOW_MS = 15 * 60_000L
+
 class ChatRepository(
     private val context: Context,
     private val api: UmbraApi,
@@ -165,6 +179,10 @@ class ChatRepository(
     private val avatarCache = object : LruCache<String, ByteArray>(20 * 1024 * 1024) {
         override fun sizeOf(key: String, value: ByteArray) = value.size
     }
+    private val waveformCache = LruCache<String, List<Float>>(64)
+    private val waveformMutex = Mutex()
+    private val readPrefs = context.getSharedPreferences("umbra_read_state", Context.MODE_PRIVATE)
+    private val _readState = MutableStateFlow<Map<String, Long>>(emptyMap())
 
     private data class SessionKey(val owner: String, val token: String) {
         val auth get() = "Bearer $token"
@@ -801,42 +819,137 @@ class ChatRepository(
         return result
     }
 
-    fun conversations(): Flow<List<Conversation>> = combine(db.chatDao().all(), db.messageDao().all(me().orEmpty()), _userCache) { chats, msgs, users ->
-        val last = msgs.groupBy { it.chatId }.mapValues { (_, list) -> list.maxBy { it.createdAtMillis } }
+    fun conversations(): Flow<List<Conversation>> = combine(
+        db.chatDao().all(), db.messageDao().all(me().orEmpty()), _userCache, _readState,
+    ) { chats, allRows, users, _ ->
+        val decoded = allRows.associate { row ->
+            val payload = row.ciphertext.ifBlank { row.localBody.orEmpty() }
+            row.id to MessageCodec.decode(payload)
+        }
+        val rowById = allRows.associateBy { it.id }
+        val controls = allRows.mapNotNull { row ->
+            if (row.deliveryState == "failed") null else decoded[row.id]?.let { row to it }
+        }
+        val deleted = controls.filter { (row, content) ->
+            content.kind == MessageContent.KIND_DELETE &&
+                content.targetId?.let { target ->
+                    rowById[target]?.let { it.senderId == row.senderId && it.chatId == row.chatId }
+                } == true
+        }.mapNotNull { it.second.targetId }.toSet()
+        val edits = controls.filter { (row, content) ->
+            content.kind == MessageContent.KIND_EDIT &&
+                content.targetId?.let { target -> rowById[target]?.let {
+                    val age = row.createdAtMillis - it.createdAtMillis
+                    it.senderId == row.senderId && it.chatId == row.chatId &&
+                        (row.deliveryState == "pending" || age in 0..EDIT_WINDOW_MS)
+                } } == true
+        }.associate { it.second.targetId!! to it.second.text }
+        val rows = allRows.filter { row ->
+            decoded[row.id]?.kind?.let { it !in MessageContent.CONTROL_KINDS } ?: true
+        }
+        val last = rows.groupBy { it.chatId }.mapValues { (_, list) -> list.maxBy { it.createdAtMillis } }
+        val owner = me()
+        val unreadByChat = rows.asSequence().filter {
+            it.senderId != owner && it.id !in deleted &&
+                it.createdAtMillis > readPrefs.getLong("$owner:${it.chatId}", 0L)
+        }.groupingBy { it.chatId }.eachCount()
         chats.map { chat ->
             val message = last[chat.id]
             val group = chat.type != "dm"
             val title = if (group) chat.title else users[chat.id]?.fullName() ?: chat.title
-            val subtitle = if (chat.type == "unavailable") "Нет доступа к группе" else message?.let { MessageCodec.plainText(it.ciphertext) } ?: "Пока нет сообщений"
-            Conversation(chat.id, group, title, subtitle, message?.createdAtMillis ?: 0L)
+            val subtitle = if (chat.type == "unavailable") "Нет доступа к группе"
+                else message?.let {
+                    when {
+                        it.id in deleted -> "Сообщение удалено"
+                        edits[it.id] != null -> edits.getValue(it.id)
+                        it.localMediaPath != null && it.localMediaMime?.startsWith("audio/") == true ->
+                            MessageCodec.voiceLabel(it.localMediaDurationMs)
+                        it.localMediaKind == MessageContent.KIND_IMAGE ->
+                            decoded[it.id]?.text?.takeIf(String::isNotBlank)?.let { caption -> "Фото · $caption" } ?: "Фото"
+                        it.localMediaKind == MessageContent.KIND_VIDEO ->
+                            decoded[it.id]?.text?.takeIf(String::isNotBlank)?.let { caption -> "Видео · $caption" } ?: "Видео"
+                        it.localMediaKind == MessageContent.KIND_FILE -> it.localMediaName ?: "Файл"
+                        else -> MessageCodec.plainText(it.ciphertext.ifBlank { it.localBody.orEmpty() })
+                    }
+                } ?: "Пока нет сообщений"
+            Conversation(chat.id, group, title, subtitle, message?.createdAtMillis ?: 0L, unreadByChat[chat.id] ?: 0)
         }.sortedByDescending { it.lastAtMillis }
     }.flowOn(Dispatchers.IO)
 
     fun chats() = db.chatDao().all()
+    fun markChatRead(chatId: String, throughMillis: Long = System.currentTimeMillis()) {
+        val value = maxOf(System.currentTimeMillis(), throughMillis)
+        readPrefs.edit().putLong("${me()}:$chatId", value).apply()
+        _readState.value = _readState.value + (chatId to value)
+    }
+
     fun messagesFor(chatId: String): Flow<List<UiMessage>> {
         val owner = me().orEmpty()
-        return db.messageDao().messagesFor(owner, chatId).map { rows -> rows.map { e ->
-            val remote = if (e.ciphertext.isBlank()) null else MessageCodec.voice(e.ciphertext)
-            // Пока запись не загружена на сервер, конверта ещё нет: играем локальный файл.
-            val voice = when {
-                remote != null -> VoiceMessage(
-                    remote.id, e.localMediaPath,
-                    if (remote.durationMs > 0) remote.durationMs else e.localMediaDurationMs, remote.size,
-                )
-                e.localMediaPath != null && e.localMediaMime?.startsWith("audio/") == true ->
-                    VoiceMessage(null, e.localMediaPath, e.localMediaDurationMs, 0)
+        return db.messageDao().messagesFor(owner, chatId).map { rows ->
+            val decoded = rows.associate { row -> row.id to when {
+                row.ciphertext.isNotBlank() -> MessageCodec.decode(row.ciphertext)
+                !row.localBody.isNullOrBlank() -> MessageCodec.decode(row.localBody)
                 else -> null
+            } }
+            val rowById = rows.associateBy { it.id }
+            val controls = rows.mapNotNull { row ->
+                if (row.deliveryState == "failed") null else decoded[row.id]?.let { row to it }
             }
-            val attachment = if (voice != null) null else uiAttachment(e)
-            val text = when {
-                voice != null -> MessageCodec.voiceLabel(voice.durationMs)
-                attachment != null -> attachmentLabel(attachment)
-                else -> MessageCodec.plainText(e.ciphertext)
+            val validDeletes = controls.filter { (row, content) ->
+                content.kind == MessageContent.KIND_DELETE && content.targetId?.let { target ->
+                    rowById[target]?.let { it.senderId == row.senderId && it.chatId == row.chatId }
+                } == true
+            }.mapNotNull { it.second.targetId }.toSet()
+            val edits = controls.filter { (row, content) ->
+                content.kind == MessageContent.KIND_EDIT && content.targetId?.let { target -> rowById[target]?.let {
+                    val age = row.createdAtMillis - it.createdAtMillis
+                    it.senderId == row.senderId && it.chatId == row.chatId &&
+                        (row.deliveryState == "pending" || age in 0..EDIT_WINDOW_MS)
+                } } == true
+            }.associate { it.second.targetId!! to it.second.text }
+            val reactions = controls.filter { it.second.kind == MessageContent.KIND_REACTION && it.second.targetId != null }
+                .groupBy { it.second.targetId!! }
+                .mapValues { (_, events) ->
+                    events.groupBy { it.first.senderId }.mapNotNull { (_, own) -> own.lastOrNull()?.second?.reaction }
+                        .groupingBy { it }.eachCount()
+                }
+
+            rows.filter { row ->
+                decoded[row.id]?.kind?.let { it !in MessageContent.CONTROL_KINDS } ?: true
+            }.map { e ->
+                val removed = e.id in validDeletes
+                val original = decoded[e.id]
+                val content = if (removed) null else edits[e.id]?.let { original?.copy(text = it) } ?: original
+                val remoteVoice = content?.voice()
+                val voice = when {
+                    removed -> null
+                    remoteVoice != null -> VoiceMessage(
+                        remoteVoice.id, e.localMediaPath,
+                        if (remoteVoice.durationMs > 0) remoteVoice.durationMs else e.localMediaDurationMs,
+                        remoteVoice.size,
+                    )
+                    e.localMediaPath != null && e.localMediaMime?.startsWith("audio/") == true ->
+                        VoiceMessage(null, e.localMediaPath, e.localMediaDurationMs, 0)
+                    else -> null
+                }
+                val attachment = if (removed || voice != null) null else uiAttachment(e)
+                val text = when {
+                    removed -> "Сообщение удалено"
+                    voice != null -> MessageCodec.voiceLabel(voice.durationMs)
+                    attachment != null -> attachmentLabel(attachment)
+                    content?.kind == MessageContent.KIND_TEXT -> content.text.ifBlank { "Пустое сообщение" }
+                    else -> MessageCodec.plainText(e.ciphertext)
+                }
+                UiMessage(
+                    e.id, e.senderId, text, e.createdAtMillis,
+                    e.senderId == owner && e.ownerId == owner,
+                    e.deliveryState == "failed", e.deliveryState == "pending", e.error,
+                    e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice, attachment,
+                    content?.reply?.text, content?.forwardedFrom, content,
+                    edited = e.id in edits, reactions = reactions[e.id].orEmpty(), deleted = removed,
+                )
             }
-            UiMessage(e.id, e.senderId, text, e.createdAtMillis,
-                e.senderId == owner && e.ownerId == owner, e.deliveryState == "failed", e.deliveryState == "pending",
-                e.error, e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice, attachment)
-        } }.flowOn(Dispatchers.IO)
+        }.flowOn(Dispatchers.IO)
     }
 
     /**
@@ -844,7 +957,12 @@ class ChatRepository(
      * из очереди отправки — её видно сразу, ещё до загрузки.
      */
     private fun uiAttachment(e: MessageEntity): UiAttachment? {
-        val remote = if (e.ciphertext.isBlank()) null else MessageCodec.attachment(e.ciphertext)
+        val envelope = when {
+            e.ciphertext.isNotBlank() -> MessageCodec.decode(e.ciphertext)
+            !e.localBody.isNullOrBlank() -> MessageCodec.decode(e.localBody)
+            else -> null
+        }
+        val remote = envelope?.let { c -> c.attachment()?.let { Pair(c.kind, it) } }
         if (remote != null) {
             val kind = remote.first
             val media = remote.second
@@ -855,6 +973,7 @@ class ChatRepository(
                 media.mime, media.size, media.durationMs,
                 if (media.width > 0) media.width else e.localMediaWidth,
                 if (media.height > 0) media.height else e.localMediaHeight,
+                envelope?.text.orEmpty(),
             )
         }
         val kind = e.localMediaKind ?: return null
@@ -865,12 +984,13 @@ class ChatRepository(
             e.localMediaName?.takeIf { it.isNotBlank() } ?: defaultAttachmentName(kind),
             e.localMediaMime ?: Attachments.DEFAULT_MIME,
             e.localMediaSize, e.localMediaDurationMs, e.localMediaWidth, e.localMediaHeight,
+            envelope?.text.orEmpty(),
         )
     }
 
     private fun attachmentLabel(a: UiAttachment): String = when (a.kind) {
-        MessageContent.KIND_IMAGE -> "Фото"
-        MessageContent.KIND_VIDEO -> "Видео"
+        MessageContent.KIND_IMAGE -> if (a.caption.isBlank()) "Фото" else "Фото · ${a.caption}"
+        MessageContent.KIND_VIDEO -> if (a.caption.isBlank()) "Видео" else "Видео · ${a.caption}"
         else -> a.name
     }
 
@@ -910,7 +1030,7 @@ class ChatRepository(
         }
     }
 
-    suspend fun sendText(chatId: String, text: String) {
+    suspend fun sendText(chatId: String, text: String, replyTo: UiMessage? = null) {
         val key = key()
         val trimmed = text.trim()
         require(trimmed.isNotEmpty()) { "Введите сообщение" }
@@ -922,7 +1042,7 @@ class ChatRepository(
             val now = Instant.now()
             db.messageDao().upsert(MessageEntity(
                 "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
-                MessageCodec.encode(MessageContent(text = trimmed)), now.toString(), null,
+                MessageCodec.encode(MessageContent(text = trimmed, reply = replyTo?.asReply())), now.toString(), null,
                 ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
             ))
         }
@@ -972,7 +1092,7 @@ class ChatRepository(
      * системой Uri живёт только до перезапуска), а загрузка в /v1/media и
      * отправка конверта происходят в flushOutbox — с повторами и порядком.
      */
-    suspend fun sendAttachment(chatId: String, uri: Uri) {
+    suspend fun sendAttachment(chatId: String, uri: Uri, caption: String = "", replyTo: UiMessage? = null) {
         val key = key()
         val picked = withContext(Dispatchers.IO) {
             Attachments.copyToOutbox(context, uri, attachOutboxDir(), MAX_ATTACHMENT_BYTES)
@@ -986,7 +1106,9 @@ class ChatRepository(
                 db.messageDao().upsert(MessageEntity(
                     "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
                     "", now.toString(), null,
-                    ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+                    ownerId = key.owner,
+                    localBody = MessageCodec.encode(MessageContent(kind = picked.kind, text = caption.trim().take(16000), reply = replyTo?.asReply())),
+                    createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
                     localMediaPath = picked.file.absolutePath, localMediaMime = picked.mime,
                     localMediaDurationMs = picked.durationMs, localMediaKind = picked.kind,
                     localMediaName = picked.name, localMediaSize = picked.size,
@@ -997,6 +1119,67 @@ class ChatRepository(
             // Строки в базе нет — копия файла тоже не должна остаться мусором.
             withContext(NonCancellable + Dispatchers.IO) { picked.file.delete() }
             throw e
+        }
+        requestOutbox()
+    }
+
+    /** Пересылка повторно использует уже загруженный media id и не расходует трафик на повторную загрузку. */
+    suspend fun forwardMessage(chatId: String, message: UiMessage) {
+        val source = requireNotNull(message.content) { "Дождитесь отправки сообщения перед пересылкой." }
+        val key = key()
+        commit(key) {
+            val chat = requireNotNull(db.chatDao().get(chatId)) { "Сначала откройте диалог" }
+            check(chat.type != "unavailable") { "Доступ к группе прекращён." }
+            val id = UUID.randomUUID().toString()
+            val now = Instant.now()
+            val from = message.forwardedFrom ?: titleFor(message.senderId)
+            db.messageDao().upsert(MessageEntity(
+                "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
+                MessageCodec.encode(source.copy(reply = null, forwardedFrom = from)), now.toString(), null,
+                ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+            ))
+        }
+        requestOutbox()
+    }
+
+    private fun UiMessage.asReply() = ReplyContent(id, senderId, text.take(180))
+
+    suspend fun editMessage(chatId: String, message: UiMessage, text: String) {
+        require(message.outgoing && !message.pending && !message.failed && !message.deleted &&
+            message.content?.kind == MessageContent.KIND_TEXT
+        ) { "Можно редактировать только отправленный текст" }
+        require(System.currentTimeMillis() - message.createdAtMillis <= EDIT_WINDOW_MS) { "Редактирование доступно 15 минут" }
+        val value = text.trim()
+        require(value.isNotBlank() && value.length <= InputRules.MAX_TEXT_LENGTH) { "Проверьте текст сообщения" }
+        sendControl(chatId, MessageContent.KIND_EDIT, message.id, text = value)
+    }
+
+    suspend fun deleteMessage(chatId: String, message: UiMessage) {
+        require(message.outgoing && !message.pending && !message.failed && !message.deleted) {
+            "Можно удалить у всех только отправленное сообщение"
+        }
+        sendControl(chatId, MessageContent.KIND_DELETE, message.id)
+    }
+
+    suspend fun reactToMessage(chatId: String, message: UiMessage, reaction: String) {
+        require(!message.pending && !message.failed && !message.deleted) { "Дождитесь отправки сообщения" }
+        require(reaction in listOf("👍", "❤️", "😂", "😮", "😢")) { "Неизвестная реакция" }
+        sendControl(chatId, MessageContent.KIND_REACTION, message.id, reaction = reaction)
+    }
+
+    private suspend fun sendControl(chatId: String, kind: String, targetId: String, text: String = "", reaction: String? = null) {
+        val key = key()
+        commit(key) {
+            val chat = requireNotNull(db.chatDao().get(chatId)) { "Чат недоступен" }
+            check(chat.type != "unavailable") { "Доступ к группе прекращён" }
+            val id = UUID.randomUUID().toString()
+            val now = Instant.now()
+            db.messageDao().upsert(MessageEntity(
+                "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
+                MessageCodec.encode(MessageContent(kind = kind, text = text, targetId = targetId, reaction = reaction)),
+                now.toString(), null, ownerId = key.owner, createdAtMillis = now.toEpochMilli(),
+                deliveryState = "pending", clientId = id,
+            ))
         }
         requestOutbox()
     }
@@ -1057,6 +1240,12 @@ class ChatRepository(
                             },
                         ))
                     } }
+                    if (!retryable && MessageCodec.decode(m.ciphertext)?.kind?.let {
+                            it in MessageContent.CONTROL_KINDS
+                        } == true
+                    ) {
+                        _syncProblem.value = "Изменение сообщения не отправлено. Повторите действие."
+                    }
                     if (retryable) throw e // Preserve ordering and retry later instead of hammering an offline server.
                 }
             }
@@ -1078,6 +1267,7 @@ class ChatRepository(
 
     /** Небольшой кэш миниатюр: список сообщений не перерисует их каждый раз. */
     private val thumbCache = LruCache<String, Bitmap>(24)
+    private val thumbMutex = Mutex()
 
     /**
      * Миниатюра фото или кадр видео. Если своей копии нет, файл скачивается
@@ -1085,13 +1275,17 @@ class ChatRepository(
      */
     suspend fun attachmentThumbnail(a: UiAttachment): Bitmap? {
         if (!Attachments.hasPreview(a.kind)) return null
-        val cacheKey = a.mediaId ?: a.localPath ?: return null
-        thumbCache.get(cacheKey)?.let { return it }
-        val local = a.localPath?.let { File(it) }?.takeIf { it.isFile && it.length() > 0 }
-        val file = local ?: a.mediaId?.let { runCatching { attachmentFile(it) }.getOrNull() } ?: return null
-        val bitmap = withContext(Dispatchers.IO) { Attachments.thumbnail(file, a.kind) } ?: return null
-        thumbCache.put(cacheKey, bitmap)
-        return bitmap
+        return thumbMutex.withLock {
+            val cacheKey = a.mediaId ?: a.localPath ?: return@withLock null
+            thumbCache.get(cacheKey)?.let { return@withLock it }
+            val local = a.localPath?.let { File(it) }?.takeIf { it.isFile && it.length() > 0 }
+            val file = local ?: a.mediaId?.let { runCatching { attachmentFile(it) }.getOrNull() }
+                ?: return@withLock null
+            val bitmap = withContext(Dispatchers.IO) { Attachments.thumbnail(file, a.kind) }
+                ?: return@withLock null
+            thumbCache.put(cacheKey, bitmap)
+            bitmap
+        }
     }
 
     /**
@@ -1123,8 +1317,12 @@ class ChatRepository(
         check(up.id.isNotBlank()) {
             if (voice) "Сервер не сохранил запись. Повторите отправку." else "Сервер не сохранил файл. Повторите отправку."
         }
+        val pendingContent = m.localBody?.let(MessageCodec::decode)
         val envelope = MessageCodec.encode(MessageContent(
             kind = kind,
+            text = pendingContent?.text.orEmpty(),
+            reply = pendingContent?.reply,
+            forwardedFrom = pendingContent?.forwardedFrom,
             media = MediaContent(
                 id = up.id,
                 mime = up.contentType.ifBlank { mime },
@@ -1155,6 +1353,26 @@ class ChatRepository(
     /** Файл голосового сообщения: из локального кэша либо скачивается с сервера. */
     suspend fun voiceFile(mediaId: String): File =
         mediaFile(mediaId, MAX_VOICE_BYTES, "Запись не найдена на сервере.")
+
+    /** Реальная огибающая голосового сообщения, извлечённая из декодированного AAC. */
+    suspend fun voiceWaveform(voice: VoiceMessage, bars: Int = 48): List<Float> {
+        val identity = voice.mediaId ?: voice.localPath ?: return emptyList()
+        val count = bars.coerceIn(16, 96)
+        val prefix = "$identity:$count"
+        return waveformMutex.withLock {
+            waveformCache.get(prefix)?.let { return@withLock it }
+            val local = voice.localPath?.let(::File)?.takeIf { it.isFile && it.length() > 0 }
+            val file = local ?: voice.mediaId?.let { voiceFile(it) } ?: return@withLock emptyList()
+            val key = "$prefix:${file.length()}:${file.lastModified()}"
+            waveformCache.get(key)?.let { return@withLock it }
+            val result = AudioWaveform.extract(file, count)
+            if (result.isNotEmpty()) {
+                waveformCache.put(prefix, result)
+                waveformCache.put(key, result)
+            }
+            result
+        }
+    }
 
     /** Файл вложения (фото, видео, документ): из кэша либо с сервера. */
     suspend fun attachmentFile(mediaId: String): File =

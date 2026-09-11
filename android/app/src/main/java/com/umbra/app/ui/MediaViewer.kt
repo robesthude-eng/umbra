@@ -4,6 +4,12 @@ import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -58,6 +64,7 @@ import com.umbra.app.data.media.Attachments
 import com.umbra.app.data.msg.voiceDurationText
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.UiAttachment
+import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -81,6 +88,9 @@ fun AttachmentViewerDialog(
     onSave: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        val reducedMotion = LocalUmbraReducedMotion.current
+        var appeared by remember(attachment.mediaId, attachment.localPath) { mutableStateOf(false) }
+        LaunchedEffect(Unit) { appeared = true }
         val key = attachment.mediaId ?: attachment.localPath ?: attachment.name
         var file by remember(key) { mutableStateOf<File?>(null) }
         var problem by remember(key) { mutableStateOf<String?>(null) }
@@ -96,35 +106,41 @@ fun AttachmentViewerDialog(
                 null
             }
         }
-        Surface(Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.94f)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onDismiss) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
-                    Text(
-                        attachment.name,
-                        Modifier.weight(1f),
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    IconButton(onShare) { Icon(Icons.Filled.Share, "Поделиться", tint = Color.White) }
-                    IconButton(onSave) { Icon(Icons.Filled.Download, "Сохранить в файлы", tint = Color.White) }
-                }
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val ready = file
-                    val failure = problem
-                    when {
-                        failure != null -> ViewerProblem(failure) { attempt++ }
-                        ready == null -> CircularProgressIndicator(color = Color.White)
-                        attachment.isVideo -> VideoViewer(ready, attachment) { problem = it }
-                        else -> ImageViewer(ready) { problem = it }
+        AnimatedVisibility(
+            visible = appeared,
+            enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(180)) +
+                scaleIn(initialScale = 0.96f, animationSpec = tween(220, easing = FastOutSlowInEasing)),
+        ) {
+            Surface(Modifier.fillMaxSize(), color = Color.Black.copy(alpha = 0.94f)) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onDismiss) { Icon(Icons.Filled.Close, "Закрыть", tint = Color.White) }
+                        Text(
+                            attachment.name,
+                            Modifier.weight(1f),
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        IconButton(onShare) { Icon(Icons.Filled.Share, "Поделиться", tint = Color.White) }
+                        IconButton(onSave) { Icon(Icons.Filled.Download, "Сохранить в файлы", tint = Color.White) }
                     }
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        val ready = file
+                        val failure = problem
+                        when {
+                            failure != null -> ViewerProblem(failure) { attempt++ }
+                            ready == null -> CircularProgressIndicator(color = Color.White)
+                            attachment.isVideo -> VideoViewer(ready, attachment) { problem = it }
+                            else -> ImageViewer(ready) { problem = it }
+                        }
+                    }
+                    TextButton(
+                        onOpenExternally,
+                        Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp),
+                    ) { Text("Открыть во внешнем приложении", color = Color.White) }
                 }
-                TextButton(
-                    onOpenExternally,
-                    Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp),
-                ) { Text("Открыть во внешнем приложении", color = Color.White) }
             }
         }
     }

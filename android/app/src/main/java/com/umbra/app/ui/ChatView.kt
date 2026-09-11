@@ -49,8 +49,10 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -62,7 +64,10 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Reply
+import androidx.compose.material.icons.filled.Forward
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -166,6 +171,12 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     var showMembers by rememberSaveable(chatId) { mutableStateOf(false) }
     var showGroupCall by rememberSaveable(chatId) { mutableStateOf(false) }
     var groupCallVideo by rememberSaveable(chatId) { mutableStateOf(false) }
+    var replyingTo by remember(chatId) { mutableStateOf<UiMessage?>(null) }
+    var forwarding by remember(chatId) { mutableStateOf<UiMessage?>(null) }
+    var editing by remember(chatId) { mutableStateOf<UiMessage?>(null) }
+    var deleting by remember(chatId) { mutableStateOf<UiMessage?>(null) }
+    var searching by rememberSaveable(chatId) { mutableStateOf(false) }
+    var searchQuery by rememberSaveable(chatId) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val palette = LocalUmbraChatColors.current
@@ -174,7 +185,10 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     val title = (if (isGroup) chat?.title else users[chatId]?.fullName() ?: chat?.title)?.ifBlank { "Чат" } ?: "Загрузка…"
     val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
     val latestId = messages.lastOrNull()?.stableId
-    val rendered = remember(messages, isGroup) { buildChatItems(messages, isGroup) }
+    val visibleMessages = remember(messages, searchQuery) {
+        if (searchQuery.isBlank()) messages else messages.filter { it.text.contains(searchQuery.trim(), ignoreCase = true) }
+    }
+    val rendered = remember(visibleMessages, isGroup) { buildChatItems(visibleMessages, isGroup) }
     val reducedMotion = LocalUmbraReducedMotion.current
     suspend fun goToLatest() {
         if (reducedMotion) listState.scrollToItem(0) else listState.animateScrollToItem(0)
@@ -182,6 +196,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     // Reverse layout starts at the newest message and preserves position while reading older messages.
     LaunchedEffect(latestId) {
         if (latestId != null && nearBottom) goToLatest()
+        repo.markChatRead(chatId, messages.maxOfOrNull { it.createdAtMillis } ?: 0L)
     }
     // Ушли с экрана — глушим звук и выкидываем недозаписанную запись.
     DisposableEffect(chatId) {
@@ -224,19 +239,30 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         scope.launch { runCatching { recorder.cancel() } }
     }
     var showAttachMenu by remember { mutableStateOf(false) }
-    fun sendPicked(uri: Uri?) {
-        if (uri == null || sending) return
+    fun sendPicked(uris: List<Uri>) {
+        if (uris.isEmpty() || sending) return
         sending = true; error = null
+        val caption = input.trim()
+        val reply = replyingTo
         scope.launch {
             try {
-                repo.sendAttachment(chatId, uri)
+                uris.take(10).forEachIndexed { index, uri ->
+                    repo.sendAttachment(
+                        chatId,
+                        uri,
+                        caption = if (index == 0) caption else "",
+                        replyTo = if (index == 0) reply else null,
+                    )
+                }
+                if (caption.isNotEmpty()) input = ""
+                replyingTo = null
                 goToLatest()
             } catch (e: Exception) { error = e.userMessage() }
             finally { sending = false }
         }
     }
-    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> sendPicked(uri) }
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> sendPicked(uri) }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris -> sendPicked(uris) }
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> sendPicked(listOfNotNull(uri)) }
     // Запись видеосообщения прямо из чата: камера пишет в приватный каталог,
     // оттуда запись уходит обычным вложением, а временный файл удаляется.
     var captureTarget by remember { mutableStateOf<File?>(null) }
@@ -245,7 +271,9 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         sending = true; error = null
         scope.launch {
             try {
-                repo.sendAttachment(chatId, Attachments.uriFor(context, file))
+                repo.sendAttachment(chatId, Attachments.uriFor(context, file), input.trim(), replyingTo)
+                if (input.isNotBlank()) input = ""
+                replyingTo = null
                 goToLatest()
             } catch (e: Exception) { error = e.userMessage() }
             finally {
@@ -347,8 +375,9 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         sending = true; error = null
         scope.launch {
             try {
-                repo.sendText(chatId, text)
+                repo.sendText(chatId, text, replyingTo)
                 input = ""
+                replyingTo = null
                 goToLatest()
             } catch (e: Exception) { error = e.userMessage() }
             finally { sending = false }
@@ -377,12 +406,26 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                         if (isGroup) { groupCallVideo = video; showGroupCall = true } else startCall(video)
                     },
                     onMembers = { showMembers = true },
+                    onSearch = { searching = !searching; if (!searching) searchQuery = "" },
                 )
             },
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
+                if (searching) OutlinedTextField(
+                    searchQuery, { searchQuery = it.take(200) },
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    placeholder = { Text("Поиск в переписке") },
+                    leadingIcon = { Icon(Icons.Filled.Search, null) }, singleLine = true,
+                )
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    if (rendered.isEmpty()) ChatEmptyState(Modifier.align(Alignment.Center))
+                    if (rendered.isEmpty()) {
+                        if (searchQuery.isNotBlank()) AppEmptyState(
+                            icon = Icons.Filled.Search,
+                            title = "Ничего не найдено",
+                            description = "Попробуйте изменить запрос.",
+                            modifier = Modifier.align(Alignment.Center),
+                        ) else ChatEmptyState(Modifier.align(Alignment.Center))
+                    }
                     LazyColumn(
                         state = listState,
                         reverseLayout = true,
@@ -437,6 +480,14 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                                             catch (e: Exception) { error = e.userMessage() }
                                         }
                                     },
+                                    onReply = { replyingTo = item.message },
+                                    onForward = { forwarding = item.message },
+                                    onEdit = { editing = item.message },
+                                    onDelete = { deleting = item.message },
+                                    onReact = { emoji -> scope.launch {
+                                        runCatching { repo.reactToMessage(chatId, item.message, emoji) }
+                                            .onFailure { error = it.userMessage() }
+                                    } },
                                 )
                             }
                         }
@@ -447,7 +498,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                     // кнопка вынесена в отдельную композабел-функцию — в ней
                     // применяется top-level AnimatedVisibility (Compose 1.7).
                     ScrollToBottomPill(
-                        visible = !nearBottom && messages.isNotEmpty(),
+                        visible = searchQuery.isBlank() && !nearBottom && messages.isNotEmpty(),
                         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                         palette = palette,
                         reducedMotion = reducedMotion,
@@ -480,6 +531,8 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                         onAttach = { showAttachMenu = true },
                         onSend = { sendText() },
                         onMic = { requestRecording() },
+                        replyText = replyingTo?.text,
+                        onCancelReply = { replyingTo = null },
                     )
                 }
             }
@@ -517,6 +570,37 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         showGroupCall = false
         startGroupCall(invited, groupCallVideo)
     }
+    forwarding?.let { message ->
+        ForwardMessageDialog(repo, chatId, message, onDismiss = { forwarding = null }) { target ->
+            forwarding = null
+            scope.launch {
+                try { repo.forwardMessage(target, message) }
+                catch (e: Exception) { error = e.userMessage() }
+            }
+        }
+    }
+    editing?.let { message ->
+        var editedText by remember(message.id) { mutableStateOf(message.text) }
+        AlertDialog(
+            onDismissRequest = { editing = null }, title = { Text("Редактировать сообщение") },
+            text = { OutlinedTextField(editedText, { editedText = it.take(InputRules.MAX_TEXT_LENGTH) }, Modifier.fillMaxWidth()) },
+            confirmButton = { TextButton({
+                editing = null
+                scope.launch { runCatching { repo.editMessage(chatId, message, editedText) }.onFailure { error = it.userMessage() } }
+            }, enabled = editedText.isNotBlank()) { Text("Сохранить") } },
+            dismissButton = { TextButton({ editing = null }) { Text("Отмена") } },
+        )
+    }
+    deleting?.let { message ->
+        AlertDialog(
+            onDismissRequest = { deleting = null }, title = { Text("Удалить сообщение у всех?") },
+            confirmButton = { TextButton({
+                deleting = null
+                scope.launch { runCatching { repo.deleteMessage(chatId, message) }.onFailure { error = it.userMessage() } }
+            }) { Text("Удалить", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton({ deleting = null }) { Text("Отмена") } },
+        )
+    }
 }
 
 @Composable
@@ -533,6 +617,7 @@ private fun ChatTopBar(
     onRefresh: () -> Unit,
     onCall: (Boolean) -> Unit,
     onMembers: () -> Unit,
+    onSearch: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
     val reducedMotion = LocalUmbraReducedMotion.current
@@ -584,6 +669,7 @@ private fun ChatTopBar(
             IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") }
         },
         actions = {
+            IconButton(onSearch) { Icon(Icons.Filled.Search, "Поиск в переписке") }
             if (available) IconButton({ onCall(false) }) {
                 Icon(Icons.Filled.Call, if (isGroup) "Групповой звонок" else "Позвонить")
             }
@@ -649,6 +735,8 @@ private fun ChatComposer(
     onAttach: () -> Unit,
     onSend: () -> Unit,
     onMic: () -> Unit,
+    replyText: String?,
+    onCancelReply: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
     val haptics = LocalHapticFeedback.current
@@ -657,6 +745,18 @@ private fun ChatComposer(
     val canSend = enabled && !tooLong
     Surface(color = palette.bar, contentColor = palette.onIncoming) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
+            if (!replyText.isNullOrBlank()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.Reply, null, tint = palette.accent)
+                    Spacer(Modifier.width(8.dp))
+                    Text(replyText, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, color = palette.incomingMeta)
+                    IconButton(onCancelReply, Modifier.size(40.dp)) { Icon(Icons.Filled.Close, "Отменить ответ") }
+                }
+            }
             Row(verticalAlignment = Alignment.Bottom) {
                 Row(
                     Modifier.weight(1f).heightIn(min = 48.dp, max = 148.dp)
@@ -836,6 +936,43 @@ private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCa
 }
 
 @Composable
+private fun ForwardMessageDialog(
+    repo: ChatRepository,
+    currentChatId: String,
+    message: UiMessage,
+    onDismiss: () -> Unit,
+    onForward: (String) -> Unit,
+) {
+    val conversations by remember(repo) { repo.conversations() }.collectAsState(emptyList())
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Переслать сообщение") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message.text, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items(conversations.filter { it.chatId != currentChatId }, key = { it.chatId }) { chat ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                                .clickable { onForward(chat.chatId) }.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            if (chat.isGroup) GroupAvatar(chat.title, 40.dp)
+                            else UserAvatar(repo, chat.chatId, chat.title, 40.dp)
+                            Text(chat.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onDismiss) { Text("Отмена") } },
+    )
+}
+
+@Composable
 private fun MessageRow(
     repo: ChatRepository,
     item: ChatItem.Bubble,
@@ -850,6 +987,11 @@ private fun MessageRow(
     onSeek: (Long) -> Unit,
     onSpeed: () -> Unit,
     onRetry: () -> Unit,
+    onReply: () -> Unit,
+    onForward: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onReact: (String) -> Unit,
 ) {
     val message = item.message
     val palette = LocalUmbraChatColors.current
@@ -888,6 +1030,16 @@ private fun MessageRow(
                         onClick = { if (attachment != null) onOpen(attachment) },
                     ),
             ) {
+                message.forwardedFrom?.let { from ->
+                    Text("Переслано от $from", Modifier.padding(start = 12.dp, top = 8.dp, end = 12.dp),
+                        style = MaterialTheme.typography.labelSmall, color = metaColor)
+                }
+                message.replyText?.let { reply ->
+                    Text("↩ $reply", Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(10.dp)).background(onBubble.copy(alpha = 0.10f)).padding(8.dp),
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, color = onBubble)
+                }
                 if (item.showName && senderName != null) Text(
                     senderName,
                     Modifier.padding(start = 14.dp, top = 8.dp, end = 14.dp),
@@ -897,6 +1049,7 @@ private fun MessageRow(
                 when {
                     voice != null -> Column(Modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
                         VoiceBubble(
+                            repo = repo,
                             voice = voice,
                             playback = playback,
                             stableId = message.stableId,
@@ -908,9 +1061,10 @@ private fun MessageRow(
                         )
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 2.dp))
                     }
-                    attachment != null && preview -> Box {
-                        MediaPreview(repo, attachment, palette)
-                        Row(
+                    attachment != null && preview -> Column {
+                        Box {
+                            MediaPreview(repo, attachment, palette)
+                            Row(
                             Modifier.align(Alignment.BottomEnd).padding(8.dp)
                                 .clip(CircleShape).background(Color.Black.copy(alpha = 0.42f))
                                 .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -933,7 +1087,14 @@ private fun MessageRow(
                                 Spacer(Modifier.width(4.dp))
                                 MessageStatus(message.pending, message.failed, Color.White)
                             }
+                            }
                         }
+                        if (attachment.caption.isNotBlank()) Text(
+                            attachment.caption,
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            color = onBubble,
+                            style = LocalUmbraMessageTextStyle.current,
+                        )
                     }
                     attachment != null -> Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         FileRow(attachment, onBubble, metaColor, palette)
@@ -944,6 +1105,10 @@ private fun MessageRow(
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 2.dp))
                     }
                 }
+                if (message.reactions.isNotEmpty()) Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) { message.reactions.forEach { (emoji, count) -> Text("$emoji $count", style = MaterialTheme.typography.labelMedium, color = onBubble) } }
                 if (message.failed) Row(
                     Modifier.padding(start = 10.dp, end = 10.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -959,7 +1124,32 @@ private fun MessageRow(
                 }
             }
             DropdownMenu(menu, { menu = false }) {
-                if (attachment == null && voice == null && message.text.isNotBlank()) DropdownMenuItem(
+                if (!message.deleted) DropdownMenuItem(
+                    text = { Text("Ответить") },
+                    leadingIcon = { Icon(Icons.Filled.Reply, null) },
+                    onClick = { menu = false; onReply() },
+                )
+                if (!message.pending && !message.deleted) DropdownMenuItem(
+                    text = { Text("Переслать") },
+                    leadingIcon = { Icon(Icons.Filled.Forward, null) },
+                    onClick = { menu = false; onForward() },
+                )
+                if (message.outgoing && !message.pending && !message.deleted && voice == null && attachment == null) DropdownMenuItem(
+                    text = { Text("Редактировать") }, leadingIcon = { Icon(Icons.Filled.Edit, null) },
+                    onClick = { menu = false; onEdit() },
+                )
+                if (message.outgoing && !message.pending && !message.deleted) DropdownMenuItem(
+                    text = { Text("Удалить у всех") }, leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                    onClick = { menu = false; onDelete() },
+                )
+                if (!message.deleted && !message.pending && !message.failed) Column(Modifier.padding(horizontal = 8.dp)) {
+                    listOf("👍", "❤️", "😂", "😮", "😢").chunked(3).forEach { reactions ->
+                        Row { reactions.forEach { emoji ->
+                            TextButton({ menu = false; onReact(emoji) }, contentPadding = PaddingValues(4.dp)) { Text(emoji) }
+                        } }
+                    }
+                }
+                if (!message.deleted && attachment == null && voice == null && message.text.isNotBlank()) DropdownMenuItem(
                     text = { Text("Копировать") },
                     leadingIcon = { Icon(Icons.Filled.ContentCopy, null) },
                     onClick = {
@@ -997,7 +1187,7 @@ private fun MessageRow(
 @Composable
 private fun MetaRow(message: UiMessage, tint: Color, modifier: Modifier = Modifier) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(clockText(message.createdAtMillis), style = MaterialTheme.typography.labelSmall, color = tint)
+        Text(clockText(message.createdAtMillis) + if (message.edited) " · изменено" else "", style = MaterialTheme.typography.labelSmall, color = tint)
         if (message.outgoing) {
             Spacer(Modifier.width(4.dp))
             MessageStatus(
@@ -1079,6 +1269,7 @@ private fun FileRow(attachment: UiAttachment, contentColor: Color, metaColor: Co
 
 @Composable
 private fun VoiceBubble(
+    repo: ChatRepository,
     voice: VoiceMessage,
     playback: VoicePlayback?,
     stableId: String,
@@ -1093,7 +1284,11 @@ private fun VoiceBubble(
     val total = (playback?.durationMs ?: voice.durationMs).coerceAtLeast(1L)
     val position = playback?.positionMs ?: 0L
     val ready = voice.mediaId != null || voice.localPath != null
-    val bars = remember(stableId) { waveformBars(stableId) }
+    val fallbackBars = remember(stableId) { waveformBars(stableId, 48) }
+    val bars by produceState(fallbackBars, stableId, voice.mediaId, voice.localPath) {
+        value = runCatching { repo.voiceWaveform(voice, 48) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() } ?: fallbackBars
+    }
     val fraction = (position.toFloat() / total.toFloat()).coerceIn(0f, 1f)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(

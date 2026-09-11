@@ -39,6 +39,8 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Umbra">
             <intent-filter>
@@ -65,6 +67,9 @@
         <!-- Кнопка «Отклонить» в уведомлении о входящем звонке. -->
         <receiver
             android:name=".data.call.CallActionReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".data.push.MessageReplyReceiver"
             android:exported="false" />
 
         <!-- Временные ссылки на вложения: просмотр и «Поделиться» без копий

@@ -3,11 +3,13 @@ package com.umbra.app.data.push
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import androidx.core.app.NotificationManagerCompat
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -136,6 +138,28 @@ class PushService : FirebaseMessagingService() {
 /**
  * Уведомление о новом сообщении. Текст не показываем: сервер его и не присылает.
  */
+private const val REPLY_KEY = "umbra_reply_text"
+private const val EXTRA_THREAD = "umbra_reply_thread"
+
+class MessageReplyReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(REPLY_KEY)?.toString()?.trim().orEmpty()
+        val thread = intent.getStringExtra(EXTRA_THREAD).orEmpty()
+        if (text.isBlank() || thread.isBlank()) return
+        val pending = goAsync()
+        val app = context.applicationContext as? UmbraApp
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val repo = app?.container?.chatRepository ?: return@launch
+                repo.sendText(thread, text)
+                NotificationManagerCompat.from(context).cancel(thread.hashCode())
+            } catch (e: Exception) {
+                Log.w("UmbraPush", "quick reply was not queued", e)
+            } finally { pending.finish() }
+        }
+    }
+}
+
 private object MessageNotifications {
     private const val CHANNEL_ID = "umbra_messages"
 
@@ -149,6 +173,15 @@ private object MessageNotifications {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val who = senderName.ifBlank { "Новое сообщение" }
+        val replyIntent = Intent(context, MessageReplyReceiver::class.java).putExtra(EXTRA_THREAD, threadKey)
+        val replyPending = PendingIntent.getBroadcast(
+            context, threadKey.hashCode(), replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
+        val remoteInput = RemoteInput.Builder(REPLY_KEY).setLabel("Ответить").build()
+        val replyAction = NotificationCompat.Action.Builder(
+            R.mipmap.ic_launcher, "Ответить", replyPending,
+        ).addRemoteInput(remoteInput).build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(who)
@@ -158,6 +191,7 @@ private object MessageNotifications {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
             .setContentIntent(open)
+            .addAction(replyAction)
             .build()
         try {
             NotificationManagerCompat.from(context).notify(threadKey.hashCode(), notification)

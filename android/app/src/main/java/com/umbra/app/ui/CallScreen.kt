@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -35,10 +37,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -88,7 +93,12 @@ import org.webrtc.SurfaceViewRenderer
  * пересобирать: поворот или свёртывание не обрывает разговор.
  */
 @Composable
-fun CallScreen(container: AppContainer, call: ActiveCall) {
+fun CallScreen(
+    container: AppContainer,
+    call: ActiveCall,
+    pictureInPicture: Boolean = false,
+    onMinimize: () -> Unit = {},
+) {
     val repo = container.chatRepository
     val engine = container.callEngine
     val media by engine.media.collectAsState()
@@ -178,7 +188,7 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
     }
 
     // Кнопка «назад» не должна выбрасывать из разговора случайным нажатием.
-    BackHandler {}
+    BackHandler { if (!(call.incoming && call.ringing)) onMinimize() }
 
     val state = media
     val peers = state?.peers.orEmpty()
@@ -241,7 +251,7 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
                             .size(if (landscape) 80.dp else 96.dp, if (landscape) 100.dp else 132.dp)
                             .clip(RoundedCornerShape(20.dp))) {
                             VideoSurface(engine, peerId = null, mirror = true, modifier = Modifier.fillMaxSize())
-                            FilledTonalIconButton(
+                            if (!pictureInPicture) FilledTonalIconButton(
                                 onClick = { engine.switchCamera() }, enabled = !busy,
                                 modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),
                             ) { Icon(Icons.Filled.Cameraswitch, "Переключить камеру") }
@@ -256,7 +266,9 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
                     onMic = { engine.toggleMic() }, onSpeaker = { engine.toggleSpeaker() }, onCamera = { engine.toggleCamera() },
                 )
             }
-            if (landscape) {
+            if (pictureInPicture) {
+                stage(Modifier.fillMaxSize().padding(4.dp))
+            } else if (landscape) {
                 Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(1f).fillMaxHeight()) {
                         identity()
@@ -272,6 +284,63 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
                     controls()
                 }
             }
+            if (!ringing && !pictureInPicture) {
+                FilledTonalIconButton(
+                    onClick = onMinimize,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                ) { Icon(Icons.Filled.KeyboardArrowDown, "Свернуть звонок") }
+            }
+        }
+    }
+}
+
+/** Компактная панель: разговор продолжается, пока человек пользуется чатами. */
+@Composable
+fun MinimizedCallBar(container: AppContainer, call: ActiveCall, onRestore: () -> Unit) {
+    val repo = container.chatRepository
+    val media by container.callEngine.media.collectAsState()
+    val users by repo.userCache.collectAsState()
+    val name = users[call.peerUserId]?.fullName() ?: call.peerName.ifBlank { "Активный звонок" }
+    val scope = rememberCoroutineScope()
+    var ending by remember(call.callId) { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier.statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp)
+            .fillMaxWidth().widthIn(max = 560.dp).clip(RoundedCornerShape(20.dp))
+            .clickable(enabled = !ending, onClick = onRestore),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shadowElevation = 6.dp,
+    ) {
+        Row(
+            Modifier.padding(start = 14.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(if (call.video) Icons.Filled.Videocam else Icons.Filled.PhoneInTalk, null)
+            Column(Modifier.weight(1f)) {
+                Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (media?.connected == true) "Нажмите, чтобы вернуться" else "Соединение…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f),
+                )
+            }
+            FilledTonalIconButton(
+                onClick = {
+                    if (!ending) {
+                        ending = true
+                        scope.launch {
+                            runCatching { repo.setCallStatus("ended") }
+                            ending = false
+                        }
+                    }
+                },
+                enabled = !ending,
+                colors = androidx.compose.material3.IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) { Icon(Icons.Filled.CallEnd, "Завершить звонок") }
         }
     }
 }

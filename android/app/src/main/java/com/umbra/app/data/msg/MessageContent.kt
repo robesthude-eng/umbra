@@ -22,6 +22,11 @@ data class MessageContent(
     val kind: String = KIND_TEXT,
     val text: String = "",
     val media: MediaContent? = null,
+    val reply: ReplyContent? = null,
+    val forwardedFrom: String? = null,
+    /** For edit/delete/reaction control events. */
+    val targetId: String? = null,
+    val reaction: String? = null,
 ) {
     companion object {
         const val KIND_TEXT = "text"
@@ -47,8 +52,19 @@ data class MessageContent(
         const val KIND_IMAGE = "image"
         const val KIND_VIDEO = "video"
         const val KIND_FILE = "file"
+        const val KIND_EDIT = "edit"
+        const val KIND_DELETE = "delete"
+        const val KIND_REACTION = "reaction"
+        val CONTROL_KINDS = setOf(KIND_EDIT, KIND_DELETE, KIND_REACTION)
     }
 }
+
+@Serializable
+data class ReplyContent(
+    val messageId: String,
+    val senderId: String,
+    val text: String,
+)
 
 @Serializable
 data class MediaContent(
@@ -129,11 +145,15 @@ object MessageCodec {
         val c = decode(ciphertextB64) ?: return "Сообщение из другой версии приложения: содержимое недоступно"
         if (c.v != 1) return "Обновите приложение, чтобы прочитать это сообщение"
         c.voice()?.let { return voiceLabel(it.durationMs) }
-        c.attachment()?.let { return attachmentLabel(c.kind, it) }
+        c.attachment()?.let {
+            val label = attachmentLabel(c.kind, it)
+            return if (c.text.isBlank()) label else "$label · ${c.text}"
+        }
         if (c.kind == MessageContent.KIND_MEDIA) {
             return listOf(c.text, c.media?.name?.let { "Вложение: $it" } ?: "Вложение")
                 .filter { it.isNotBlank() }.joinToString("\n") + "\nПросмотр вложений в этой версии пока недоступен."
         }
+        if (c.kind in MessageContent.CONTROL_KINDS) return "Обновление сообщения"
         if (c.kind != MessageContent.KIND_TEXT) return "Этот тип сообщения пока не поддерживается"
         return c.text.ifBlank { "Пустое сообщение" }
     }

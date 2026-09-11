@@ -5,6 +5,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.app.PictureInPictureParams
+import android.content.res.Configuration
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
@@ -24,10 +28,16 @@ import com.umbra.app.data.session.ThemeMode
 import com.umbra.app.ui.UmbraRoot
 import com.umbra.app.ui.theme.UmbraTheme
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+    private val pictureInPicture = MutableStateFlow(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pictureInPicture.value = isInPictureInPictureMode
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val container = (application as UmbraApp).container
         // Входящий звонок должен подниматься поверх блокировки и будить экран.
@@ -38,6 +48,11 @@ class MainActivity : ComponentActivity() {
         handleCallIntent(intent, container)
         setContent {
             val appearance by container.uiPreferences.state.collectAsState()
+            val inPictureInPicture by pictureInPicture.collectAsState()
+            val activeCall by container.chatRepository.activeCall.collectAsState()
+            LaunchedEffect(inPictureInPicture, activeCall?.callId) {
+                if (inPictureInPicture && activeCall == null) finish()
+            }
             val systemDark = isSystemInDarkTheme()
             val dark = when (appearance.theme) {
                 ThemeMode.SYSTEM -> systemDark
@@ -57,7 +72,7 @@ class MainActivity : ComponentActivity() {
                 reduceMotion = appearance.reduceMotion,
             ) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    UmbraRoot(container)
+                    UmbraRoot(container, inPictureInPicture)
                 }
             }
         }
@@ -67,6 +82,25 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleCallIntent(intent, (application as UmbraApp).container)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val container = (application as UmbraApp).container
+        val call = container.chatRepository.activeCall.value
+        val media = container.callEngine.media.value
+        if (call?.video == true && !call.ringing && media?.connected == true && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                enterPictureInPictureMode(
+                    PictureInPictureParams.Builder().setAspectRatio(Rational(9, 16)).build()
+                )
+            }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        pictureInPicture.value = isInPictureInPictureMode
     }
 
     /**

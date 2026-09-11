@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,40 +36,91 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
-fun MainShell(container: AppContainer, tab: Int, onTab: (Int) -> Unit, onOpenChat: (String) -> Unit) {
+fun MainShell(
+    container: AppContainer,
+    tab: Int,
+    onTab: (Int) -> Unit,
+    onOpenChat: (String) -> Unit,
+    selectedChatId: String? = null,
+    twoPane: Boolean = false,
+    onCloseChat: () -> Unit = {},
+    sharedChatStateHolder: SaveableStateHolder? = null,
+) {
     val stateHolder = rememberSaveableStateHolder()
+    val localChatStateHolder = rememberSaveableStateHolder()
+    val detailStateHolder = sharedChatStateHolder ?: localChatStateHolder
     // Keep the previous destination IDs so an existing saved tab still opens correctly.
     val selectedTab = if (tab == 1) 0 else tab
+    val destinations = listOf(
+        Triple(0, "Чаты", Icons.Filled.Chat),
+        Triple(2, "Звонки", Icons.Filled.Call),
+        Triple(3, "Настройки", Icons.Filled.Settings),
+    )
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
-                val destinations = listOf(Triple(0, "Чаты", Icons.Filled.Chat),
-                    Triple(2, "Звонки", Icons.Filled.Call), Triple(3, "Настройки", Icons.Filled.Settings))
-                destinations.forEach { (id, label, icon) ->
-                    NavigationBarItem(
-                        selected = selectedTab == id, onClick = { onTab(id) },
-                        icon = { Icon(icon, null) }, label = { Text(label) },
-                        colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                    )
+            if (!twoPane) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                    destinations.forEach { (id, label, icon) ->
+                        NavigationBarItem(
+                            selected = selectedTab == id, onClick = { onTab(id) },
+                            icon = { Icon(icon, null) }, label = { Text(label) },
+                        )
+                    }
                 }
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
-            SyncBanner(container.chatRepository)
-            ScreenEntrance(selectedTab, Modifier.weight(1f).fillMaxWidth()) {
-                stateHolder.SaveableStateProvider(selectedTab) {
-                    when (selectedTab) {
-                        0 -> ChatsTab(container, initiallyGroups = tab == 1, onSettings = { onTab(3) }, onOpenChat = onOpenChat)
-                        2 -> CallsTab(container)
-                        else -> SettingsTab(container)
+        Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
+            if (twoPane) {
+                NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
+                    Spacer(Modifier.weight(1f))
+                    destinations.forEach { (id, label, icon) ->
+                        NavigationRailItem(
+                            selected = selectedTab == id,
+                            onClick = { onTab(id) },
+                            icon = { Icon(icon, label) },
+                            label = { Text(label) },
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                SyncBanner(container.chatRepository)
+                ScreenEntrance(selectedTab, Modifier.weight(1f).fillMaxWidth()) {
+                    stateHolder.SaveableStateProvider(selectedTab) {
+                        when (selectedTab) {
+                        0 -> if (twoPane) {
+                            Row(Modifier.fillMaxSize()) {
+                                ChatsTab(
+                                    container = container,
+                                    initiallyGroups = tab == 1,
+                                    onSettings = { onTab(3) },
+                                    onOpenChat = onOpenChat,
+                                    selectedChatId = selectedChatId,
+                                    modifier = Modifier.widthIn(min = 320.dp, max = 400.dp).fillMaxHeight(),
+                                )
+                                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Box(Modifier.weight(1f).fillMaxHeight()) {
+                                    if (selectedChatId != null) {
+                                        detailStateHolder.SaveableStateProvider("chat:$selectedChatId") {
+                                            ChatView(container, selectedChatId, onBack = onCloseChat)
+                                        }
+                                    } else {
+                                        AppEmptyState(
+                                            icon = Icons.Filled.Chat,
+                                            title = "Выберите чат",
+                                            description = "Переписка откроется здесь, а список останется рядом.",
+                                            modifier = Modifier.align(Alignment.Center),
+                                        )
+                                    }
+                                }
+                            }
+                        } else ChatsTab(container, initiallyGroups = tab == 1, onSettings = { onTab(3) }, onOpenChat = onOpenChat)
+                            2 -> CallsTab(container)
+                            else -> SettingsTab(container)
+                        }
                     }
                 }
             }
@@ -102,7 +154,14 @@ internal fun SyncBanner(repo: ChatRepository) {
 }
 
 @Composable
-private fun ChatsTab(container: AppContainer, initiallyGroups: Boolean, onSettings: () -> Unit, onOpenChat: (String) -> Unit) {
+private fun ChatsTab(
+    container: AppContainer,
+    initiallyGroups: Boolean,
+    onSettings: () -> Unit,
+    onOpenChat: (String) -> Unit,
+    selectedChatId: String? = null,
+    modifier: Modifier = Modifier,
+) {
     val repo = container.chatRepository
     val flow = remember(repo) { repo.conversations() }
     val conversations by flow.collectAsState(emptyList())
@@ -119,7 +178,7 @@ private fun ChatsTab(container: AppContainer, initiallyGroups: Boolean, onSettin
                 (needle.isEmpty() || c.title.contains(needle, ignoreCase = true) || c.subtitle.contains(needle, ignoreCase = true))
         }
     }
-    Box(Modifier.fillMaxSize()) {
+    Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             PageHeading("Чаты") {
                 IconButton(onClick = onSettings, modifier = Modifier.size(48.dp).semantics { contentDescription = "Настройки профиля" }) {
@@ -168,7 +227,9 @@ private fun ChatsTab(container: AppContainer, initiallyGroups: Boolean, onSettin
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(start = 10.dp, end = 10.dp, bottom = 108.dp),
             ) {
-                items(visible, key = { it.chatId }) { c -> ConversationRow(repo, c) { onOpenChat(c.chatId) } }
+                items(visible, key = { it.chatId }) { c ->
+                    ConversationRow(repo, c, selected = c.chatId == selectedChatId) { onOpenChat(c.chatId) }
+                }
             }
         }
         ExtendedFloatingActionButton(
@@ -189,8 +250,10 @@ private fun ChatsTab(container: AppContainer, initiallyGroups: Boolean, onSettin
 }
 
 @Composable
-private fun ConversationRow(repo: ChatRepository, c: Conversation, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 12.dp),
+private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+        .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+        .clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if (c.isGroup) GroupAvatar(c.title) else UserAvatar(repo, c.chatId, c.title, 52.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -200,6 +263,7 @@ private fun ConversationRow(repo: ChatRepository, c: Conversation, onClick: () -
             }
             Text(c.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        if (c.unreadCount > 0) Badge { Text(c.unreadCount.coerceAtMost(99).toString()) }
     }
 }
 
