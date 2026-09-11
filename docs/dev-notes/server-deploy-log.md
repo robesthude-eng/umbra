@@ -39,7 +39,7 @@ Europe/Moscow — pgx декодирует timestamptz в локальную з�
 | Клиент | 0.16.6 (vc29): толерантный парсер `IsoTime`, флаш очереди не зависит от синхронизации |
 | Коммиты | `fa3bb82` (клиент), `79e0efb` (сервер: `.UTC()` на всех DB-метках — в прод пока НЕ деплоился) |
 | APK | `/opt/umbra/app/umbra-latest.apk`, sha256 `6cffa3a25f860e6664e2f59671e42457e62f91ac73421aaaa184a5ef5e99286d`, 61 254 517 Б |
-| Сервер (ждёт решения) | Либо рестарт с `Environment=TZ=UTC` в юните `umbra`, либо пересборка/деплой из main с `79e0efb` — обязательно после подтверждения владельца |
+| Сервер | Решение владельца: TZ=UTC + рестарт. Выполнено 2026-09-11 16:53:08 MSK: drop-in `/etc/systemd/system/umbra.service.d/tz.conf` (`Environment=TZ=UTC`), `daemon-reload` + рестарт; бэкап юнита `/root/umbra-deploy-bak/umbra.service.pre-tzutc.<TS>`; проверено: TZ=UTC в `/proc/<pid>/environ`, `/healthz` ok, PostgreSQL/Telegram-бот подняты, логи процесса идут в UTC. Инкрементальный фикс `.UTC()` (79e0efb) остаётся в main на будущие выкатки |
 | Примечание | Все серверные выкатки 8–10 сентября (v2, byusername, «0.9.1») выполнялись в сессиях arena.ai; текущий бинарий — сборка main (маршруты /v1/channels, /v1/by-username подтверждены), перезапуск 10.09 20:44 в зоне Europe/Moscow и включил баг «+03:00». На проде БД без миграции 012 (`push_devices`); 013 (`calls.participants`) применена |
 
 ## 0.9.1 — исправления звонков и медиа (фикс-пак)
