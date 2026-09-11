@@ -28,6 +28,7 @@ import com.umbra.app.di.AppContainer
 import com.umbra.app.data.session.ThemeMode
 import com.umbra.app.ui.UmbraRoot
 import com.umbra.app.ui.FutureBackdrop
+import com.umbra.app.ui.AlienActivationOverlay
 import com.umbra.app.ui.theme.UmbraTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,12 +73,14 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = appearance.dynamicColor,
                 messageTextSize = appearance.messageTextSize,
                 reduceMotion = appearance.reduceMotion,
-                alienInterface = appearance.alienInterface,
+                alienIntensity = appearance.alienIntensity,
             ) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Box(Modifier.fillMaxSize()) {
                         FutureBackdrop(Modifier.matchParentSize())
                         UmbraRoot(container, inPictureInPicture)
+                        // Короткая заставка при включении Alien-режима; касания не перехватывает.
+                        AlienActivationOverlay(Modifier.matchParentSize())
                     }
                 }
             }

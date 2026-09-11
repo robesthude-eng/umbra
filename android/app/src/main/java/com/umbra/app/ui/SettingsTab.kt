@@ -5,7 +5,6 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -24,13 +23,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.umbra.app.data.InputRules
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.di.AppContainer
+import com.umbra.app.data.session.AlienIntensity
 import com.umbra.app.data.session.ThemeMode
 import com.umbra.app.data.diag.DiagLog
 import com.umbra.app.data.session.UiPreferences
@@ -197,37 +196,89 @@ private fun AppearanceSettings(preferences: UiPreferences, repo: ChatRepository)
             }
         }
     }
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = if (appearance.alienInterface) androidx.compose.foundation.BorderStroke(1.dp, Brush.linearGradient(listOf(Color(0xFF72FFF1), Color(0xFFE957FF)))) else null,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            PreferenceSwitch(
-                "Alien Interface",
-                "Живой космический фон, голографическое стекло и орбитальная навигация",
-                appearance.alienInterface,
-                preferences::setAlienInterface,
-            )
-            if (appearance.alienInterface) {
-                Box(
-                    Modifier.fillMaxWidth().height(72.dp).clip(RoundedCornerShape(18.dp))
-                        .background(Brush.linearGradient(listOf(Color(0xFF061224), Color(0xFF160927), Color(0xFF031A1D)))),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Canvas(Modifier.matchParentSize()) {
-                        drawCircle(Color(0x4472FFF1), size.minDimension * 0.42f, center.copy(x = size.width * 0.25f))
-                        drawCircle(Color(0x33E957FF), size.minDimension * 0.5f, center.copy(x = size.width * 0.78f))
-                    }
-                    Text("ALIEN MODE ACTIVE", color = Color(0xFFBFFFF8), style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-    }
+    AlienSettingsCard(appearance.alienIntensity, preferences::setAlienIntensity)
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         PreferenceSwitch("Уменьшить анимацию", "Спокойные переходы между экранами", appearance.reduceMotion, preferences::setReduceMotion, Modifier.padding(16.dp))
     }
     DiagnosticsCard(repo)
+}
+
+/**
+ * Выбор силы Alien-режима с живым предпросмотром.
+ * Предпросмотр рисуется полными токенами даже при выключенном режиме,
+ * чтобы было видно, что именно включаешь.
+ */
+@Composable
+private fun AlienSettingsCard(intensity: AlienIntensity, onIntensity: (AlienIntensity) -> Unit) {
+    val dark = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current.dark
+    val preview = com.umbra.app.ui.theme.alienTokens(
+        if (intensity == AlienIntensity.OFF) AlienIntensity.FULL else intensity,
+        dark,
+    )
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surface,
+        border = if (intensity != AlienIntensity.OFF)
+            androidx.compose.foundation.BorderStroke(1.dp, Brush.linearGradient(listOf(preview.primary, preview.secondary)))
+        else null,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Alien Interface", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Живой космический фон, голографическое стекло и орбитальная навигация. " +
+                    "Сила влияет только на оформление: сообщения, звонки и уведомления работают как обычно.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Три состояния вместо переключателя: спокойный вариант годится на каждый день.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    AlienIntensity.OFF to "Выключен",
+                    AlienIntensity.CALM to "Спокойный",
+                    AlienIntensity.FULL to "Полный",
+                ).forEach { (value, label) ->
+                    FilterChip(
+                        selected = intensity == value,
+                        onClick = { onIntensity(value) },
+                        label = { Text(label, maxLines = 1) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            CompositionLocalProvider(com.umbra.app.ui.theme.LocalUmbraAlienTokens provides preview) {
+                Box(
+                    Modifier.fillMaxWidth().height(116.dp).clip(RoundedCornerShape(18.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    QuantumBackdrop(Modifier.matchParentSize())
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        AlienHudLabel(
+                            when (intensity) {
+                                AlienIntensity.OFF -> "предпросмотр режима"
+                                AlienIntensity.CALM -> "спокойный контур"
+                                AlienIntensity.FULL -> "канал открыт"
+                            },
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AlienSignalMeter(level = if (intensity == AlienIntensity.FULL) 4 else 2)
+                            Text(
+                                "${preview.starCount} звёзд · орбиты · сетка горизонта",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = preview.hud,
+                            )
+                        }
+                    }
+                }
+            }
+            AlienDivider("umbra · alien")
+        }
+    }
 }
 
 @Composable

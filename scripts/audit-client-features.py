@@ -128,7 +128,7 @@ check('REST sync stages', 'SyncStepException' in repo and 'список чато
 check('Precise sync errors', 'HTTP 401' in repo and 'ошибка DNS' in repo and 'TLS' in repo)
 check('Last successful sync', 'lastSuccessfulSyncAtMillis' in repo and 'Последняя успешная синхронизация' in settings)
 check('Settings realtime status', 'realtimeDiagnostics' in settings and 'Онлайн-канал' in settings)
-check('Merged release version', 'versionCode = 32' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.9"' in text(Path('android/app/build.gradle.kts')))
+check('Merged release version', 'versionCode = 33' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.10"' in text(Path('android/app/build.gradle.kts')))
 
 
 # 0.16.8 Network Recovery
@@ -141,7 +141,7 @@ check('Built-in network check', 'runNetworkCheck' in repo and 'Проверит�
 check('Network mode model', 'enum class NetworkMode' in repo and 'медленный REST' in settings and 'только локально' in settings)
 check('Safe network report', 'NetworkCheckReport' in repo and 'asText()' in repo and 'Отправить отчёт' in settings)
 check('Clear diagnostics', 'fun clear()' in diag and 'Очистить журнал' in settings)
-check('Network recovery version', 'versionCode = 32' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.9"' in text(Path('android/app/build.gradle.kts')))
+check('Network recovery version', 'versionCode = 33' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.10"' in text(Path('android/app/build.gradle.kts')))
 
 
 # 0.16.9 Alien Interface
@@ -151,16 +151,37 @@ root=text(Path('android/app/src/main/java/com/umbra/app/MainActivity.kt'))
 main_shell=text(Path('android/app/src/main/java/com/umbra/app/ui/MainShell.kt'))
 visuals=text(Path('android/app/src/main/java/com/umbra/app/ui/FutureVisuals.kt'))
 check('Alien preference persisted', 'alienInterface' in prefs and 'alien_interface' in prefs and 'setAlienInterface' in prefs)
-check('Alien theme provider', 'LocalUmbraAlienMode' in theme and 'alienInterface = appearance.alienInterface' in root)
-check('Quantum alien backdrop', 'repeat(34)' in visuals and 'alien-orbit' in visuals and 'Stroke' in visuals)
+check('Alien theme provider', 'LocalUmbraAlienMode' in theme and 'alienIntensity = appearance.alienIntensity' in root)
+check('Quantum alien backdrop', 'QuantumBackdrop' in visuals and 'alien-orbit' in visuals and 'Stroke' in visuals)
 check('Holographic glass edge', 'BorderStroke' in visuals and 'auraSecondary.copy(alpha = 0.54f)' in visuals)
 check('Orbital navigation', 'OrbitalNavIcon' in visuals and main_shell.count('OrbitalNavIcon') >= 2)
-check('Alien settings toggle', 'Alien Interface' in settings and 'preferences::setAlienInterface' in settings)
-check('Alien live preview', 'ALIEN MODE ACTIVE' in settings)
+check('Alien settings control', 'Alien Interface' in settings and 'preferences::setAlienIntensity' in settings)
+check('Alien live preview', 'QuantumBackdrop' in settings and 'AlienSignalMeter' in settings)
 check('Alien chat palette', 'Color(0xFF4B38FF)' in theme and 'Color(0xFFE957FF)' in theme)
-check('Reduced alien motion', 'alien && selected && !reduced' in visuals)
+check('Reduced alien motion', 'selected && !reduced' in visuals)
 check('Appearance repository wiring', 'AppearanceSettings(container.uiPreferences, repo)' in settings and 'preferences: UiPreferences, repo: ChatRepository' in settings)
-check('Alien release version', 'versionCode = 32' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.9"' in text(Path('android/app/build.gradle.kts')))
+check('Alien release version', 'versionCode = 33' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.10"' in text(Path('android/app/build.gradle.kts')))
+
+# 0.16.10 Alien Interface II
+alien=text(Path('android/app/src/main/java/com/umbra/app/ui/AlienVisuals.kt'))
+chat_kit=text(Path('android/app/src/main/java/com/umbra/app/ui/ChatKit.kt'))
+components=text(Path('android/app/src/main/java/com/umbra/app/ui/UmbraComponents.kt'))
+command=text(Path('android/app/src/main/java/com/umbra/app/ui/CommandCenter.kt'))
+avatar=text(Path('android/app/src/main/java/com/umbra/app/ui/Avatar.kt'))
+check('Three alien intensities', 'enum class AlienIntensity { OFF, CALM, FULL }' in prefs and 'setAlienIntensity' in prefs and 'AlienIntensity.CALM' in theme)
+check('Alien token table', 'data class AlienTokens(' in theme and 'LocalUmbraAlienTokens' in theme and 'fun alienTokens(' in theme and 'starCount' in theme)
+check('Alien visual library', 'fun QuantumBackdrop' in alien and 'drawAlienNebula' in alien and 'drawAlienRings' in alien and 'drawAlienGrid' in alien and 'drawAlienStarfield' in alien and 'drawAlienComet' in alien)
+check('Alien modifiers', 'fun Modifier.holoEdge' in alien and 'fun Modifier.alienGlow' in alien and 'fun Modifier.holoScanlines' in alien and 'fun Modifier.alienTopEdge' in alien and 'fun Modifier.alienOrbitRing' in alien)
+check('Alien HUD widgets', 'fun AlienHudLabel' in alien and 'fun AlienAwareLabel' in alien and 'fun AlienSignalMeter' in alien and 'fun AlienDivider' in alien and 'fun AlienActivationOverlay' in alien)
+check('Deterministic starfield', 'fun alienStars(' in alien and 'fun rememberAlienStars(' in alien)
+check('Alien motion freeze', 'if (LocalUmbraReducedMotion.current) return frozen' in alien)
+check('Alien activation overlay wired', 'AlienActivationOverlay' in main)
+check('Alien chat surfaces', 'drawAlienStarfield' in chat_kit and 'holoScanlines' in chat and 'AlienSignalMeter' in chat and 'holoEdge' in chat)
+check('Alien navigation chrome', 'alienTopEdge' in main_shell and 'AlienAwareLabel' in main_shell and 'AlienSignalMeter' in main_shell)
+check('Alien shared components', 'alienOrbitRing' in components and 'holoEdge' in components and 'AlienHudLabel' in components and 'alienOrbitRing' in avatar)
+check('Alien command center', 'AlienHudLabel' in command and 'AlienDivider' in command and 'holoEdge' in command)
+check('Alien intensity settings', 'Спокойный' in settings and 'Полный' in settings and 'CompositionLocalProvider' in settings)
+check('Alien docs updated', 'CALM' in text(Path('ALIEN_INTERFACE.md')) and '0.16.10' in text(Path('CHANGES.md')))
 
 failed=[name for name,ok,_ in checks if not ok]
 for name,ok,detail in checks:

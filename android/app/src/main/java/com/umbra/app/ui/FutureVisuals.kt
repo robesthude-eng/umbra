@@ -51,6 +51,9 @@ import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import com.umbra.app.ui.theme.LocalUmbraAlienMode
 import com.umbra.app.ui.theme.LocalUmbraVisuals
 import com.umbra.app.ui.theme.LocalUmbraMotion
+import com.umbra.app.ui.theme.LocalUmbraAlienTokens
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.sin
 
 /** Лёгкий Canvas-фон: два градиента без bitmap, шейдерных эффектов и blur. */
@@ -58,7 +61,11 @@ import kotlin.math.sin
 internal fun FutureBackdrop(modifier: Modifier = Modifier) {
     val visual = LocalUmbraVisuals.current
     val reduced = LocalUmbraReducedMotion.current
-    val alien = LocalUmbraAlienMode.current
+    // В Alien-режиме фон рисует QuantumBackdrop: слоёв больше, но Canvas всё также один.
+    if (LocalUmbraAlienMode.current) {
+        QuantumBackdrop(modifier)
+        return
+    }
     val transition = rememberInfiniteTransition(label = "umbra-aura")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -87,21 +94,6 @@ internal fun FutureBackdrop(modifier: Modifier = Modifier) {
             radius * 0.85f,
             Offset(size.width * (0.08f + phase * 0.12f), size.height * 0.88f),
         )
-        if (alien) {
-            val center = Offset(size.width * 0.52f, size.height * (0.40f + phase * 0.04f))
-            drawCircle(visual.auraPrimary.copy(alpha = 0.15f), size.minDimension * 0.32f, center, style = Stroke(1.dp.toPx()))
-            drawCircle(visual.auraSecondary.copy(alpha = 0.10f), size.minDimension * 0.43f, center, style = Stroke(0.7.dp.toPx()))
-            repeat(34) { index ->
-                val x = size.width * (((index * 47) % 101) / 100f)
-                val baseY = size.height * (((index * 71) % 103) / 102f)
-                val y = baseY + sin((phase * 6.283f + index).toDouble()).toFloat() * 5.dp.toPx()
-                drawCircle(
-                    color = if (index % 3 == 0) visual.auraSecondary.copy(alpha = 0.28f) else visual.auraPrimary.copy(alpha = 0.22f),
-                    radius = if (index % 7 == 0) 1.5.dp.toPx() else 0.8.dp.toPx(),
-                    center = Offset(x, y),
-                )
-            }
-        }
     }
 }
 
@@ -118,7 +110,10 @@ internal fun GlassPanel(
     val edge = if (alien) Brush.linearGradient(listOf(visual.auraPrimary.copy(alpha = 0.78f), visual.auraSecondary.copy(alpha = 0.54f), visual.glassBorder))
         else SolidColor(visual.glassBorder)
     Surface(
-        modifier = modifier.border(BorderStroke(if (alien) 1.25.dp else 1.dp, edge), shape),
+        modifier = modifier
+            .border(BorderStroke(if (alien) 1.25.dp else 1.dp, edge), shape)
+            // Бегущий спектральный блик по кромке — только в Alien-режиме.
+            .holoEdge(cornerRadius = if (strong) 26.dp else 22.dp, width = 1.dp),
         shape = shape,
         color = if (strong) visual.glassStrong else visual.glass,
         tonalElevation = if (strong) 3.dp else 1.dp,
@@ -174,7 +169,8 @@ internal fun ActivityIsland(
 /** Selected destinations become a quiet orbital object only in Alien mode. */
 @Composable
 internal fun OrbitalNavIcon(icon: ImageVector, label: String, selected: Boolean) {
-    val alien = LocalUmbraAlienMode.current
+    val tokens = LocalUmbraAlienTokens.current
+    val alien = tokens.enabled
     val reduced = LocalUmbraReducedMotion.current
     val visual = LocalUmbraVisuals.current
     val transition = rememberInfiniteTransition(label = "alien-orbit")
@@ -184,12 +180,30 @@ internal fun OrbitalNavIcon(icon: ImageVector, label: String, selected: Boolean)
         animationSpec = infiniteRepeatable(tween(2_600), RepeatMode.Reverse),
         label = "alien-orbit-pulse",
     )
+    // Спутник по орбите есть только у выбранного раздела и только на полной силе.
+    val spin by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = if (tokens.full && selected && !reduced) 1f else 0f,
+        animationSpec = infiniteRepeatable(tween(6_000), RepeatMode.Restart),
+        label = "alien-orbit-spin",
+    )
     Box(
         Modifier.size(42.dp).drawBehind {
-            if (alien && selected) {
-                drawCircle(visual.auraPrimary.copy(alpha = 0.20f + pulse * 0.10f), radius = size.minDimension * (0.36f + pulse * 0.04f))
-                drawCircle(visual.auraSecondary.copy(alpha = 0.52f), radius = size.minDimension * 0.45f, style = Stroke(1.dp.toPx()))
+            if (!alien) return@drawBehind
+            val ring = size.minDimension * 0.45f
+            if (!selected) {
+                drawCircle(tokens.primary.copy(alpha = 0.16f), radius = ring * 0.92f, style = Stroke(0.7.dp.toPx()))
+                return@drawBehind
             }
+            drawCircle(visual.auraPrimary.copy(alpha = 0.20f + pulse * 0.10f), radius = size.minDimension * (0.36f + pulse * 0.04f))
+            drawCircle(visual.auraSecondary.copy(alpha = 0.52f), radius = ring, style = Stroke(1.dp.toPx()))
+            if (!tokens.full) return@drawBehind
+            val angle = spin * 2f * PI.toFloat()
+            drawCircle(
+                tokens.primary.copy(alpha = 0.9f),
+                1.9.dp.toPx(),
+                Offset(center.x + cos(angle) * ring, center.y + sin(angle) * ring),
+            )
         },
         contentAlignment = androidx.compose.ui.Alignment.Center,
     ) { Icon(icon, label, tint = if (alien && selected) visual.auraPrimary else androidx.compose.ui.graphics.Color.Unspecified) }

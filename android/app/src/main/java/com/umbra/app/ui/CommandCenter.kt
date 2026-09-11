@@ -32,6 +32,7 @@ internal fun CommandCenter(
     onDestination: (Int) -> Unit,
 ) {
     val conversations by remember(repo) { repo.conversations() }.collectAsState(emptyList())
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     var query by remember { mutableStateOf("") }
     val needle = query.trim()
     val visible = remember(conversations, needle) {
@@ -46,6 +47,7 @@ internal fun CommandCenter(
         Box(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 44.dp), contentAlignment = Alignment.TopCenter) {
             GlassPanel(Modifier.fillMaxWidth().widthIn(max = 620.dp), strong = true) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    AlienHudLabel("umbra · мостик управления")
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Command Center", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
                         AssistChip(onClick = {}, enabled = false, label = { Text("Ctrl/⌘ K") })
@@ -60,6 +62,7 @@ internal fun CommandCenter(
                         singleLine = true,
                         shape = RoundedCornerShape(20.dp),
                     )
+                    AlienDivider("маршруты")
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CommandDestination(Icons.Filled.Chat, "Чаты", Modifier.weight(1f)) { onDestination(0); onDismiss() }
                         CommandDestination(Icons.Filled.Call, "Звонки", Modifier.weight(1f)) { onDestination(2); onDismiss() }
@@ -89,7 +92,14 @@ internal fun CommandCenter(
                                     Text(conversation.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if (conversation.unreadCount > 0) Badge { Text(conversation.unreadCount.coerceAtMost(99).toString()) }
+                                if (conversation.unreadCount > 0) {
+                                    val badgeText = conversation.unreadCount.coerceAtMost(99).toString()
+                                    if (tokens.enabled) Badge(
+                                        containerColor = tokens.secondary,
+                                        contentColor = androidx.compose.ui.graphics.Color(0xFF0B0216),
+                                    ) { Text(badgeText) }
+                                    else Badge { Text(badgeText) }
+                                }
                             }
                         }
                     }
@@ -101,7 +111,11 @@ internal fun CommandCenter(
 
 @Composable
 private fun CommandDestination(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
-    FilledTonalButton(onClick, modifier.heightIn(min = 48.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+    FilledTonalButton(
+        onClick,
+        modifier.heightIn(min = 48.dp).holoEdge(cornerRadius = 20.dp, width = 1.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp),
+    ) {
         Icon(icon, null, Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
         Text(label, maxLines = 1)

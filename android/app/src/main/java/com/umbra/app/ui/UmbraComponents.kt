@@ -44,9 +44,12 @@ internal fun ScreenEntrance(screenKey: Any, modifier: Modifier = Modifier, conte
 @Composable
 internal fun PageHeading(title: String, action: (@Composable () -> Unit)? = null) {
     val visual = LocalUmbraVisuals.current
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     Column(Modifier.fillMaxWidth()) {
+        // На полной силе над заголовком появляется служебная строка HUD.
+        if (tokens.full) AlienHudLabel("umbra · $title", Modifier.padding(start = 20.dp, top = 14.dp))
         Row(
-            Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 10.dp),
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = if (tokens.full) 6.dp else 18.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -54,10 +57,12 @@ internal fun PageHeading(title: String, action: (@Composable () -> Unit)? = null
             action?.invoke()
         }
         Box(
-            Modifier.padding(start = 20.dp, bottom = 8.dp).width(52.dp).height(3.dp)
+            Modifier.padding(start = 20.dp, bottom = 8.dp)
+                .width(if (tokens.enabled) 76.dp else 52.dp).height(3.dp)
                 .clip(RoundedCornerShape(50)).background(
                     androidx.compose.ui.graphics.Brush.horizontalGradient(
-                        listOf(visual.auraPrimary, visual.auraSecondary.copy(alpha = 0.25f))
+                        if (tokens.enabled) listOf(tokens.primary, tokens.secondary, androidx.compose.ui.graphics.Color.Transparent)
+                        else listOf(visual.auraPrimary, visual.auraSecondary.copy(alpha = 0.25f))
                     )
                 )
         )
@@ -81,7 +86,11 @@ internal fun AppEmptyState(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(
-                Modifier.size(72.dp).clip(RoundedCornerShape(24.dp))
+                Modifier.size(72.dp)
+                    // Вне Alien-режима оба модификатора ничего не рисуют.
+                    .alienOrbitRing()
+                    .alienGlow(strength = 1.2f)
+                    .clip(RoundedCornerShape(24.dp))
                     .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(visual.auraPrimary, visual.auraSecondary))),
                 contentAlignment = Alignment.Center,
             ) {
@@ -100,7 +109,7 @@ internal fun AppEmptyState(
 internal fun GroupAvatar(name: String, size: Dp = 52.dp) {
     val visual = LocalUmbraVisuals.current
     Box(
-        Modifier.size(size).clip(RoundedCornerShape(18.dp)).background(
+        Modifier.size(size).alienOrbitRing(strength = 0.9f).clip(RoundedCornerShape(18.dp)).background(
             androidx.compose.ui.graphics.Brush.linearGradient(listOf(visual.auraPrimary, visual.auraSecondary))
         ),
         contentAlignment = Alignment.Center,
@@ -114,6 +123,7 @@ internal fun GlassRow(onClick: (() -> Unit)?, content: @Composable RowScope.() -
     val visual = LocalUmbraVisuals.current
     Row(
         Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(visual.glass)
+            .holoEdge(cornerRadius = 24.dp)
             .let { if (onClick == null) it else it.clickable(onClick = onClick) }.padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
         content = content,

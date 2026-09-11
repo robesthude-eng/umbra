@@ -60,7 +60,9 @@ internal fun AvatarPhoto(avatarUri: String?, size: Dp, onClick: (() -> Unit)?) {
 
 @Composable
 private fun AvatarFrame(bitmap: Bitmap?, name: String, size: Dp, onClick: (() -> Unit)?) {
-    var modifier = Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer)
+    // Кольцо-орбита вокруг аватара рисуется только в Alien-режиме.
+    var modifier = Modifier.size(size).alienOrbitRing(strength = 0.8f)
+        .clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer)
     if (onClick != null) modifier = modifier.clickable(onClickLabel = "Выбрать фото", onClick = onClick)
     Box(modifier.semantics { contentDescription = if (onClick != null) "Выбрать фото профиля" else "Аватар: $name" }, contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap.asImageBitmap(), null, Modifier.size(size), contentScale = ContentScale.Crop)

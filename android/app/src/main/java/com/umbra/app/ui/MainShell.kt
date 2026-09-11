@@ -63,11 +63,17 @@ fun MainShell(
         containerColor = Color.Transparent,
         bottomBar = {
             if (!twoPane) {
-                NavigationBar(containerColor = visual.glassStrong, tonalElevation = 0.dp) {
+                NavigationBar(
+                    // Светящаяся кромка сверху появляется только в Alien-режиме.
+                    modifier = Modifier.alienTopEdge(),
+                    containerColor = visual.glassStrong,
+                    tonalElevation = 0.dp,
+                ) {
                     destinations.forEach { (id, label, icon) ->
                         NavigationBarItem(
                             selected = selectedTab == id, onClick = { onTab(id) },
-                            icon = { OrbitalNavIcon(icon, label, selectedTab == id) }, label = { Text(label) },
+                            icon = { OrbitalNavIcon(icon, label, selectedTab == id) },
+                            label = { AlienAwareLabel(label) },
                         )
                     }
                 }
@@ -83,7 +89,7 @@ fun MainShell(
                             selected = selectedTab == id,
                             onClick = { onTab(id) },
                             icon = { OrbitalNavIcon(icon, label, selectedTab == id) },
-                            label = { Text(label) },
+                            label = { AlienAwareLabel(label) },
                         )
                     }
                     Spacer(Modifier.weight(1f))
@@ -141,7 +147,8 @@ internal fun SyncBanner(repo: ChatRepository) {
     val connected by repo.connected.collectAsState()
     val error by repo.syncError.collectAsState()
     val syncing by repo.syncing.collectAsState()
-    val alien = com.umbra.app.ui.theme.LocalUmbraAlienMode.current
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
+    val alien = tokens.enabled
     val visual = LocalUmbraVisuals.current
     val scope = rememberCoroutineScope()
     // Normal connectivity is not a user-presence status and needs no permanent toolbar.
@@ -150,8 +157,18 @@ internal fun SyncBanner(repo: ChatRepository) {
         else if (alien) visual.auraPrimary.copy(alpha = 0.12f)
         else MaterialTheme.colorScheme.surfaceContainer) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Деления сигнала: ошибка — одно, обмен — два, резервный канал — три.
+            if (alien) AlienSignalMeter(
+                level = if (error != null) 1 else if (syncing) 2 else 3,
+                modifier = Modifier.padding(end = 10.dp),
+            )
             Text(
-                error ?: if (syncing) "Обновление сообщений…" else "Медленный режим: обмен каждые 5 секунд (прямое соединение прервано)",
+                error ?: when {
+                    syncing && alien -> "синхронизация канала…"
+                    syncing -> "Обновление сообщений…"
+                    alien -> "резервный канал: обмен каждые 5 секунд"
+                    else -> "Медленный режим: обмен каждые 5 секунд (прямое соединение прервано)"
+                },
                 Modifier.weight(1f).padding(vertical = 10.dp),
                 color = if (error != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
@@ -246,12 +263,16 @@ private fun ChatsTab(
                 }
             }
         }
+        val alienTokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
         ExtendedFloatingActionButton(
             onClick = { if (filter == "groups") showCreate = true else showNew = true },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+                .alienGlow(strength = 1.4f)
+                .holoEdge(cornerRadius = 20.dp),
             shape = RoundedCornerShape(20.dp),
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            containerColor = if (alienTokens.enabled) alienTokens.primary.copy(alpha = if (alienTokens.full) 0.92f else 0.86f)
+                else MaterialTheme.colorScheme.primaryContainer,
+            contentColor = if (alienTokens.enabled) Color(0xFF01131A) else MaterialTheme.colorScheme.onPrimaryContainer,
             icon = { Icon(if (filter == "groups") Icons.Filled.GroupAdd else Icons.Filled.Edit, null) },
             text = { Text(if (filter == "groups") "Новая группа" else "Написать") },
         )
@@ -266,9 +287,17 @@ private fun ChatsTab(
 @Composable
 private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boolean, onClick: () -> Unit) {
     val visual = LocalUmbraVisuals.current
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     val interaction = rememberFutureInteraction()
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
-        .background(if (selected) visual.auraPrimary.copy(alpha = 0.16f) else Color.Transparent)
+        .background(
+            if (selected && tokens.enabled) androidx.compose.ui.graphics.Brush.horizontalGradient(
+                listOf(tokens.primary.copy(alpha = 0.20f), tokens.secondary.copy(alpha = 0.10f), Color.Transparent),
+            )
+            else androidx.compose.ui.graphics.SolidColor(
+                if (selected) visual.auraPrimary.copy(alpha = 0.16f) else Color.Transparent,
+            ),
+        )
         .futurePress(interaction)
         .clickable(interactionSource = interaction, indication = null, onClick = onClick)
         .padding(horizontal = 10.dp, vertical = 12.dp),
@@ -281,7 +310,11 @@ private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boo
             }
             Text(c.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (c.unreadCount > 0) Badge { Text(c.unreadCount.coerceAtMost(99).toString()) }
+        if (c.unreadCount > 0) {
+            val badgeText = c.unreadCount.coerceAtMost(99).toString()
+            if (tokens.enabled) Badge(containerColor = tokens.secondary, contentColor = Color(0xFF0B0216)) { Text(badgeText) }
+            else Badge { Text(badgeText) }
+        }
     }
 }
 

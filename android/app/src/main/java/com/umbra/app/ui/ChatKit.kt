@@ -44,7 +44,10 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.umbra.app.ui.theme.LocalUmbraAlienTokens
 import com.umbra.app.ui.theme.LocalUmbraChatColors
 import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import java.time.Instant
@@ -83,6 +86,17 @@ internal fun bubbleShape(outgoing: Boolean, first: Boolean, last: Boolean): Roun
 internal fun ChatBackground(modifier: Modifier = Modifier) {
     val chat = LocalUmbraChatColors.current
     val reduced = LocalUmbraReducedMotion.current
+    val alien = LocalUmbraAlienTokens.current
+    // В переписке «чужие» слои тише, чем на главном фоне: текст важнее декора.
+    val alienChat = remember(alien) {
+        alien.copy(
+            starAlpha = alien.starAlpha * 0.75f,
+            gridAlpha = alien.gridAlpha * 0.55f,
+            vignetteAlpha = alien.vignetteAlpha * 0.8f,
+        )
+    }
+    val stars = rememberAlienStars(if (alien.enabled) alien.starCount / 2 else 0)
+    val drift = rememberAlienPhase(26_000)
     val transition = rememberInfiniteTransition(label = "chat-aura")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -112,6 +126,10 @@ internal fun ChatBackground(modifier: Modifier = Modifier) {
             radius = bottomRadius,
             center = Offset(size.width * (0.05f + phase * 0.10f), size.height * 0.92f),
         )
+        if (!alien.enabled) return@Canvas
+        drawAlienGrid(alienChat, drift)
+        drawAlienStarfield(stars, alienChat, drift)
+        drawAlienVignette(alienChat)
     }
 }
 
@@ -119,12 +137,18 @@ internal fun ChatBackground(modifier: Modifier = Modifier) {
 @Composable
 internal fun DateChip(label: String, modifier: Modifier = Modifier) {
     val chat = LocalUmbraChatColors.current
+    val alien = LocalUmbraAlienTokens.current
     Box(modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
         Text(
-            label,
-            Modifier.clip(CircleShape).background(chat.bar).padding(horizontal = 12.dp, vertical = 5.dp),
-            style = MaterialTheme.typography.labelMedium,
-            color = chat.incomingMeta,
+            if (alien.enabled) "⟨ $label ⟩" else label,
+            Modifier.clip(CircleShape).background(chat.bar)
+                .holoEdge(cornerRadius = 20.dp, width = 0.8.dp, animated = false)
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            style = if (alien.enabled) MaterialTheme.typography.labelMedium.copy(
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 0.8.sp,
+            ) else MaterialTheme.typography.labelMedium,
+            color = if (alien.enabled) alien.hud else chat.incomingMeta,
         )
     }
 }

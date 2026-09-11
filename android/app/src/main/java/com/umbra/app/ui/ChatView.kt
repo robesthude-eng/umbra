@@ -283,7 +283,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris -> sendPicked(uris) }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> sendPicked(listOfNotNull(uri)) }
-    // Запись видеосообщения прямо из чата: камера пишет в приватный каталог,
+    // Запись видеосообщения прямо из чата: камера пиш��т в приватный каталог,
     // оттуда запись уходит обычным вложением, а временный файл удаляется.
     var captureTarget by remember { mutableStateOf<File?>(null) }
     fun sendCaptured(file: File) {
@@ -671,12 +671,19 @@ private fun ChatTopBar(
 ) {
     val palette = LocalUmbraChatColors.current
     val reducedMotion = LocalUmbraReducedMotion.current
+    val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     var menu by remember { mutableStateOf(false) }
+    // В Alien-режиме статус звучит как бортовой журнал, но смысл строк тот же.
     val status = when {
+        syncError != null && tokens.enabled -> "канал потерян"
         syncError != null -> "Нет связи с сервером"
+        syncing && tokens.enabled -> "синхронизация…"
         syncing -> "Обновление…"
+        !connected && tokens.enabled -> "резервный канал"
         !connected -> "Медленный режим"
+        isGroup && tokens.enabled -> "коллектив"
         isGroup -> "Группа"
+        tokens.enabled -> "прямой канал"
         else -> "Личный чат"
     }
     val statusColor = when {
@@ -698,7 +705,17 @@ private fun ChatTopBar(
                         color = palette.onIncoming,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (syncError != null || syncing || !connected) {
+                        // Шкала сигнала заменяет точку состояния и видна всегда.
+                        if (tokens.enabled) AlienSignalMeter(
+                            level = when {
+                                syncError != null -> 1
+                                syncing -> 2
+                                !connected -> 3
+                                else -> 4
+                            },
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
+                        else if (syncError != null || syncing || !connected) {
                             StatusDot(statusColor)
                             Spacer(Modifier.width(6.dp))
                         }
@@ -758,8 +775,10 @@ private fun ChatEmptyState(modifier: Modifier = Modifier) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        AlienHudLabel("канал свободен")
         Box(
-            Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(palette.outgoing)),
+            Modifier.size(64.dp).alienOrbitRing().alienGlow()
+                .clip(CircleShape).background(Brush.linearGradient(palette.outgoing)),
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.AutoMirrored.Filled.Send, null, tint = palette.onOutgoing) }
         Text(
@@ -812,6 +831,7 @@ private fun ChatComposer(
                     Modifier.weight(1f).heightIn(min = 48.dp, max = 148.dp)
                         .clip(RoundedCornerShape(26.dp))
                         .background(palette.field)
+                        .holoEdge(cornerRadius = 26.dp, width = 1.dp)
                         .padding(start = 4.dp, end = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -840,7 +860,9 @@ private fun ChatComposer(
                 }
                 Spacer(Modifier.width(8.dp))
                 Box(
-                    Modifier.size(48.dp).clip(CircleShape)
+                    Modifier.size(48.dp)
+                        .alienGlow(strength = if (canSend) 1.2f else 0.5f)
+                        .clip(CircleShape)
                         .background(
                             if (canSend) Brush.linearGradient(palette.outgoing)
                             else SolidColor(palette.field),
@@ -1093,6 +1115,8 @@ private fun MessageRow(
                         if (outgoing) Brush.linearGradient(palette.outgoing)
                         else SolidColor(palette.incoming),
                     )
+                    // Скан-линии только на своих пузырях: входящий текст остаётся чистым.
+                    .holoScanlines(palette.onOutgoing, active = outgoing)
                     .combinedClickable(
                         onLongClick = {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)

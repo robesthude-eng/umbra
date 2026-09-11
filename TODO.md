@@ -7,6 +7,7 @@
 - Диагностический журнал без содержимого сообщений.
 - Точные состояния REST и WebSocket.
 - Future UI, Motion Engine и Spatial Media.
+- Alien Interface с тремя интенсивностями, таблицей токенов и общей библиотекой `AlienVisuals.kt`.
 - Source-aware медиапереход, Predictive Back, swipe-dismiss и pan/zoom arbitration.
 - Телефонная и планшетная компоновки.
 
