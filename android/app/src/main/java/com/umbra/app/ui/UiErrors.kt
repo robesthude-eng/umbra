@@ -7,8 +7,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import retrofit2.HttpException
 import java.io.IOException
 
-/** Only known server messages are translated; backend diagnostics never leak into UI. */
-internal fun Exception.userMessage(): String {
+/** Only known server messages are translated; backend diagnostics never leak into UI.
+ *  Приёмник расширен до Throwable: колбэк onFailure из runCatching отдаёт именно
+ *  Throwable, а не Exception (расширение на Exception не разрешалось в K2). */
+internal fun Throwable.userMessage(): String {
     if (this is CancellationException) throw this
     if (this is HttpException) {
         val reason = runCatching {

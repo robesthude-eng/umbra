@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.umbra.app.data.repo.SessionPhase
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.delay
