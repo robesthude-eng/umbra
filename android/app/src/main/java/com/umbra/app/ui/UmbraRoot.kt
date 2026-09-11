@@ -40,15 +40,18 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
         } else repo.stopRealtime()
     }
 
-    // Проверка обновления — один раз за холодный старт, молча при ошибке
-    // и никогда в режиме «картинка в картинке».
+    // Проверка обновления — на каждый старт приложения (холодный и возврат
+    // из фона; AppUpdater сам ограничивает частоту) и по кнопке из настроек.
+    // Молча при ошибке и никогда в режиме «картинка в картинке».
     val updater = container.appUpdater
     val scope = rememberCoroutineScope()
     var updateUi by remember { mutableStateOf<UpdateUi?>(null) }
-    LaunchedEffect(Unit) {
-        if (!pictureInPicture) {
-            updater.check()?.let { updateUi = UpdateUi.Offer(it) }
-        }
+    var declinedVersion by remember { mutableStateOf<Int?>(null) }
+    val updateState by updater.updateState.collectAsState()
+    LaunchedEffect(updateState.checkedAtMillis) {
+        if (!pictureInPicture) updateState.info
+            ?.takeIf { it.versionCode != declinedVersion }
+            ?.let { updateUi = UpdateUi.Offer(it) }
     }
 
     when (phase) {
@@ -139,7 +142,10 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
     updateUi?.let { state ->
         UpdateDialog(
             state = state,
-            onCancel = { updateUi = null },
+            onCancel = {
+                declinedVersion = updateState.info?.versionCode
+                updateUi = null
+            },
             onStart = { info ->
                 scope.launch {
                     updateUi = UpdateUi.Downloading(info, 0)

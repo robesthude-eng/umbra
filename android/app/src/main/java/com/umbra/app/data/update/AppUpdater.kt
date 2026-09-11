@@ -53,6 +53,38 @@ class AppUpdater(
     private val json = Json { ignoreUnknownKeys = true }
     private val client = client
 
+    /** Результат последней проверки с меткой времени (метка меняется — подписчики видят каждую проверку). */
+    data class UpdateState(val checkedAtMillis: Long, val info: UpdateInfo?)
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val _updateState = MutableStateFlow(UpdateState(0L, null))
+
+    /** Последний результат проверки: UmbraRoot показывает диалог, настройки — статус кнопки. */
+    val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
+    private var lastCheckAtMillis = 0L
+
+    /**
+     * Вызывается из Activity.onStart — срабатывает и на холодном старте, и на
+     * каждом возврате из фона: процесс Android живёт неделями, и «переоткрытие»
+     * приложения без этого не проверяет версию.
+     */
+    fun onAppStart() {
+        scope.launch { runCheck() }
+    }
+
+    /**
+     * Проверка с защитой от лишних запросов: автоматически не чаще раза в
+     * 15 минут, вручную (кнопка в настройках) — всегда.
+     */
+    suspend fun runCheck(force: Boolean = false): UpdateInfo? {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastCheckAtMillis < 15 * 60_000L) return _updateState.value.info
+        lastCheckAtMillis = now
+        val info = check()
+        _updateState.value = UpdateState(now, info)
+        return info
+    }
+
     /**
      * Проверка обновления. null — сборка актуальна либо сервер не ответил:
      * проверка фоновая и молчаливая, ошибки пользователю не показываем.
@@ -63,8 +95,10 @@ class AppUpdater(
             client.newCall(Request.Builder().url("$base/app/latest.json").build()).execute().use { resp ->
                 if (!resp.isSuccessful) null else resp.body?.bytes()?.decodeToString()
             }
-        }.getOrNull() ?: return@withContext null
-        val info = runCatching { json.decodeFromString<UpdateInfo>(body) }.getOrNull()
+        }.onFailure { DiagLog.log("update-check", it) }.getOrNull() ?: return@withContext null
+        val info = runCatching { json.decodeFromString<UpdateInfo>(body) }
+            .onFailure { DiagLog.log("update-check", it) }
+            .getOrNull()
             ?: return@withContext null
         // Предлагаем только более новую сборку: сервер знает больший versionCode.
         info.takeIf { it.versionCode > BuildConfig.VERSION_CODE && it.apk.isNotBlank() }

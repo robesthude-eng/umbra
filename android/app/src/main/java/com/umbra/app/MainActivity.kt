@@ -94,6 +94,14 @@ class MainActivity : ComponentActivity() {
         handleCallIntent(intent, (application as UmbraApp).container)
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Проверка обновления на каждый старт: холодный и возврат из фона.
+        // Процесс Android живёт неделями — без этого телефон не узнаёт
+        // о новой версии, пока система сама не убьёт процесс.
+        (application as UmbraApp).container.appUpdater.onAppStart()
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         val container = (application as UmbraApp).container

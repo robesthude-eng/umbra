@@ -205,6 +205,7 @@ private fun AppearanceSettings(preferences: UiPreferences, repo: ChatRepository)
         PreferenceSwitch("Уменьшить анимацию", "Спокойные переходы между экранами", appearance.reduceMotion, preferences::setReduceMotion, Modifier.padding(16.dp))
     }
     DiagnosticsCard(repo)
+    UpdateCard(container)
 }
 
 @Composable
