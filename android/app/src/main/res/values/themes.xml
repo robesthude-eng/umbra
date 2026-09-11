@@ -1,6 +1,9 @@
 <resources>
     <style name="Theme.Umbra" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#0A0A12</item>
-        <item name="android:windowBackground">#0A0A12</item>
+        <!-- Прозрачные системные панели: контент рисуется под ними, отступы
+             добавляет Scaffold. Цвет окна совпадает с фоном экранов Compose. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">#091120</item>
     </style>
 </resources>
