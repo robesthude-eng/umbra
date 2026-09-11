@@ -462,9 +462,20 @@ class ChatRepository(
             while (isActive && isCurrent(key)) {
                 try {
                     if (started && ws.connected.value) {
-                        syncNow(key, forceFull = false, notify = false)
-                        flushOutbox()
-                        commit(key) { _syncProblem.value = null }
+                        var syncOk = false
+                        try {
+                            syncNow(key, forceFull = false, notify = false)
+                            syncOk = true
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: Exception) {
+                            DiagLog.log("poll-sync", e)
+                            if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Повторим при восстановлении связи."
+                        }
+                        // Флаш очереди выполняется и при упавшей тихой синхронизации.
+                        try { flushOutbox() }
+                        catch (e: CancellationException) { throw e }
+                        catch (_: Exception) { /* poll повторит; refresh публикует ошибку */ }
+                        if (syncOk) commit(key) { _syncProblem.value = null }
                     } else {
                         refresh()
                     }
@@ -487,16 +498,20 @@ class ChatRepository(
 
     suspend fun refresh(forceFull: Boolean = false) {
         val key = key()
+        var syncOk = false
         try {
             syncNow(key, forceFull)
-            flushOutbox()
-            commit(key) { _syncProblem.value = null }
+            syncOk = true
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             DiagLog.log("refresh", e)
             if (isCurrent(key)) _syncProblem.value = "Не удалось обновить данные. Проверьте подключение и повторите."
-            throw e
         }
+        // Отправка не должна зависеть от приёма: даже если история не догрузилась
+        // (например, сервер вернул метку времени в неожиданном формате), очередь
+        // уходит — иначе сообщения висят «часиками» до ручного действия.
+        flushOutbox()
+        if (syncOk) commit(key) { _syncProblem.value = null }
     }
 
     private suspend fun syncNow(key: SessionKey, forceFull: Boolean, notify: Boolean = true) = syncMutex.withLock {
@@ -558,8 +573,8 @@ class ChatRepository(
     }
 
     private suspend fun persist(key: SessionKey, dto: MessageDto) = commit(key) {
-        val expires = dto.expiresAt?.let { Instant.parse(it).toEpochMilli() }
-        val created = Instant.parse(dto.createdAt).toEpochMilli()
+        val expires = dto.expiresAt?.let { IsoTime.parse(it).toEpochMilli() }
+        val created = IsoTime.parse(dto.createdAt).toEpochMilli()
         val chatId = dto.chatId.ifEmpty { if (dto.senderId == key.owner) dto.recipientId else dto.senderId }
         if (chatId.isBlank()) return@commit
         db.withTransaction {
@@ -806,7 +821,7 @@ class ChatRepository(
             val peer = if (c.callerId == key.owner) c.calleeId else c.callerId
             CallUi(
                 c.id, peer, titleFor(peer), c.callerId != key.owner, c.status,
-                Instant.parse(c.createdAt).toEpochMilli(), c.video,
+                IsoTime.parse(c.createdAt).toEpochMilli(), c.video,
             )
         }.sortedByDescending { it.createdAtMillis }
         commit(key) {
