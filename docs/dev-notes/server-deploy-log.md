@@ -17,7 +17,7 @@
 | nginx | `location = /app/latest.json` (json, no-cache) и `location /app/` (apk) добавлены во все три server-блока (80, 8081, 8443) |
 | Бэкап vhost | `/root/umbra-deploy-bak/umbra.vhost.pre-app-update.<TS>` |
 | Проверка | `latest.json` = 200 на 80/8081/8443 и снаружи по IP; APK = 200, `Content-Type: application/vnd.android.package-archive`, Content-Length совпадает |
-| Текущая версия | versionCode 27 (0.16.4 — завершение Future UI), sha256 `0760f9aa74a66589ed8cdaad304e9e3cd5fbcafa09121b836ccd06a7922a1ea9`; раздача обновлена 2026-09-11 |
+| Текущая версия | versionCode 28 (0.16.5 — надёжная отправка и диагностика), sha256 `2697fb6ef948786c63ee2e4f00cee2f916eabd77a57774bbeaae38ec8342d77b`; раздача обновлена 2026-09-11 |
 
 Порядок обновления при новых релизах: собрать APK в CI → скопировать в
 `/opt/umbra/app/umbra-latest.apk` → перезаписать `latest.json` (versionCode,
