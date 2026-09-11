@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/** Стиль независим от светлой/тёмной темы и прежних настроек Alien. */
+enum class InterfaceStyle { STANDARD, SMOKED_GLASS }
+
 /**
  * Сила Alien Interface.
  *
@@ -22,6 +25,7 @@ data class AppearancePreferences(
     val messageTextSize: Int = 16,
     val reduceMotion: Boolean = false,
     val alienIntensity: AlienIntensity = AlienIntensity.OFF,
+    val interfaceStyle: InterfaceStyle = InterfaceStyle.STANDARD,
 ) {
     /** Совместимость с прежним переключателем: режим «включён» при любой силе. */
     val alienInterface: Boolean get() = alienIntensity != AlienIntensity.OFF
@@ -40,8 +44,8 @@ private fun readAlienIntensity(prefs: SharedPreferences): AlienIntensity {
 }
 
 /** Device-local appearance. Contains no account data and survives signing out. */
-class UiPreferences(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("umbra_appearance", Context.MODE_PRIVATE)
+class UiPreferences(context: Context, preferenceName: String = "umbra_appearance") {
+    private val prefs = context.applicationContext.getSharedPreferences(preferenceName, Context.MODE_PRIVATE)
     private val mutableState = MutableStateFlow(
         AppearancePreferences(
             theme = runCatching { ThemeMode.valueOf(prefs.getString("theme", "SYSTEM").orEmpty()) }
@@ -50,9 +54,18 @@ class UiPreferences(context: Context) {
             messageTextSize = prefs.getInt("message_text_size", 16).coerceIn(16, 22),
             reduceMotion = prefs.getBoolean("reduce_motion", false),
             alienIntensity = readAlienIntensity(prefs),
+            interfaceStyle = runCatching {
+                InterfaceStyle.valueOf(prefs.getString("interface_style", "STANDARD").orEmpty())
+            }.getOrDefault(InterfaceStyle.STANDARD),
         ),
     )
     val state = mutableState.asStateFlow()
+
+    fun setInterfaceStyle(value: InterfaceStyle) {
+        prefs.edit().putString("interface_style", value.name).apply()
+        // Не сбрасываем theme, dynamicColor и Alien: возврат восстановит прежний вид.
+        mutableState.value = mutableState.value.copy(interfaceStyle = value)
+    }
 
     fun setTheme(value: ThemeMode) {
         prefs.edit().putString("theme", value.name).apply()

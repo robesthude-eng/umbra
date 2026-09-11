@@ -85,7 +85,10 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
     }
 
     Column(
-        Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer)))
+        Modifier.fillMaxSize().then(
+            if (com.umbra.app.ui.theme.LocalUmbraSmokedGlass.current) Modifier
+            else Modifier.background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer)))
+        )
             .safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

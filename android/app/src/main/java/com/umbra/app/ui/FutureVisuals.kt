@@ -52,6 +52,7 @@ import com.umbra.app.ui.theme.LocalUmbraAlienMode
 import com.umbra.app.ui.theme.LocalUmbraVisuals
 import com.umbra.app.ui.theme.LocalUmbraMotion
 import com.umbra.app.ui.theme.LocalUmbraAlienTokens
+import com.umbra.app.ui.theme.LocalUmbraSmokedGlass
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -59,6 +60,10 @@ import kotlin.math.sin
 /** Лёгкий Canvas-фон: два градиента без bitmap, шейдерных эффектов и blur. */
 @Composable
 internal fun FutureBackdrop(modifier: Modifier = Modifier) {
+    if (LocalUmbraSmokedGlass.current) {
+        SmokedGlassBackdrop(modifier)
+        return
+    }
     val visual = LocalUmbraVisuals.current
     val reduced = LocalUmbraReducedMotion.current
     // В Alien-режиме фон рисует QuantumBackdrop: слоёв больше, но Canvas всё также один.
@@ -106,17 +111,18 @@ internal fun GlassPanel(
 ) {
     val visual = LocalUmbraVisuals.current
     val alien = LocalUmbraAlienMode.current
+    val smokedGlass = LocalUmbraSmokedGlass.current
     val shape = RoundedCornerShape(if (strong) 26.dp else 22.dp)
     val edge = if (alien) Brush.linearGradient(listOf(visual.auraPrimary.copy(alpha = 0.78f), visual.auraSecondary.copy(alpha = 0.54f), visual.glassBorder))
         else SolidColor(visual.glassBorder)
     Surface(
-        modifier = modifier
+        modifier = if (smokedGlass) modifier.smokedGlassSurface(shape, strong) else modifier
             .border(BorderStroke(if (alien) 1.25.dp else 1.dp, edge), shape)
             // Бегущий спектральный блик по кромке — только в Alien-режиме.
             .holoEdge(cornerRadius = if (strong) 26.dp else 22.dp, width = 1.dp),
         shape = shape,
-        color = if (strong) visual.glassStrong else visual.glass,
-        tonalElevation = if (strong) 3.dp else 1.dp,
+        color = if (smokedGlass) Color.Transparent else if (strong) visual.glassStrong else visual.glass,
+        tonalElevation = if (smokedGlass) 0.dp else if (strong) 3.dp else 1.dp,
         shadowElevation = if (strong) 8.dp else 2.dp,
     ) { Box(content = content) }
 }
@@ -169,6 +175,10 @@ internal fun ActivityIsland(
 /** Selected destinations become a quiet orbital object only in Alien mode. */
 @Composable
 internal fun OrbitalNavIcon(icon: ImageVector, label: String, selected: Boolean) {
+    if (LocalUmbraSmokedGlass.current) {
+        SmokedGlassNavIcon(icon, label, selected)
+        return
+    }
     val tokens = LocalUmbraAlienTokens.current
     val alien = tokens.enabled
     val reduced = LocalUmbraReducedMotion.current

@@ -33,6 +33,7 @@ import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.Conversation
 import com.umbra.app.di.AppContainer
 import com.umbra.app.ui.theme.LocalUmbraVisuals
+import com.umbra.app.ui.theme.LocalUmbraSmokedGlass
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -49,6 +50,7 @@ fun MainShell(
     onCommands: () -> Unit = {},
 ) {
     val visual = LocalUmbraVisuals.current
+    val smokedGlass = LocalUmbraSmokedGlass.current
     val stateHolder = rememberSaveableStateHolder()
     val localChatStateHolder = rememberSaveableStateHolder()
     val detailStateHolder = sharedChatStateHolder ?: localChatStateHolder
@@ -65,8 +67,13 @@ fun MainShell(
             if (!twoPane) {
                 NavigationBar(
                     // Светящаяся кромка сверху появляется только в Alien-режиме.
-                    modifier = Modifier.alienTopEdge(),
-                    containerColor = visual.glassStrong,
+                    modifier = if (smokedGlass) Modifier.navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(32.dp))
+                        .smokedGlassSurface(RoundedCornerShape(32.dp), strong = true)
+                        else Modifier.alienTopEdge(),
+                    containerColor = if (smokedGlass) Color.Transparent else visual.glassStrong,
+                    windowInsets = if (smokedGlass) WindowInsets(0, 0, 0, 0) else NavigationBarDefaults.windowInsets,
                     tonalElevation = 0.dp,
                 ) {
                     destinations.forEach { (id, label, icon) ->
@@ -74,6 +81,11 @@ fun MainShell(
                             selected = selectedTab == id, onClick = { onTab(id) },
                             icon = { OrbitalNavIcon(icon, label, selectedTab == id) },
                             label = { AlienAwareLabel(label) },
+                            colors = if (smokedGlass) NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                            ) else NavigationBarItemDefaults.colors(),
                         )
                     }
                 }
@@ -82,7 +94,10 @@ fun MainShell(
     ) { padding ->
         Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             if (twoPane) {
-                NavigationRail(containerColor = visual.glassStrong) {
+                NavigationRail(
+                    modifier = if (smokedGlass) Modifier.smokedGlassSurface(RoundedCornerShape(26.dp), strong = true) else Modifier,
+                    containerColor = if (smokedGlass) Color.Transparent else visual.glassStrong,
+                ) {
                     Spacer(Modifier.weight(1f))
                     destinations.forEach { (id, label, icon) ->
                         NavigationRailItem(
@@ -268,7 +283,8 @@ private fun ChatsTab(
             onClick = { if (filter == "groups") showCreate = true else showNew = true },
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
                 .alienGlow(strength = 1.4f)
-                .holoEdge(cornerRadius = 20.dp),
+                .holoEdge(cornerRadius = 20.dp)
+                .smokedGlassAction(RoundedCornerShape(20.dp)),
             shape = RoundedCornerShape(20.dp),
             containerColor = if (alienTokens.enabled) alienTokens.primary.copy(alpha = if (alienTokens.full) 0.92f else 0.86f)
                 else MaterialTheme.colorScheme.primaryContainer,
@@ -313,6 +329,10 @@ private fun ConversationRow(repo: ChatRepository, c: Conversation, selected: Boo
         if (c.unreadCount > 0) {
             val badgeText = c.unreadCount.coerceAtMost(99).toString()
             if (tokens.enabled) Badge(containerColor = tokens.secondary, contentColor = Color(0xFF0B0216)) { Text(badgeText) }
+            else if (LocalUmbraSmokedGlass.current) Badge(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ) { Text(badgeText) }
             else Badge { Text(badgeText) }
         }
     }

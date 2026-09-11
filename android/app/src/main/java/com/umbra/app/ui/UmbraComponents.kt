@@ -94,7 +94,8 @@ internal fun AppEmptyState(
                     .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(visual.auraPrimary, visual.auraSecondary))),
                 contentAlignment = Alignment.Center,
             ) {
-                    Icon(icon, null, Modifier.size(30.dp), tint = androidx.compose.ui.graphics.Color.White)
+                    Icon(icon, null, Modifier.size(30.dp), tint = if (com.umbra.app.ui.theme.LocalUmbraSmokedGlass.current)
+                        MaterialTheme.colorScheme.onPrimary else androidx.compose.ui.graphics.Color.White)
             }
             Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
             Text(description, style = MaterialTheme.typography.bodyMedium,
@@ -114,15 +115,19 @@ internal fun GroupAvatar(name: String, size: Dp = 52.dp) {
         ),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Filled.Groups, "Группа: $name", Modifier.size(size * 0.5f), tint = androidx.compose.ui.graphics.Color.White)
+        Icon(Icons.Filled.Groups, "Группа: $name", Modifier.size(size * 0.5f), tint = if (com.umbra.app.ui.theme.LocalUmbraSmokedGlass.current)
+            MaterialTheme.colorScheme.onPrimary else androidx.compose.ui.graphics.Color.White)
     }
 }
 
 @Composable
 internal fun GlassRow(onClick: (() -> Unit)?, content: @Composable RowScope.() -> Unit) {
     val visual = LocalUmbraVisuals.current
+    val smokedGlass = com.umbra.app.ui.theme.LocalUmbraSmokedGlass.current
     Row(
-        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(visual.glass)
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large)
+            .then(if (smokedGlass) Modifier.smokedGlassSurface(MaterialTheme.shapes.large)
+                else Modifier.background(visual.glass))
             .holoEdge(cornerRadius = 24.dp)
             .let { if (onClick == null) it else it.clickable(onClick = onClick) }.padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,

@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
@@ -81,6 +82,8 @@ import com.umbra.app.data.call.CallPeer
 import com.umbra.app.data.repo.ActiveCall
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.di.AppContainer
+import com.umbra.app.ui.theme.LocalUmbraSmokedGlass
+import com.umbra.app.ui.theme.LocalUmbraVisuals
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.webrtc.RendererCommon
@@ -206,6 +209,9 @@ fun CallScreen(
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+            if (LocalUmbraSmokedGlass.current && !pictureInPicture) {
+                SmokedGlassBackdrop(Modifier.matchParentSize())
+            }
             val landscape = maxWidth >= 560.dp && maxHeight < 480.dp
             val identity: @Composable () -> Unit = {
                 Column(
@@ -240,7 +246,7 @@ fun CallScreen(
                         )
                         group -> CircularProgressIndicator()
                         remoteVideoVisible -> VideoSurface(engine, remotePeerId, false, Modifier.fillMaxSize())
-                        else -> Surface(shape = RoundedCornerShape(56.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                        else -> AppearanceSurface(shape = RoundedCornerShape(56.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Box(Modifier.padding(if (landscape) 16.dp else 26.dp)) {
                                 UserAvatar(repo, call.peerUserId, name, if (landscape) 80.dp else 112.dp)
                             }
@@ -359,7 +365,11 @@ private fun CallControls(
         containerColor = MaterialTheme.colorScheme.error,
         contentColor = MaterialTheme.colorScheme.onError,
     )
-    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        Modifier.fillMaxWidth().padding(16.dp).smokedGlassSurface(RoundedCornerShape(28.dp))
+            .then(if (LocalUmbraSmokedGlass.current) Modifier.padding(12.dp) else Modifier),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         if (incomingRinging) {
             // Independent rows keep both actions visible with a large system font.
             Button(onClick = onAccept, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
@@ -415,12 +425,16 @@ private fun CallToggle(
     modifier: Modifier,
     onClick: () -> Unit,
 ) {
+    val smokedGlass = LocalUmbraSmokedGlass.current
+    val visual = LocalUmbraVisuals.current
     FilledTonalButton(
         onClick = onClick, enabled = enabled,
         modifier = modifier.heightIn(min = 88.dp).semantics { stateDescription = stateLabel },
         shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 12.dp),
+        border = if (smokedGlass) BorderStroke(1.dp, if (selected) visual.auraPrimary else visual.glassBorder) else null,
         colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+                else if (smokedGlass) visual.glass else MaterialTheme.colorScheme.surfaceContainerHigh,
             contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
         ),
     ) {
