@@ -30,6 +30,7 @@ import com.umbra.app.data.InputRules
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.di.AppContainer
 import com.umbra.app.data.session.AlienIntensity
+import com.umbra.app.data.session.InterfaceStyle
 import com.umbra.app.data.session.ThemeMode
 import com.umbra.app.data.diag.DiagLog
 import com.umbra.app.data.session.UiPreferences
@@ -90,7 +91,7 @@ internal fun SettingsTab(container: AppContainer) {
             }
             Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+        AppearanceSurface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.padding(4.dp)) {
                 TextButton({ confirmLogout = true }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = !busy) { Text("Выйти из аккаунта") }
                 TextButton({ error = null; confirmBurn = true }, Modifier.fillMaxWidth().heightIn(min = 48.dp), enabled = !busy) { Text("Удалить аккаунт", color = MaterialTheme.colorScheme.error) }
@@ -155,7 +156,8 @@ private fun AppearanceSettings(preferences: UiPreferences, repo: ChatRepository)
     val appearance by preferences.state.collectAsState()
     val palette = LocalUmbraChatColors.current
     var previewSize by remember(appearance.messageTextSize) { mutableFloatStateOf(appearance.messageTextSize.toFloat()) }
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+    InterfaceStyleSettings(preferences)
+    AppearanceSurface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Оформление", style = MaterialTheme.typography.titleMedium)
             // Radio rows also fit large system fonts and 320 dp windows without truncation.
@@ -172,13 +174,13 @@ private fun AppearanceSettings(preferences: UiPreferences, repo: ChatRepository)
                     }
                 }
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && appearance.interfaceStyle == InterfaceStyle.STANDARD) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 PreferenceSwitch("Цвета обоев", "Использовать системную палитру", appearance.dynamicColor, preferences::setDynamicColor)
             }
         }
     }
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+    AppearanceSurface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Текст сообщений", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -196,11 +198,50 @@ private fun AppearanceSettings(preferences: UiPreferences, repo: ChatRepository)
             }
         }
     }
-    AlienSettingsCard(appearance.alienIntensity, preferences::setAlienIntensity)
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+    if (appearance.interfaceStyle == InterfaceStyle.STANDARD) {
+        AlienSettingsCard(appearance.alienIntensity, preferences::setAlienIntensity)
+    }
+    AppearanceSurface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         PreferenceSwitch("Уменьшить анимацию", "Спокойные переходы между экранами", appearance.reduceMotion, preferences::setReduceMotion, Modifier.padding(16.dp))
     }
     DiagnosticsCard(repo)
+}
+
+@Composable
+private fun InterfaceStyleSettings(preferences: UiPreferences) {
+    val appearance by preferences.state.collectAsState()
+    AppearanceSurface {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Стиль интерфейса", style = MaterialTheme.typography.titleMedium)
+            Column(Modifier.selectableGroup()) {
+                listOf(
+                    InterfaceStyle.STANDARD to "Стандартный",
+                    InterfaceStyle.SMOKED_GLASS to "Дымчатое стекло",
+                ).forEach { (style, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(16.dp))
+                            .selectable(
+                                selected = appearance.interfaceStyle == style,
+                                role = Role.RadioButton,
+                                onClick = { preferences.setInterfaceStyle(style) },
+                            ).padding(horizontal = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = appearance.interfaceStyle == style, onClick = null)
+                        Text(label, Modifier.padding(start = 12.dp).weight(1f))
+                    }
+                }
+            }
+            if (appearance.interfaceStyle == InterfaceStyle.SMOKED_GLASS) {
+                Text(
+                    "Матовые панели и бирюзовые акценты в светлой и тёмной теме. " +
+                        "Цвета обоев и Alien сохраняются для стандартного стиля.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -215,7 +256,7 @@ private fun AlienSettingsCard(intensity: AlienIntensity, onIntensity: (AlienInte
         if (intensity == AlienIntensity.OFF) AlienIntensity.FULL else intensity,
         dark,
     )
-    Surface(
+    AppearanceSurface(
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
         border = if (intensity != AlienIntensity.OFF)
@@ -296,7 +337,7 @@ private fun DiagnosticsCard(repo: ChatRepository) {
     var checking by remember { mutableStateOf(false) }
     var report by remember { mutableStateOf<com.umbra.app.data.repo.NetworkCheckReport?>(null) }
     var actionMessage by remember { mutableStateOf<String?>(null) }
-    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+    AppearanceSurface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Диагностика", style = MaterialTheme.typography.titleMedium)
             Text(
@@ -339,7 +380,7 @@ private fun DiagnosticsCard(repo: ChatRepository) {
                 }
             }, enabled = !checking) { Text("Переподключиться") }
             report?.let { result ->
-                Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainer) {
+                AppearanceSurface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainer) {
                     Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(if (result.successful) "Все проверки пройдены" else "Обнаружена проблема", style = MaterialTheme.typography.titleSmall)
                         result.items.forEach { item -> Text(

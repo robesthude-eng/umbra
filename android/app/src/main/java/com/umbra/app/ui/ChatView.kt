@@ -108,6 +108,7 @@ import com.umbra.app.data.voice.VoicePlayback
 import com.umbra.app.data.voice.VoiceRecordingState
 import com.umbra.app.di.AppContainer
 import com.umbra.app.ui.theme.LocalUmbraChatColors
+import com.umbra.app.ui.theme.LocalUmbraSmokedGlass
 import com.umbra.app.ui.theme.LocalUmbraReducedMotion
 import com.umbra.app.ui.theme.LocalUmbraMessageTextStyle
 import com.umbra.app.ui.theme.UmbraChatColors
@@ -666,6 +667,7 @@ private fun ChatTopBar(
     onSearch: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
+    val smokedGlass = LocalUmbraSmokedGlass.current
     val reducedMotion = LocalUmbraReducedMotion.current
     val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     var menu by remember { mutableStateOf(false) }
@@ -688,6 +690,11 @@ private fun ChatTopBar(
         else -> palette.incomingMeta
     }
     TopAppBar(
+        modifier = if (smokedGlass) Modifier.statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .smokedGlassSurface(RoundedCornerShape(24.dp), strong = true) else Modifier,
+        windowInsets = if (smokedGlass) WindowInsets(0, 0, 0, 0) else TopAppBarDefaults.windowInsets,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (isGroup) GroupAvatar(title, 40.dp) else UserAvatar(repo, chatId, title, 40.dp)
@@ -754,8 +761,8 @@ private fun ChatTopBar(
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = palette.bar,
-            scrolledContainerColor = palette.bar,
+            containerColor = if (smokedGlass) Color.Transparent else palette.bar,
+            scrolledContainerColor = if (smokedGlass) Color.Transparent else palette.bar,
             titleContentColor = palette.onIncoming,
             navigationIconContentColor = palette.accent,
             actionIconContentColor = palette.accent,
@@ -804,11 +811,12 @@ private fun ChatComposer(
     onCancelReply: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
+    val smokedGlass = LocalUmbraSmokedGlass.current
     val haptics = LocalHapticFeedback.current
     val sendMode = input.isNotBlank()
     val reducedMotion = LocalUmbraReducedMotion.current
     val canSend = enabled && !tooLong
-    Surface(color = palette.bar, contentColor = palette.onIncoming) {
+    Surface(color = if (smokedGlass) Color.Transparent else palette.bar, contentColor = palette.onIncoming) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
             if (!replyText.isNullOrBlank()) {
                 Row(
@@ -828,6 +836,7 @@ private fun ChatComposer(
                         .clip(RoundedCornerShape(26.dp))
                         .background(palette.field)
                         .holoEdge(cornerRadius = 26.dp, width = 1.dp)
+                        .smokedGlassEdge(RoundedCornerShape(26.dp))
                         .padding(start = 4.dp, end = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -863,6 +872,7 @@ private fun ChatComposer(
                             if (canSend) Brush.linearGradient(palette.outgoing)
                             else SolidColor(palette.field),
                         )
+                        .smokedGlassAction(enabled = canSend)
                         .clickable(enabled = canSend) {
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             if (sendMode) onSend() else onMic()
@@ -901,7 +911,9 @@ private fun AttachSheet(
     val palette = LocalUmbraChatColors.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.smokedGlassEdge(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)),
+        containerColor = if (LocalUmbraSmokedGlass.current) com.umbra.app.ui.theme.LocalUmbraVisuals.current.glassStrong
+            else MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
             Text(
@@ -947,6 +959,7 @@ private fun AttachOption(
 @Composable
 private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCancel: () -> Unit, onSend: () -> Unit) {
     val palette = LocalUmbraChatColors.current
+    val smokedGlass = LocalUmbraSmokedGlass.current
     val levels = remember { mutableStateListOf<Float>() }
     LaunchedEffect(state.elapsedMs) {
         levels.add(state.level.coerceIn(0.08f, 1f))
@@ -960,7 +973,7 @@ private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCa
         )
         value
     }
-    Surface(color = palette.bar, contentColor = palette.onIncoming) {
+    Surface(color = if (smokedGlass) Color.Transparent else palette.bar, contentColor = palette.onIncoming) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -970,7 +983,7 @@ private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCa
             }
             Row(
                 Modifier.weight(1f).heightIn(min = 48.dp).clip(RoundedCornerShape(26.dp))
-                    .background(palette.field).padding(horizontal = 14.dp),
+                    .background(palette.field).smokedGlassEdge(RoundedCornerShape(26.dp)).padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
@@ -1120,6 +1133,7 @@ private fun MessageRow(
                         if (outgoing) Brush.linearGradient(palette.outgoing)
                         else SolidColor(palette.incoming),
                     )
+                    .smokedGlassEdge(bubbleShape(outgoing, item.first, item.last), active = outgoing)
                     // Скан-линии только на своих пузырях: входящий текст остаётся чистым.
                     .holoScanlines(palette.onOutgoing, active = outgoing)
                     .combinedClickable(
@@ -1383,6 +1397,7 @@ private fun VoiceBubble(
     onSeek: (Long) -> Unit,
     onSpeed: () -> Unit,
 ) {
+    val palette = LocalUmbraChatColors.current
     val playing = playback?.playing == true
     val loading = playback?.loading == true
     val total = (playback?.durationMs ?: voice.durationMs).coerceAtLeast(1L)
@@ -1398,6 +1413,7 @@ private fun VoiceBubble(
         Box(
             Modifier.size(42.dp).clip(CircleShape)
                 .background(contentColor.copy(alpha = 0.16f))
+                .smokedGlassAction(enabled = ready && !loading)
                 .clickable(enabled = ready && !loading, onClick = onTogglePlay),
             contentAlignment = Alignment.Center,
         ) {
@@ -1413,7 +1429,7 @@ private fun VoiceBubble(
             VoiceWaveform(
                 bars = bars,
                 progress = fraction,
-                activeColor = contentColor,
+                activeColor = if (LocalUmbraSmokedGlass.current) palette.accent else contentColor,
                 inactiveColor = metaColor.copy(alpha = 0.45f),
                 modifier = Modifier.fillMaxWidth().height(28.dp),
                 onSeek = if (playback != null && !loading) ({ value -> onSeek((value * total).toLong()) }) else null,

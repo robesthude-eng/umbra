@@ -86,14 +86,21 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
     }
 
     Column(
-        Modifier.fillMaxSize().background(
-            if (tokens.enabled) Brush.verticalGradient(
-                listOf(
-                    MaterialTheme.colorScheme.background,
-                    tokens.primary.copy(alpha = 0.20f),
-                    tokens.secondary.copy(alpha = 0.26f),
-                ),
-            ) else Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer)),
+        Modifier.fillMaxSize().then(
+            when {
+                // Дымчатое стекло рисует свой фон — градиент не нужен.
+                com.umbra.app.ui.theme.LocalUmbraSmokedGlass.current -> Modifier
+                tokens.enabled -> Modifier.background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.background,
+                            tokens.primary.copy(alpha = 0.20f),
+                            tokens.secondary.copy(alpha = 0.26f),
+                        ),
+                    ),
+                )
+                else -> Modifier.background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer)))
+            }
         )
             .safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

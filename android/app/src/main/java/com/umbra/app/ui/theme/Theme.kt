@@ -26,6 +26,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.umbra.app.data.session.AlienIntensity
+import com.umbra.app.data.session.InterfaceStyle
 
 /**
  * Оформление Umbra.
@@ -119,6 +120,7 @@ val UmbraChatLight = UmbraChatColors(
 val LocalUmbraChatColors = staticCompositionLocalOf { UmbraChatDark }
 val LocalUmbraReducedMotion = staticCompositionLocalOf { false }
 val LocalUmbraAlienMode = staticCompositionLocalOf { false }
+val LocalUmbraSmokedGlass = staticCompositionLocalOf { false }
 
 /**
  * Токены Alien Interface: сила режима и вся его палитра в одном месте.
@@ -318,22 +320,32 @@ fun UmbraTheme(
     reduceMotion: Boolean = false,
     alienInterface: Boolean = false,
     alienIntensity: AlienIntensity? = null,
+    interfaceStyle: InterfaceStyle = InterfaceStyle.STANDARD,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
+    val smokedGlass = interfaceStyle == InterfaceStyle.SMOKED_GLASS
     val scheme = when {
+        smokedGlass -> smokedGlassColorScheme(darkTheme)
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         darkTheme -> UmbraDarkColors
         else -> UmbraLightColors
     }
-    val baseChat = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) dynamicChatColors(scheme)
-        else if (darkTheme) UmbraChatDark else UmbraChatLight
+    val baseChat = when {
+        smokedGlass -> smokedGlassChatColors(darkTheme)
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> dynamicChatColors(scheme)
+        darkTheme -> UmbraChatDark
+        else -> UmbraChatLight
+    }
     // Прежние вызовы с одним флагом продолжают работать и дают полную силу.
-    val intensity = alienIntensity ?: if (alienInterface) AlienIntensity.FULL else AlienIntensity.OFF
+    // Собственная бирюзовая палитра стекла не смешивается с Alien/Dynamic Color.
+    // Их сохранённые значения остаются нетронутыми в UiPreferences.
+    val intensity = if (smokedGlass) AlienIntensity.OFF
+        else alienIntensity ?: if (alienInterface) AlienIntensity.FULL else AlienIntensity.OFF
     val tokens = remember(intensity, darkTheme) { alienTokens(intensity, darkTheme) }
     val chat = if (tokens.enabled) alienChatColors(baseChat, tokens, darkTheme) else baseChat
-    val visuals = futureVisuals(scheme, tokens)
+    val visuals = if (smokedGlass) smokedGlassVisualTokens(darkTheme) else futureVisuals(scheme, tokens)
     val size = messageTextSize.coerceIn(16, 22)
     CompositionLocalProvider(
         LocalUmbraChatColors provides chat,
@@ -341,6 +353,7 @@ fun UmbraTheme(
         LocalUmbraMotion provides UmbraMotionTokens(),
         LocalUmbraReducedMotion provides reduceMotion,
         LocalUmbraAlienMode provides tokens.enabled,
+        LocalUmbraSmokedGlass provides smokedGlass,
         LocalUmbraAlienTokens provides tokens,
         LocalUmbraMessageTextStyle provides UmbraTypography.bodyLarge.copy(fontSize = size.sp, lineHeight = (size + 6).sp),
     ) {
@@ -382,7 +395,10 @@ private fun futureVisuals(scheme: ColorScheme, tokens: AlienTokens): UmbraVisual
 fun rememberUmbraChatColors(seed: String): UmbraChatColors {
     val base = LocalUmbraChatColors.current
     val alien = LocalUmbraAlienTokens.current
-    return remember(seed, base, alien) {
+    val smokedGlass = LocalUmbraSmokedGlass.current
+    return remember(seed, base, alien, smokedGlass) {
+        // Персональные случайные акценты не подмешивают фиолетовый в стеклянную тему.
+        if (smokedGlass) return@remember base
         val accents = if (alien.enabled) listOf(alien.primary, alien.secondary, alien.tertiary)
             else listOf(
                 Color(0xFF7587FF), Color(0xFF30C9B0), Color(0xFFB879FF),

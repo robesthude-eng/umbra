@@ -85,6 +85,10 @@ internal fun bubbleShape(outgoing: Boolean, first: Boolean, last: Boolean): Roun
 /** Фон переписки: вертикальный градиент и два мягких световых пятна. */
 @Composable
 internal fun ChatBackground(modifier: Modifier = Modifier) {
+    if (com.umbra.app.ui.theme.LocalUmbraSmokedGlass.current) {
+        SmokedGlassBackdrop(modifier)
+        return
+    }
     val chat = LocalUmbraChatColors.current
     val reduced = LocalUmbraReducedMotion.current
     val alien = LocalUmbraAlienTokens.current
