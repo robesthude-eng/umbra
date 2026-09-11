@@ -8,6 +8,7 @@ import com.umbra.app.data.call.CallEngine
 import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.session.SessionStore
+import com.umbra.app.data.session.UiPreferences
 import com.umbra.app.data.voice.VoicePlayer
 import com.umbra.app.data.voice.VoiceRecorder
 import com.umbra.app.data.ws.WebSocketClient
@@ -17,6 +18,7 @@ class AppContainer(context: Context) {
     private val baseUrl = BuildConfig.SERVER_URL
     val database: AppDatabase = AppDatabase.build(context)
     val session = SessionStore(context)
+    val uiPreferences = UiPreferences(context)
     val api: UmbraApi = createUmbraApi(baseUrl)
     val webSocketClient = WebSocketClient(baseUrl)
     val chatRepository = ChatRepository(context, api, database, session, webSocketClient)

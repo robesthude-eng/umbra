@@ -1,6 +1,22 @@
 package com.umbra.app.ui
 
 import android.Manifest
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextOverflow
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.Ringtone
@@ -17,7 +33,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,10 +47,7 @@ import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -182,72 +194,83 @@ fun CallScreen(container: AppContainer, call: ActiveCall) {
         else -> "Соединение…"
     }
 
-    Surface(
-        color = if (remoteVideoVisible) Color.Black else MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        Box(Modifier.fillMaxSize()) {
-            if (remoteVideoVisible) {
-                VideoSurface(engine, peerId = remotePeerId, mirror = false, modifier = Modifier.fillMaxSize())
-            }
-            Column(
-                Modifier.fillMaxSize().padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Spacer(Modifier.height(24.dp))
-                if (!remoteVideoVisible && !group) UserAvatar(repo, call.peerUserId, name, 96.dp)
-                Text(
-                    name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = if (remoteVideoVisible) Color.White else MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    status,
-                    color = if (remoteVideoVisible) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                state?.problem?.let { problem ->
-                    Text(problem, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+            val landscape = maxWidth >= 560.dp && maxHeight < 480.dp
+            val identity: @Composable () -> Unit = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(if (group) "Групповой звонок" else name, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (state?.connected == true && !state.reconnecting)
+                            (if (call.video) "Видеозвонок" else "Аудиозвонок") + " · " + status else status,
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    state?.problem?.let { Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
+                    error?.let { problem ->
+                        Text(problem, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                        TextButton({ repo.dismissCallLocally() }, enabled = !busy) { Text("Закрыть на этом устройстве") }
+                    }
+                    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
-                error?.let { problem ->
-                    Text(problem, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                    TextButton({ repo.dismissCallLocally() }, enabled = !busy) {
-                        Text("Закрыть на этом устройстве")
+            }
+            val stage: @Composable (Modifier) -> Unit = { modifier ->
+                Box(modifier.clip(RoundedCornerShape(28.dp)), contentAlignment = Alignment.Center) {
+                    when {
+                        group && peers.isNotEmpty() -> PeerGrid(
+                            repo = repo, engine = engine, peers = peers,
+                            names = peers.associate { peer -> peer.userId to (users[peer.userId]?.fullName() ?: repo.titleFor(peer.userId)) },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        group -> CircularProgressIndicator()
+                        remoteVideoVisible -> VideoSurface(engine, remotePeerId, false, Modifier.fillMaxSize())
+                        else -> Surface(shape = RoundedCornerShape(56.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                            Box(Modifier.padding(if (landscape) 16.dp else 26.dp)) {
+                                UserAvatar(repo, call.peerUserId, name, if (landscape) 80.dp else 112.dp)
+                            }
+                        }
+                    }
+                    if (state?.cameraOn == true) {
+                        Box(Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                            .size(if (landscape) 80.dp else 96.dp, if (landscape) 100.dp else 132.dp)
+                            .clip(RoundedCornerShape(20.dp))) {
+                            VideoSurface(engine, peerId = null, mirror = true, modifier = Modifier.fillMaxSize())
+                            FilledTonalIconButton(
+                                onClick = { engine.switchCamera() }, enabled = !busy,
+                                modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),
+                            ) { Icon(Icons.Filled.Cameraswitch, "Переключить камеру") }
+                        }
                     }
                 }
-                if (busy) CircularProgressIndicator()
-                if (group) {
-                    PeerGrid(
-                        repo = repo,
-                        engine = engine,
-                        peers = peers,
-                        names = peers.associate { peer ->
-                            peer.userId to (users[peer.userId]?.fullName() ?: repo.titleFor(peer.userId))
-                        },
-                        modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 8.dp),
-                    )
-                } else {
-                    Spacer(Modifier.weight(1f))
-                }
-                if (state?.cameraOn == true) {
-                    VideoSurface(
-                        engine, peerId = null, mirror = true,
-                        modifier = Modifier.size(120.dp, 170.dp).clip(RoundedCornerShape(16.dp)),
-                    )
-                }
+            }
+            val controls: @Composable () -> Unit = {
                 CallControls(
-                    incomingRinging = ringing,
-                    busy = busy,
-                    media = state,
-                    onAccept = { accept() },
-                    onDecline = { act("declined") },
-                    onHangUp = { act("ended") },
-                    onMic = { engine.toggleMic() },
-                    onSpeaker = { engine.toggleSpeaker() },
-                    onCamera = { engine.toggleCamera() },
-                    onSwitchCamera = { engine.switchCamera() },
+                    incomingRinging = ringing, busy = busy, media = state,
+                    onAccept = { accept() }, onDecline = { act("declined") }, onHangUp = { act("ended") },
+                    onMic = { engine.toggleMic() }, onSpeaker = { engine.toggleSpeaker() }, onCamera = { engine.toggleCamera() },
                 )
+            }
+            if (landscape) {
+                Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.weight(1f).fillMaxHeight()) {
+                        identity()
+                        stage(Modifier.weight(1f).fillMaxWidth())
+                    }
+                    Column(Modifier.width(256.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.Center) { controls() }
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    identity()
+                    stage(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp))
+                    controls()
+                }
             }
         }
     }
@@ -264,49 +287,79 @@ private fun CallControls(
     onMic: () -> Unit,
     onSpeaker: () -> Unit,
     onCamera: () -> Unit,
-    onSwitchCamera: () -> Unit,
 ) {
-    val endColors = IconButtonDefaults.filledIconButtonColors(
+    val endColors = ButtonDefaults.buttonColors(
         containerColor = MaterialTheme.colorScheme.error,
         contentColor = MaterialTheme.colorScheme.onError,
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (incomingRinging) {
-            FilledIconButton(onAccept, enabled = !busy, modifier = Modifier.size(64.dp)) {
-                Icon(Icons.Filled.Call, "Принять звонок")
+            // Independent rows keep both actions visible with a large system font.
+            Button(onClick = onAccept, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary),
+                shape = RoundedCornerShape(22.dp)) {
+                Icon(Icons.Filled.Call, null)
+                Spacer(Modifier.width(10.dp))
+                Text("Ответить")
             }
-            FilledIconButton(onDecline, enabled = !busy, modifier = Modifier.size(64.dp), colors = endColors) {
-                Icon(Icons.Filled.CallEnd, "Отклонить звонок")
+            Button(onClick = onDecline, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                colors = endColors, shape = RoundedCornerShape(22.dp)) {
+                Icon(Icons.Filled.CallEnd, null)
+                Spacer(Modifier.width(10.dp))
+                Text("Отклонить")
             }
-            return@Row
-        }
-        if (media != null) {
-            IconButton(onMic) {
-                Icon(
-                    if (media.micMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                    if (media.micMuted) "Включить микрофон" else "Выключить микрофон",
-                )
-            }
-            IconButton(onSpeaker) {
-                Icon(
-                    if (media.speakerOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeDown,
-                    if (media.speakerOn) "Выключить громкую связь" else "Включить громкую связь",
-                )
-            }
-            if (media.video) {
-                IconButton(onCamera) {
-                    Icon(
-                        if (media.cameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                        if (media.cameraOn) "Выключить камеру" else "Включить камеру",
+        } else {
+            if (media != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CallToggle(
+                        title = "Микрофон", icon = if (media.micMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                        selected = media.micMuted, stateLabel = if (media.micMuted) "Выключен" else "Включён",
+                        enabled = !busy, modifier = Modifier.weight(1f), onClick = onMic,
+                    )
+                    CallToggle(
+                        title = "Динамик", icon = if (media.speakerOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeDown,
+                        selected = media.speakerOn, stateLabel = if (media.speakerOn) "Включён" else "Выключен",
+                        enabled = !busy, modifier = Modifier.weight(1f), onClick = onSpeaker,
+                    )
+                    if (media.video) CallToggle(
+                        title = "Камера", icon = if (media.cameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                        selected = media.cameraOn, stateLabel = if (media.cameraOn) "Включена" else "Выключена",
+                        enabled = !busy, modifier = Modifier.weight(1f), onClick = onCamera,
                     )
                 }
-                if (media.cameraOn) IconButton(onSwitchCamera) {
-                    Icon(Icons.Filled.Cameraswitch, "Переключить камеру")
-                }
+            }
+            Button(onClick = onHangUp, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                colors = endColors, shape = RoundedCornerShape(22.dp)) {
+                Icon(Icons.Filled.CallEnd, null)
+                Spacer(Modifier.width(10.dp))
+                Text("Завершить")
             }
         }
-        FilledIconButton(onHangUp, enabled = !busy, modifier = Modifier.size(64.dp), colors = endColors) {
-            Icon(Icons.Filled.CallEnd, "Завершить звонок")
+    }
+}
+
+@Composable
+private fun CallToggle(
+    title: String,
+    icon: ImageVector,
+    selected: Boolean,
+    stateLabel: String,
+    enabled: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    FilledTonalButton(
+        onClick = onClick, enabled = enabled,
+        modifier = modifier.heightIn(min = 88.dp).semantics { stateDescription = stateLabel },
+        shape = RoundedCornerShape(22.dp), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 12.dp),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+        ),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(icon, null, Modifier.size(24.dp))
+            Text(title, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
         }
     }
 }
@@ -335,6 +388,7 @@ private fun VideoSurface(
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
                 setEnableHardwareScaler(true)
                 setMirror(mirror)
+                setZOrderMediaOverlay(peerId == null)
                 if (peerId != null) engine.bindRemoteVideo(peerId, this) else engine.bindLocalVideo(this)
             }
         },

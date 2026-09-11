@@ -3,6 +3,8 @@ package com.umbra.app.ui
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import com.umbra.app.data.repo.SessionPhase
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.delay
@@ -27,10 +29,12 @@ fun UmbraRoot(container: AppContainer) {
             var tab by rememberSaveable { mutableIntStateOf(0) }
             val screens = rememberSaveableStateHolder()
             val chatId = openChatId
-            if (chatId != null) screens.SaveableStateProvider("chat:$chatId") {
-                ChatView(container, chatId) { openChatId = null }
-            } else screens.SaveableStateProvider("main") {
-                MainShell(container, tab, { tab = it }, { openChatId = it })
+            ScreenEntrance(chatId ?: "main", Modifier.fillMaxSize()) {
+                if (chatId != null) screens.SaveableStateProvider("chat:$chatId") {
+                    ChatView(container, chatId) { openChatId = null }
+                } else screens.SaveableStateProvider("main") {
+                    MainShell(container, tab, { tab = it }, { openChatId = it })
+                }
             }
             val call by repo.activeCall.collectAsState()
             call?.let { CallScreen(container, it) }

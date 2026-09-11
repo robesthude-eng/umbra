@@ -8,13 +8,19 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.umbra.app.data.call.CallNotifications
 import com.umbra.app.di.AppContainer
+import com.umbra.app.data.session.ThemeMode
 import com.umbra.app.ui.UmbraRoot
 import com.umbra.app.ui.theme.UmbraTheme
 import kotlinx.coroutines.launch
@@ -22,6 +28,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         val container = (application as UmbraApp).container
         // Входящий звонок должен подниматься поверх блокировки и будить экран.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -30,7 +37,25 @@ class MainActivity : ComponentActivity() {
         }
         handleCallIntent(intent, container)
         setContent {
-            UmbraTheme {
+            val appearance by container.uiPreferences.state.collectAsState()
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (appearance.theme) {
+                ThemeMode.SYSTEM -> systemDark
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            SideEffect {
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
+            }
+            UmbraTheme(
+                darkTheme = dark,
+                dynamicColor = appearance.dynamicColor,
+                messageTextSize = appearance.messageTextSize,
+                reduceMotion = appearance.reduceMotion,
+            ) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     UmbraRoot(container)
                 }

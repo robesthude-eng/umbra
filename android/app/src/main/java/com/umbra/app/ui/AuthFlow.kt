@@ -8,7 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -20,14 +20,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.umbra.app.data.InputRules
 import com.umbra.app.data.repo.SessionPhase
 import com.umbra.app.di.AppContainer
-import com.umbra.app.ui.theme.UmbraColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -91,8 +89,8 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
             .safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(Modifier.size(64.dp).background(UmbraColors.headerGradient, CircleShape), contentAlignment = Alignment.Center) {
-            Text("U", color = Color.White, style = MaterialTheme.typography.headlineLarge)
+        Box(Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(22.dp)), contentAlignment = Alignment.Center) {
+            Text("U", color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.headlineLarge)
         }
         Spacer(Modifier.height(12.dp))
         Text("Umbra", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onBackground)

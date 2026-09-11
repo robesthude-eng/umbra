@@ -14,7 +14,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -23,7 +22,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import com.umbra.app.data.AvatarImages
 import com.umbra.app.data.repo.ChatRepository
-import com.umbra.app.ui.theme.UmbraColors
 import kotlinx.coroutines.CancellationException
 
 @Composable
@@ -62,10 +60,10 @@ internal fun AvatarPhoto(avatarUri: String?, size: Dp, onClick: (() -> Unit)?) {
 
 @Composable
 private fun AvatarFrame(bitmap: Bitmap?, name: String, size: Dp, onClick: (() -> Unit)?) {
-    var modifier = Modifier.size(size).clip(CircleShape).background(UmbraColors.headerGradient)
+    var modifier = Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer)
     if (onClick != null) modifier = modifier.clickable(onClickLabel = "Выбрать фото", onClick = onClick)
     Box(modifier.semantics { contentDescription = if (onClick != null) "Выбрать фото профиля" else "Аватар: $name" }, contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap.asImageBitmap(), null, Modifier.size(size), contentScale = ContentScale.Crop)
-        else Text(name.trim().firstOrNull()?.toString()?.uppercase() ?: "?", color = Color.White, style = MaterialTheme.typography.titleLarge)
+        else Text(name.trim().firstOrNull()?.toString()?.uppercase() ?: "?", color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.titleLarge)
     }
 }

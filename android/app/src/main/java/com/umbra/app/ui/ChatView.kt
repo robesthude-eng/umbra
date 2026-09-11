@@ -14,6 +14,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
@@ -52,6 +55,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -93,6 +97,8 @@ import com.umbra.app.data.voice.VoicePlayback
 import com.umbra.app.data.voice.VoiceRecordingState
 import com.umbra.app.di.AppContainer
 import com.umbra.app.ui.theme.LocalUmbraChatColors
+import com.umbra.app.ui.theme.LocalUmbraReducedMotion
+import com.umbra.app.ui.theme.LocalUmbraMessageTextStyle
 import com.umbra.app.ui.theme.UmbraChatColors
 import kotlinx.coroutines.launch
 import java.io.File
@@ -165,13 +171,17 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
     val palette = LocalUmbraChatColors.current
     val isGroup = chat?.type?.let { it != "dm" } ?: false
     val available = chat != null && chat?.type != "unavailable"
-    val title = chat?.title?.ifBlank { "Чат" } ?: "Загрузка…"
+    val title = (if (isGroup) chat?.title else users[chatId]?.fullName() ?: chat?.title)?.ifBlank { "Чат" } ?: "Загрузка…"
     val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
     val latestId = messages.lastOrNull()?.stableId
     val rendered = remember(messages, isGroup) { buildChatItems(messages, isGroup) }
+    val reducedMotion = LocalUmbraReducedMotion.current
+    suspend fun goToLatest() {
+        if (reducedMotion) listState.scrollToItem(0) else listState.animateScrollToItem(0)
+    }
     // Reverse layout starts at the newest message and preserves position while reading older messages.
     LaunchedEffect(latestId) {
-        if (latestId != null && nearBottom) listState.animateScrollToItem(0)
+        if (latestId != null && nearBottom) goToLatest()
     }
     // Ушли с экрана — глушим звук и выкидываем недозаписанную запись.
     DisposableEffect(chatId) {
@@ -202,7 +212,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
             try {
                 val recorded = recorder.finish()
                 repo.sendVoice(chatId, recorded)
-                listState.animateScrollToItem(0)
+                goToLatest()
             } catch (e: Exception) {
                 error = e.userMessage()
                 runCatching { recorder.cancel() }
@@ -220,7 +230,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         scope.launch {
             try {
                 repo.sendAttachment(chatId, uri)
-                listState.animateScrollToItem(0)
+                goToLatest()
             } catch (e: Exception) { error = e.userMessage() }
             finally { sending = false }
         }
@@ -236,7 +246,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
         scope.launch {
             try {
                 repo.sendAttachment(chatId, Attachments.uriFor(context, file))
-                listState.animateScrollToItem(0)
+                goToLatest()
             } catch (e: Exception) { error = e.userMessage() }
             finally {
                 sending = false
@@ -339,7 +349,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
             try {
                 repo.sendText(chatId, text)
                 input = ""
-                listState.animateScrollToItem(0)
+                goToLatest()
             } catch (e: Exception) { error = e.userMessage() }
             finally { sending = false }
         }
@@ -390,7 +400,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                             contentType = { item -> if (item is ChatItem.Day) "day" else "message" },
                         ) { item ->
                             when (item) {
-                                is ChatItem.Day -> DateChip(item.label, Modifier.animateItem())
+                                is ChatItem.Day -> DateChip(item.label, if (reducedMotion) Modifier else Modifier.animateItem())
                                 is ChatItem.Bubble -> MessageRow(
                                     repo = repo,
                                     item = item,
@@ -398,7 +408,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                                     senderName = if (isGroup && !item.message.outgoing)
                                         users[item.message.senderId]?.fullName() ?: "Участник" else null,
                                     playback = playback?.takeIf { it.key == item.message.stableId },
-                                    modifier = Modifier.animateItem(),
+                                    modifier = if (reducedMotion) Modifier else Modifier.animateItem(),
                                     onOpen = { openAttachment(it) },
                                     onShare = { shareAttachment(it) },
                                     onSave = { saveAttachment(it) },
@@ -435,19 +445,20 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                     // Box, вложенного в Column: компилятор выбирает расширение
                     // ColumnScope и отказывает «implicit receiver»), поэтому
                     // кнопка вынесена в отдельную композабел-функцию — в ней
-                    // подбирается top-level AnimatedVisibility (Compose 1.7).
+                    // применяется top-level AnimatedVisibility (Compose 1.7).
                     ScrollToBottomPill(
                         visible = !nearBottom && messages.isNotEmpty(),
                         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                         palette = palette,
-                        onScrollToEnd = { scope.launch { listState.animateScrollToItem(0) } },
+                        reducedMotion = reducedMotion,
+                        onScrollToEnd = { scope.launch { goToLatest() } },
                     )
                 }
                 val problem = error
                 AnimatedVisibility(
                     visible = problem != null,
-                    enter = fadeIn() + expandVertically(),
-                    exit = fadeOut() + shrinkVertically(),
+                    enter = if (reducedMotion) EnterTransition.None else fadeIn() + expandVertically(),
+                    exit = if (reducedMotion) ExitTransition.None else fadeOut() + shrinkVertically(),
                 ) {
                     NoticeBar(problem ?: "", MaterialTheme.colorScheme.error) {
                         TextButton({ error = null }) { Text("Понятно") }
@@ -524,11 +535,14 @@ private fun ChatTopBar(
     onMembers: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
+    val reducedMotion = LocalUmbraReducedMotion.current
+    var menu by remember { mutableStateOf(false) }
     val status = when {
         syncError != null -> "Нет связи с сервером"
         syncing -> "Обновление…"
-        connected -> "На связи"
-        else -> "Подключение…"
+        !connected -> "Подключение…"
+        isGroup -> "Группа"
+        else -> "Личный чат"
     }
     val statusColor = when {
         syncError != null -> MaterialTheme.colorScheme.error
@@ -538,7 +552,7 @@ private fun ChatTopBar(
     TopAppBar(
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isGroup) Avatar(repo, null, title, 40.dp) else UserAvatar(repo, chatId, title, 40.dp)
+                if (isGroup) GroupAvatar(title, 40.dp) else UserAvatar(repo, chatId, title, 40.dp)
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text(
@@ -549,9 +563,11 @@ private fun ChatTopBar(
                         color = palette.onIncoming,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusDot(statusColor)
-                        Spacer(Modifier.width(6.dp))
-                        Crossfade(targetState = status, label = "chat-status") { text ->
+                        if (syncError != null || syncing || !connected) {
+                            StatusDot(statusColor)
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Crossfade(targetState = status, animationSpec = tween(if (reducedMotion) 0 else 150), label = "chat-status") { text ->
                             Text(
                                 text,
                                 style = MaterialTheme.typography.labelSmall,
@@ -568,17 +584,25 @@ private fun ChatTopBar(
             IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") }
         },
         actions = {
-            if (syncError != null) IconButton(onRefresh) { Icon(Icons.Filled.Refresh, "Обновить") }
-            // Групповой звонок идёт напрямую между телефонами, поэтому до четырёх участников.
-            if (available) {
-                IconButton({ onCall(false) }) {
-                    Icon(Icons.Filled.Call, if (isGroup) "Групповой звонок" else "Позвонить")
-                }
-                IconButton({ onCall(true) }) {
-                    Icon(Icons.Filled.Videocam, if (isGroup) "Групповой видеозвонок" else "Видеозвонок")
+            if (available) IconButton({ onCall(false) }) {
+                Icon(Icons.Filled.Call, if (isGroup) "Групповой звонок" else "Позвонить")
+            }
+            Box {
+                IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "Действия чата") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (available) DropdownMenuItem(
+                        text = { Text(if (isGroup) "Групповой видеозвонок" else "Видеозвонок") },
+                        leadingIcon = { Icon(Icons.Filled.Videocam, null) },
+                        onClick = { menu = false; onCall(true) },
+                    )
+                    if (isGroup && available) DropdownMenuItem(
+                        text = { Text("Участники группы") }, leadingIcon = { Icon(Icons.Filled.Groups, null) },
+                        onClick = { menu = false; onMembers() },
+                    )
+                    DropdownMenuItem(text = { Text("Обновить сообщения") },
+                        leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = { menu = false; onRefresh() })
                 }
             }
-            if (isGroup && available) IconButton(onMembers) { Icon(Icons.Filled.Groups, "Участники группы") }
         },
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = palette.bar,
@@ -601,7 +625,7 @@ private fun ChatEmptyState(modifier: Modifier = Modifier) {
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(palette.outgoing)),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.AutoMirrored.Filled.Send, null, tint = Color.White) }
+        ) { Icon(Icons.AutoMirrored.Filled.Send, null, tint = palette.onOutgoing) }
         Text(
             "Начните разговор",
             style = MaterialTheme.typography.titleMedium,
@@ -629,6 +653,7 @@ private fun ChatComposer(
     val palette = LocalUmbraChatColors.current
     val haptics = LocalHapticFeedback.current
     val sendMode = input.isNotBlank()
+    val reducedMotion = LocalUmbraReducedMotion.current
     val canSend = enabled && !tooLong
     Surface(color = palette.bar, contentColor = palette.onIncoming) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
@@ -648,7 +673,7 @@ private fun ChatComposer(
                         onValueChange = onInput,
                         enabled = enabled,
                         modifier = Modifier.weight(1f).padding(vertical = 14.dp),
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = palette.onIncoming),
+                        textStyle = LocalUmbraMessageTextStyle.current.copy(color = palette.onIncoming),
                         cursorBrush = SolidColor(palette.accent),
                         maxLines = 6,
                         decorationBox = { inner ->
@@ -676,11 +701,14 @@ private fun ChatComposer(
                         },
                     contentAlignment = Alignment.Center,
                 ) {
-                    AnimatedContent(targetState = sendMode, label = "composer-action") { mode ->
+                    AnimatedContent(targetState = sendMode, label = "composer-action", transitionSpec = {
+                        if (reducedMotion) (EnterTransition.None togetherWith ExitTransition.None).using(null)
+                        else (fadeIn(tween(120)) togetherWith fadeOut(tween(90))).using(null)
+                    }) { mode ->
                         Icon(
                             if (mode) Icons.AutoMirrored.Filled.Send else Icons.Filled.Mic,
                             if (mode) "Отправить" else "Записать голосовое сообщение",
-                            tint = if (canSend) Color.White else palette.incomingMeta,
+                            tint = if (canSend) palette.onOutgoing else palette.incomingMeta,
                         )
                     }
                 }
@@ -739,7 +767,7 @@ private fun AttachOption(
             Modifier.size(42.dp).clip(RoundedCornerShape(14.dp))
                 .background(Brush.linearGradient(palette.outgoing)),
             contentAlignment = Alignment.Center,
-        ) { Icon(icon, null, tint = Color.White) }
+        ) { Icon(icon, null, tint = palette.onOutgoing) }
         Spacer(Modifier.width(14.dp))
         Column {
             Text(title, style = MaterialTheme.typography.bodyLarge, color = palette.onIncoming)
@@ -756,13 +784,14 @@ private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCa
         levels.add(state.level.coerceIn(0.08f, 1f))
         while (levels.size > 28) levels.removeAt(0)
     }
-    val pulse = rememberInfiniteTransition(label = "rec")
-    val alpha by pulse.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-        label = "rec-dot",
-    )
+    val alpha = if (LocalUmbraReducedMotion.current) 1f else {
+        val pulse = rememberInfiniteTransition(label = "rec")
+        val value by pulse.animateFloat(
+            initialValue = 0.35f, targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "rec-dot",
+        )
+        value
+    }
     Surface(color = palette.bar, contentColor = palette.onIncoming) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
@@ -801,7 +830,7 @@ private fun VoiceRecordingBar(state: VoiceRecordingState, sending: Boolean, onCa
                     .background(Brush.linearGradient(palette.outgoing))
                     .clickable(enabled = !sending, onClick = onSend),
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить голосовое сообщение", tint = Color.White) }
+            ) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить голосовое сообщение", tint = palette.onOutgoing) }
         }
     }
 }
@@ -911,7 +940,7 @@ private fun MessageRow(
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 4.dp))
                     }
                     else -> Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
-                        Text(message.text, color = onBubble, style = MaterialTheme.typography.bodyLarge)
+                        Text(message.text, color = onBubble, style = LocalUmbraMessageTextStyle.current)
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 2.dp))
                     }
                 }
@@ -1237,13 +1266,14 @@ private fun ScrollToBottomPill(
     visible: Boolean,
     modifier: Modifier = Modifier,
     palette: UmbraChatColors,
+    reducedMotion: Boolean,
     onScrollToEnd: () -> Unit,
 ) {
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = fadeIn() + scaleIn(),
-        exit = fadeOut() + scaleOut(),
+        enter = if (reducedMotion) EnterTransition.None else fadeIn() + scaleIn(),
+        exit = if (reducedMotion) ExitTransition.None else fadeOut() + scaleOut(),
     ) {
         Box(
             Modifier.size(44.dp).shadow(10.dp, CircleShape).clip(CircleShape)

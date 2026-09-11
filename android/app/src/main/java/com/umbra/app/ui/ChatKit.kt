@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Icon
@@ -33,6 +33,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import com.umbra.app.ui.theme.LocalUmbraChatColors
 import java.time.Instant
@@ -56,13 +61,13 @@ internal fun bubbleShape(outgoing: Boolean, first: Boolean, last: Boolean): Roun
     return if (outgoing) RoundedCornerShape(
         topStart = big,
         topEnd = if (first) big else tight,
-        bottomEnd = if (last) tight else tight,
+        bottomEnd = if (last) 5.dp else tight,
         bottomStart = big,
     ) else RoundedCornerShape(
         topStart = if (first) big else tight,
         topEnd = big,
         bottomEnd = big,
-        bottomStart = if (last) tight else tight,
+        bottomStart = if (last) 5.dp else tight,
     )
 }
 
@@ -109,13 +114,13 @@ internal fun DateChip(label: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Статус исходящего сообщения: часы — в очереди, две галочки — отправлено. */
+/** Sent means acknowledged by the server; the protocol has no read receipts. */
 @Composable
 internal fun MessageStatus(pending: Boolean, failed: Boolean, tint: Color, modifier: Modifier = Modifier) {
     val icon = when {
         failed -> Icons.Filled.ErrorOutline
         pending -> Icons.Filled.Schedule
-        else -> Icons.Filled.DoneAll
+        else -> Icons.Filled.Done
     }
     val description = when {
         failed -> "Не отправлено"
@@ -157,13 +162,20 @@ internal fun VoiceWaveform(
                 if (width > 0f) onSeek((change.position.x / width).coerceIn(0f, 1f))
             }
         }
-    Canvas(modifier.then(seekModifier)) {
-        val count = bars.size
-        if (count == 0 || size.width <= 0f) return@Canvas
+    Canvas(modifier.then(seekModifier).semantics {
+        if (onSeek != null) {
+            contentDescription = "Положение голосового сообщения"
+            progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f)
+            setProgress { target -> onSeek(target.coerceIn(0f, 1f)); true }
+        }
+    }) {
+        if (bars.isEmpty() || size.width <= 0f) return@Canvas
         val gap = 2.dp.toPx()
-        val barWidth = ((size.width - gap * (count - 1)) / count).coerceAtLeast(1f)
+        val count = minOf(bars.size, ((size.width + gap) / (2.dp.toPx() + gap)).toInt().coerceAtLeast(1))
+        val barWidth = (size.width - gap * (count - 1)) / count
         val played = size.width * progress.coerceIn(0f, 1f)
-        bars.forEachIndexed { index, level ->
+        repeat(count) { index ->
+            val level = bars[index * bars.size / count]
             val x = index * (barWidth + gap)
             val height = (size.height * level.coerceIn(0.12f, 1f)).coerceAtLeast(barWidth)
             val top = (size.height - height) / 2f
