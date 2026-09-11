@@ -14,7 +14,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+// Синоним top-level AnimatedVisibility (Compose 1.7): для вызова внутри Box,
+// иначе K2 из области BoxScope выбирает расширение ColumnScope внешней Column
+// и отказывает «cannot be called in this context with an implicit receiver».
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibility as AnimatedVisibilityInBox
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -431,7 +435,7 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                             }
                         }
                     }
-                    AnimatedVisibility(
+                    AnimatedVisibilityInBox(
                         visible = !nearBottom && messages.isNotEmpty(),
                         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                         enter = fadeIn() + scaleIn(),
