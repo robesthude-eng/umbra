@@ -27,6 +27,9 @@ class AppContainer(context: Context) {
     /** Запись голосовых сообщений: MediaRecorder из Android SDK, без новых зависимостей. */
     val voiceRecorder = VoiceRecorder(context)
 
+    /** Проверка версии при запуске и самообновление из системного установщика. */
+    val appUpdater = AppUpdater(context, baseUrl)
+
     /** Проигрывание: файл берётся из локального кэша либо скачивается репозиторием. */
     val voicePlayer = VoicePlayer { mediaId -> chatRepository.voiceFile(mediaId) }
 
