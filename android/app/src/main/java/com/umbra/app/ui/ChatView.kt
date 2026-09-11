@@ -14,11 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-// Синоним top-level AnimatedVisibility (Compose 1.7): для вызова внутри Box,
-// иначе K2 из области BoxScope выбирает расширение ColumnScope внешней Column
-// и отказывает «cannot be called in this context with an implicit receiver».
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.AnimatedVisibility as AnimatedVisibilityInBox
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -435,21 +431,17 @@ fun ChatView(container: AppContainer, chatId: String, onBack: () -> Unit) {
                             }
                         }
                     }
-                    AnimatedVisibilityInBox(
+                    // K2 не даёт вызывать AnimatedVisibility прямо здесь (внутри
+                    // Box, вложенного в Column: компилятор выбирает расширение
+                    // ColumnScope и отказывает «implicit receiver»), поэтому
+                    // кнопка вынесена в отдельную композабел-функцию — в ней
+                    // подбирается top-level AnimatedVisibility (Compose 1.7).
+                    ScrollToBottomPill(
                         visible = !nearBottom && messages.isNotEmpty(),
                         modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-                        enter = fadeIn() + scaleIn(),
-                        exit = fadeOut() + scaleOut(),
-                    ) {
-                        Box(
-                            Modifier.size(44.dp).shadow(10.dp, CircleShape).clip(CircleShape)
-                                .background(palette.bar)
-                                .clickable { scope.launch { listState.animateScrollToItem(0) } },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Filled.KeyboardArrowDown, "К последним сообщениям", tint = palette.accent)
-                        }
-                    }
+                        palette = palette,
+                        onScrollToEnd = { scope.launch { listState.animateScrollToItem(0) } },
+                    )
                 }
                 val problem = error
                 AnimatedVisibility(
@@ -1230,4 +1222,36 @@ private fun GroupCallDialog(
         },
         dismissButton = { TextButton(onDismiss) { Text("Отмена") } },
     )
+}
+
+/**
+ * Кнопка «к последним сообщениям»: появляется, когда список уехал вверх.
+ *
+ * Вынесена из [ChatScreen], потому что вызов AnimatedVisibility прямо внутри
+ * Box, вложенного в Column, не проходит разрешение перегрузок в K2 (компилятор
+ * останавливается на расширении ColumnScope с внешнего приёмника). В отдельной
+ * функции scope-приёмников нет, и применяется top-level AnimatedVisibility.
+ */
+@Composable
+private fun ScrollToBottomPill(
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+    palette: UmbraChatColors,
+    onScrollToEnd: () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = fadeIn() + scaleIn(),
+        exit = fadeOut() + scaleOut(),
+    ) {
+        Box(
+            Modifier.size(44.dp).shadow(10.dp, CircleShape).clip(CircleShape)
+                .background(palette.bar)
+                .clickable(onClick = onScrollToEnd),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.KeyboardArrowDown, "К последним сообщениям", tint = palette.accent)
+        }
+    }
 }
