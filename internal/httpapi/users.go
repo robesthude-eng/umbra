@@ -44,7 +44,7 @@ func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request)
 		DisplayName:   u.DisplayName,
 		LastName:      u.LastName,
 		AvatarMediaID: avatar,
-		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		CreatedAt:     u.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -73,6 +73,6 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		DisplayName:   u.DisplayName,
 		LastName:      u.LastName,
 		AvatarMediaID: avatar,
-		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
+		CreatedAt:     u.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }

@@ -60,7 +60,7 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		"phone":                 u.Phone,
 		"display_name":          u.DisplayName,
 		"last_name":             u.LastName,
-		"created_at":            u.CreatedAt.Format(time.RFC3339),
+		"created_at":            u.CreatedAt.UTC().Format(time.RFC3339),
 		"key_version":           u.KeyVersion,
 		"one_time_prekey_count": count,
 		"avatar_media_id":       avatar,

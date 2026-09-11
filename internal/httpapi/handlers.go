@@ -462,7 +462,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			RecipientID: m.RecipientID,
 			ChatID:      m.ChatID,
 			Ciphertext:  b64e(m.Ciphertext),
-			CreatedAt:   m.CreatedAt.Format(time.RFC3339Nano),
+			CreatedAt:   m.CreatedAt.UTC().Format(time.RFC3339Nano),
 			ExpiresAt:   formatTime(m.ExpiresAt),
 			ClientID:    m.ClientID,
 		})
@@ -529,7 +529,7 @@ func formatTime(t *time.Time) *string {
 	if t == nil {
 		return nil
 	}
-	s := t.Format(time.RFC3339Nano)
+	s := t.UTC().Format(time.RFC3339Nano)
 	return &s
 }
 

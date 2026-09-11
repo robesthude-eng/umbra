@@ -275,7 +275,7 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]memberResponse, 0, len(members))
 	for _, m := range members {
-		out = append(out, memberResponse{UserID: m.UserID, Role: string(m.Role), JoinedAt: m.JoinedAt.Format(time.RFC3339)})
+		out = append(out, memberResponse{UserID: m.UserID, Role: string(m.Role), JoinedAt: m.JoinedAt.UTC().Format(time.RFC3339)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"members": out})
 }
@@ -431,6 +431,6 @@ func chatToResponse(c *model.Chat) chatResponse {
 		Type:      string(c.Type),
 		Title:     c.Title,
 		CreatedBy: c.CreatedBy,
-		CreatedAt: c.CreatedAt.Format(time.RFC3339),
+		CreatedAt: c.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }

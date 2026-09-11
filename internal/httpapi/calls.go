@@ -277,7 +277,7 @@ func containsID(ids []string, id string) bool {
 func callToResponse(c *model.Call) callResponse {
 	var endedAt *string
 	if c.EndedAt != nil {
-		s := c.EndedAt.Format(time.RFC3339)
+		s := c.EndedAt.UTC().Format(time.RFC3339)
 		endedAt = &s
 	}
 	return callResponse{
@@ -287,7 +287,7 @@ func callToResponse(c *model.Call) callResponse {
 		Participants: c.Everyone(),
 		Video:        c.Video,
 		Status:       string(c.Status),
-		CreatedAt:    c.CreatedAt.Format(time.RFC3339),
+		CreatedAt:    c.CreatedAt.UTC().Format(time.RFC3339),
 		EndedAt:      endedAt,
 	}
 }
