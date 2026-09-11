@@ -82,6 +82,7 @@ internal fun SettingsTab(container: AppContainer) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         AppearanceSettings(container.uiPreferences, repo)
+        UpdateCard(container)
         GlassRow({ showStorageInfo = true }) {
             Icon(Icons.Filled.Storage, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(12.dp))
@@ -205,7 +206,42 @@ private fun AppearanceSettings(preferences: UiPreferences, repo: ChatRepository)
         PreferenceSwitch("Уменьшить анимацию", "Спокойные переходы между экранами", appearance.reduceMotion, preferences::setReduceMotion, Modifier.padding(16.dp))
     }
     DiagnosticsCard(repo)
-    UpdateCard(container)
+}
+
+@Composable
+private fun UpdateCard(container: AppContainer) {
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    AppearanceSurface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Обновление", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Установлена версия ${com.umbra.app.BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            status?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Button(
+                onClick = {
+                    if (checking) return@Button
+                    checking = true
+                    status = null
+                    scope.launch {
+                        val info = container.appUpdater.runCheck(force = true)
+                        status = if (info == null) "У вас последняя версия"
+                        else "Доступна версия ${info.versionName} — сейчас появится предложение обновиться"
+                        checking = false
+                    }
+                },
+                enabled = !checking,
+            ) {
+                Text(if (checking) "Проверяем…" else "Проверить обновление")
+            }
+        }
+    }
 }
 
 @Composable
