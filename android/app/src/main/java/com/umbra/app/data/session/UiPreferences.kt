@@ -143,13 +143,4 @@ class UiPreferences(context: Context, preferenceName: String = "umbra_appearance
         mutableState.value = mutableState.value.copy(alienIntensity = value, interfaceStyle = style)
     }
 
-    /** Совместимость с вызовами прежнего переключателя. */
-    fun setAlienInterface(value: Boolean) {
-        if (value) {
-            setAlienIntensity(AlienIntensity.FULL)
-            setInterfaceStyle(InterfaceStyle.ALIEN)
-        } else if (mutableState.value.interfaceStyle == InterfaceStyle.ALIEN) {
-            setInterfaceStyle(InterfaceStyle.STANDARD)
-        }
-    }
 }

@@ -105,13 +105,6 @@ type ChatMember struct {
 	JoinedAt time.Time  `json:"joined_at"`
 }
 
-// Contact — контакт пользователя (односторонняя ссылка на другого пользователя).
-type Contact struct {
-	UserID    string    `json:"user_id"`
-	ContactID string    `json:"contact_id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 // CallStatus — статус звонка.
 type CallStatus string
 

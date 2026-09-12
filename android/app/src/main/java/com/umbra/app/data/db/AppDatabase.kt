@@ -97,9 +97,6 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND deliveryState = 'pending' ORDER BY createdAtMillis, id LIMIT 50")
     suspend fun pending(owner: String): List<MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE ownerId = :owner AND localBody IS NULL AND deliveryState = 'sent' ORDER BY createdAtMillis, id LIMIT 100")
-    suspend fun unreadCiphertexts(owner: String): List<MessageEntity>
-
     @Query("SELECT MAX(createdAtMillis) FROM messages WHERE ownerId = :owner AND deliveryState = 'sent'")
     suspend fun maxCreatedAtMillis(owner: String): Long?
 
@@ -111,9 +108,6 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE expiresAtMillis IS NOT NULL AND expiresAtMillis <= :now")
     suspend fun deleteExpired(now: Long)
-
-    @Query("SELECT * FROM messages WHERE ownerId = ''")
-    suspend fun legacyMessages(): List<MessageEntity>
 }
 
 @Dao

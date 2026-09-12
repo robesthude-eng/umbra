@@ -1688,10 +1688,6 @@ class ChatRepository(
     suspend fun attachmentFile(mediaId: String): File =
         mediaFile(mediaId, MAX_ATTACHMENT_BYTES, "Файл не найден на сервере.")
 
-    /** Готовая копия файла на устройстве, если она есть. */
-    fun cachedMediaFile(mediaId: String): File? =
-        mediaCacheFile(mediaId).takeIf { it.isFile && it.length() > 0 }
-
     /** Файл вложения на устройстве: своя копия либо скачивание с сервера. */
     suspend fun attachmentLocalFile(a: UiAttachment): File {
         val local = a.localPath?.let { File(it) }?.takeIf { it.isFile && it.length() > 0 }

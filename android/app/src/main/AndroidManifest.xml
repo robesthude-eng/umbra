@@ -7,8 +7,6 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Смена сети во время звонка: пересобираем маршрут вместо обрыва. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Контакты: поиск друзей, уже зарегистрированных в Umbra. -->
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />

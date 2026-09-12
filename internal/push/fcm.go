@@ -41,11 +41,6 @@ type Message struct {
 	TTL          time.Duration
 }
 
-// Sender — отправитель уведомлений. В тестах подменяется заглушкой.
-type Sender interface {
-	Send(ctx context.Context, m Message) error
-}
-
 // serviceAccount — только те поля google-services аккаунта, что нужны для JWT.
 type serviceAccount struct {
 	Type        string `json:"type"`

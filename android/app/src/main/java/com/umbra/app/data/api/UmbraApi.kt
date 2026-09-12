@@ -158,29 +158,6 @@ data class SendChatMessageRequest(
     @SerialName("expires_in") val expiresIn: Long? = null,
 )
 
-// ---------- DTO: контакты ----------
-
-@Serializable
-data class ContactRequest(@SerialName("contact_id") val contactId: String)
-
-@Serializable
-data class ContactsResponse(val contacts: List<String> = emptyList())
-
-@Serializable
-data class DiscoverRequest(val hashes: List<String>)
-
-@Serializable
-data class DiscoveredUser(
-    val id: String,
-    val username: String = "",
-    @SerialName("display_name") val displayName: String = "",
-    val phone: String = "",
-    @SerialName("phone_hash") val phoneHash: String = "",
-)
-
-@Serializable
-data class DiscoverResponse(val matches: List<DiscoveredUser> = emptyList())
-
 // ---------- DTO: звонки (сигналинг; статусный автомат) ----------
 
 /**
@@ -312,16 +289,6 @@ interface UmbraApi {
 
     @POST("/v1/chats/{id}/messages")
     suspend fun sendChatMessage(@Header("Authorization") auth: String, @Path("id") id: String, @Body body: SendChatMessageRequest): MessageDto
-
-    // Контакты (приватный поиск по хэшам).
-    @POST("/v1/contacts")
-    suspend fun addContact(@Header("Authorization") auth: String, @Body body: ContactRequest): Unit
-
-    @GET("/v1/contacts")
-    suspend fun contacts(@Header("Authorization") auth: String): ContactsResponse
-
-    @POST("/v1/contacts/discover")
-    suspend fun discoverContacts(@Header("Authorization") auth: String, @Body body: DiscoverRequest): DiscoverResponse
 
     // Медиа (аватар, фото/файлы; файл хранится как есть — модель T1).
     @Multipart

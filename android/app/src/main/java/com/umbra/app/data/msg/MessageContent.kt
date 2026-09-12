@@ -84,9 +84,6 @@ data class MediaContent(
     }
 }
 
-/** Модель вложения для UI. */
-data class UiMedia(val id: String, val mime: String, val size: Long, val name: String?)
-
 /** 7_000 -> «0:07», 95_000 -> «1:35». */
 fun voiceDurationText(millis: Long): String {
     val seconds = (millis.coerceAtLeast(0) + 500) / 1000

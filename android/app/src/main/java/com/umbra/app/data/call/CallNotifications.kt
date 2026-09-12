@@ -46,9 +46,6 @@ object CallNotifications {
     @Volatile
     private var shownCallId: String? = null
 
-    /** Идёт ли сейчас показ входящего (нужно, чтобы не дублировать экран). */
-    fun isShowing(callId: String): Boolean = shownCallId == callId
-
     fun show(context: Context, callId: String, peerId: String, peerName: String, video: Boolean) {
         if (callId.isBlank()) return
         ensureChannel(context)
