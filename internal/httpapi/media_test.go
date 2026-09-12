@@ -388,7 +388,7 @@ func mediaUserToken(t *testing.T, f *mediaFixture, id string) string {
 }
 
 // uploadMedia загружает файл с заданной областью видимости.
-func uploadMedia(t *testing.T, handler http.Handler, token string, scope ...mediaPart) (int, string) {
+func uploadScopedMedia(t *testing.T, handler http.Handler, token string, scope ...mediaPart) (int, string) {
 	t.Helper()
 	parts := append([]mediaPart{{name: "file", file: true, value: []byte("ciphertext")}}, scope...)
 	body, ct := multipartBody(t, parts...)
@@ -406,7 +406,7 @@ func TestMediaAccessControl(t *testing.T) {
 	ctx := context.Background()
 
 	// Личная переписка: файл видят владелец и адресат.
-	code, id := uploadMedia(t, f.handler, f.owner, mediaPart{name: "recipient_id", value: []byte("other")})
+	code, id := uploadScopedMedia(t, f.handler, f.owner, mediaPart{name: "recipient_id", value: []byte("other")})
 	if code != http.StatusCreated {
 		t.Fatalf("загрузка с адресатом: %d", code)
 	}
@@ -432,7 +432,7 @@ func TestMediaAccessControl(t *testing.T) {
 	if err := f.st.AddMember(ctx, chat.ID, "other", model.RoleMember); err != nil {
 		t.Fatal(err)
 	}
-	code, id = uploadMedia(t, f.handler, f.owner, mediaPart{name: "chat_id", value: []byte(chat.ID)})
+	code, id = uploadScopedMedia(t, f.handler, f.owner, mediaPart{name: "chat_id", value: []byte(chat.ID)})
 	if code != http.StatusCreated {
 		t.Fatalf("загрузка в чат: %d", code)
 	}
@@ -456,13 +456,13 @@ func TestMediaAccessControl(t *testing.T) {
 		{"две области", f.owner, []mediaPart{{name: "chat_id", value: []byte(chat.ID)}, {name: "recipient_id", value: []byte("other")}}, http.StatusBadRequest},
 		{"дубль области", f.owner, []mediaPart{{name: "recipient_id", value: []byte("other")}, {name: "recipient_id", value: []byte("other")}}, http.StatusBadRequest},
 	} {
-		if code, _ := uploadMedia(t, f.handler, tc.token, tc.parts...); code != tc.want {
+		if code, _ := uploadScopedMedia(t, f.handler, tc.token, tc.parts...); code != tc.want {
 			t.Fatalf("%s: %d, ожидался %d", tc.name, code, tc.want)
 		}
 	}
 
 	// Аватар остаётся видимым всем: его рисуют в списках и профилях.
-	code, avatarID := uploadMedia(t, f.handler, f.owner)
+	code, avatarID := uploadScopedMedia(t, f.handler, f.owner)
 	if code != http.StatusCreated {
 		t.Fatalf("загрузка аватара: %d", code)
 	}
@@ -480,7 +480,7 @@ func TestMediaAccessControl(t *testing.T) {
 	legacyCfg := *f.cfg
 	legacyCfg.MediaOpenAccess = true
 	legacy := NewServerWithBlobStore(&legacyCfg, f.st, ws.NewHub(), f.blobs).Handler
-	code, legacyID := uploadMedia(t, legacy, f.owner)
+	code, legacyID := uploadScopedMedia(t, legacy, f.owner)
 	if code != http.StatusCreated {
 		t.Fatalf("legacy-загрузка: %d", code)
 	}
