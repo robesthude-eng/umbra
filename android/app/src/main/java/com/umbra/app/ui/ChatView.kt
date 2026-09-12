@@ -280,7 +280,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris -> sendPicked(uris) }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> sendPicked(listOfNotNull(uri)) }
-    // Запись видеосообщения прямо из чата: кам��ра пиш��т в приватный каталог,
+    // Запись видеосообщения прямо из чата: камера пишет в приватный каталог,
     // оттуда запись уходит обычным вложением, а временный файл удаляется.
     var captureTarget by remember { mutableStateOf<File?>(null) }
     fun sendCaptured(file: File) {
@@ -330,7 +330,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) beginVideoCapture()
         else cameraPermission.launch(Manifest.permission.CAMERA)
     }
-    // Сохранение чере�� системный выбор папки: разрешения на галерею не нужны.
+    // Сохранение через системный выбор папки: разрешения на галерею не нужны.
     var pendingSave by remember { mutableStateOf<UiAttachment?>(null) }
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
         val attachment = pendingSave

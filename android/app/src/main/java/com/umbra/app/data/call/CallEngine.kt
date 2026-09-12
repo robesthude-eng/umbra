@@ -737,7 +737,7 @@ class CallEngine(
 
     /**
      * ICE-серверы: сначала спрашиваем сервер (GET /v1/turn) — учётка TURN там
-     * вре��енная и в APK не хранится. Если сервер недоступен, берём адреса сборки.
+     * временная и в APK не хранится. Если сервер недоступен, берём адреса сборки.
      */
     private suspend fun fetchIceServers(): List<PeerConnection.IceServer> {
         val remote: List<IceServerDto> = try {
