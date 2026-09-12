@@ -574,6 +574,27 @@ func (m *MemoryStore) ListCallsForUser(_ context.Context, userID string) ([]*mod
 	return out, nil
 }
 
+// ExpireRingingCalls закрывает забытые вызовы: клиент мог быть убит до
+// отправки статуса, и запись оставалась ringing навсегда.
+func (m *MemoryStore) ExpireRingingCalls(_ context.Context, olderThan time.Time) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	expired := make([]string, 0)
+	now := time.Now().UTC()
+	for id, c := range m.calls {
+		if c.Status != model.CallRinging || !c.CreatedAt.Before(olderThan) {
+			continue
+		}
+		c.Status = model.CallMissed
+		ended := now
+		c.EndedAt = &ended
+		m.calls[id] = c
+		expired = append(expired, id)
+	}
+	sort.Strings(expired)
+	return expired, nil
+}
+
 // isMember — вызывается только под m.mu.
 func (m *MemoryStore) isMember(chatID, userID string) bool {
 	members, ok := m.chatMembers[chatID]

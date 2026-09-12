@@ -35,6 +35,25 @@ func DrainBlobs(ctx context.Context, st store.Store, blobs blobstore.BlobStore) 
 	return result
 }
 
+// ringingTimeout — через сколько неотвеченный вызов считается пропущенным.
+// Клиент снимает звонок через 45 с; запас нужен на дорогу сигнала и на
+// медленный push.
+const ringingTimeout = 90 * time.Second
+
+// ExpireCalls переводит забытые ringing-вызовы в missed. Раньше это делал
+// только клиент, поэтому после закрытия обоих приложений запись оставалась
+// ringing, и история звонков показывала «идёт вызов» бесконечно.
+func ExpireCalls(ctx context.Context, st store.Store) error {
+	ids, err := st.ExpireRingingCalls(ctx, time.Now().UTC().Add(-ringingTimeout))
+	if err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		log.Printf("maintenance: пропущенными помечено вызовов: %d", len(ids))
+	}
+	return nil
+}
+
 func Run(ctx context.Context, st store.Store, blobs blobstore.BlobStore) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -45,6 +64,9 @@ func Run(ctx context.Context, st store.Store, blobs blobstore.BlobStore) {
 		}
 		if err := DrainBlobs(sweep, st, blobs); err != nil && ctx.Err() == nil {
 			log.Printf("blob cleanup pending: %v", err)
+		}
+		if err := ExpireCalls(sweep, st); err != nil && ctx.Err() == nil {
+			log.Printf("call sweep: %v", err)
 		}
 		cancel()
 		select {

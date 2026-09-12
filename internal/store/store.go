@@ -97,6 +97,10 @@ type Store interface {
 	GetCall(ctx context.Context, id string) (*model.Call, error)
 	UpdateCallStatus(ctx context.Context, id string, status model.CallStatus) error
 	ListCallsForUser(ctx context.Context, userID string) ([]*model.Call, error)
+	// ExpireRingingCalls переводит неотвеченные вызовы, созданные раньше
+	// olderThan, в missed и возвращает их id. Без этого запись оставалась
+	// ringing навсегда, если оба клиента умерли, не отправив статус.
+	ExpireRingingCalls(ctx context.Context, olderThan time.Time) ([]string, error)
 
 	// Push-уведомления: токены устройств Firebase.
 	// SavePushDevice идемпотентен; токен, пришедший от другого аккаунта,

@@ -502,7 +502,9 @@ class ChatRepository(
         profileMutex.withLock {
             val part = MultipartBody.Part.createFormData("file", "avatar", bytes.toRequestBody(mime.toMediaType()))
             val up = request(key) {
-                val response = api.uploadMedia(it, part, mime.toRequestBody("text/plain".toMediaType()))
+                // Аватар грузится без области видимости: доступ всем даёт сам
+                // setAvatar ниже, пока это текущее фото профиля.
+                val response = api.uploadMedia(it, part, mime.toRequestBody("text/plain".toMediaType()), null, null)
                 if (!response.isSuccessful) throw HttpException(response)
                 response.body() ?: throw IOException("Empty upload response")
             }
@@ -1268,7 +1270,7 @@ class ChatRepository(
      * Голосовое сообщение уходит той же очередью, что и текст: строка появляется
      * сразу со статусом «Ожидает отправки», файл записи переносится в приватный
      * каталог приложения, а загрузка в /v1/media и отправка конверта происходят
-     * �� flushOutbox — с теми же повторами и сохранением порядка.
+     * → flushOutbox — с теми же повторами и сохранением порядка.
      */
     suspend fun sendVoice(chatId: String, recording: VoiceRecording) {
         val key = key()
@@ -1338,23 +1340,69 @@ class ChatRepository(
         requestOutbox()
     }
 
-    /** Пересылка повторно использует уже загруженный media id и не расходует трафик на повторную загрузку. */
+    /**
+     * Пересылка текста повторно использует готовый конверт. Вложение
+     * загружается заново: с 0.16.16 файл доступен только своей области
+     * видимости, и старый media id в новом чате никто, кроме отправителя,
+     * не сможет скачать. Файл берётся из локального кэша, а если его нет —
+     * один раз скачивается с сервера.
+     */
     suspend fun forwardMessage(chatId: String, message: UiMessage) {
         val source = requireNotNull(message.content) { "Дождитесь отправки сообщения перед пересылкой." }
         val key = key()
-        commit(key) {
-            val chat = requireNotNull(db.chatDao().get(chatId)) { "Сначала откройте диалог" }
-            check(chat.type != "unavailable") { "Доступ к группе прекращён." }
-            val id = UUID.randomUUID().toString()
-            val now = Instant.now()
-            val from = message.forwardedFrom ?: titleFor(message.senderId)
-            db.messageDao().upsert(MessageEntity(
-                "local:$id", key.owner, if (chat.type == "dm") chatId else "", chatId,
-                MessageCodec.encode(source.copy(reply = null, forwardedFrom = from)), now.toString(), null,
-                ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
-            ))
+        val media = source.media?.takeIf { it.id.isNotBlank() }
+        // Файл готовим до транзакции: его может придтись скачать.
+        val copy = if (media != null) prepareForwardCopy(source, media) else null
+        try {
+            commit(key) {
+                val chat = requireNotNull(db.chatDao().get(chatId)) { "Сначала откройте диалог" }
+                check(chat.type != "unavailable") { "Доступ к группе прекращён." }
+                val id = UUID.randomUUID().toString()
+                val now = Instant.now()
+                val from = message.forwardedFrom ?: titleFor(message.senderId)
+                val forwarded = source.copy(reply = null, forwardedFrom = from)
+                val recipient = if (chat.type == "dm") chatId else ""
+                db.messageDao().upsert(if (copy == null || media == null) MessageEntity(
+                    "local:$id", key.owner, recipient, chatId,
+                    MessageCodec.encode(forwarded), now.toString(), null,
+                    ownerId = key.owner, createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+                ) else MessageEntity(
+                    "local:$id", key.owner, recipient, chatId,
+                    "", now.toString(), null,
+                    ownerId = key.owner,
+                    // Конверт дособерёт ensureMediaUploaded — с новым media id.
+                    localBody = MessageCodec.encode(forwarded.copy(media = null)),
+                    createdAtMillis = now.toEpochMilli(), deliveryState = "pending", clientId = id,
+                    localMediaPath = copy.absolutePath, localMediaMime = media.mime,
+                    localMediaDurationMs = media.durationMs, localMediaKind = source.kind,
+                    localMediaName = media.name, localMediaSize = media.size,
+                    localMediaWidth = media.width, localMediaHeight = media.height,
+                ))
+            }
+        } catch (e: Throwable) {
+            // Строки в базе нет — копия файла тоже не должна остаться мусором.
+            if (copy != null) withContext(NonCancellable + Dispatchers.IO) { copy.delete() }
+            throw e
         }
         requestOutbox()
+    }
+
+    /**
+     * Копия пересылаемого файла в очереди отправки. Оригинал остаётся на
+     * месте — он всё ещё кэш исходного сообщения.
+     */
+    private suspend fun prepareForwardCopy(content: MessageContent, media: MediaContent): File {
+        val voice = content.kind == MessageContent.KIND_VOICE
+        val limit = if (voice) MAX_VOICE_BYTES else MAX_ATTACHMENT_BYTES
+        val origin = if (voice) voiceFile(media.id) else attachmentFile(media.id)
+        val id = UUID.randomUUID().toString()
+        val target = if (voice) File(outboxDir(), "$id.m4a") else File(attachOutboxDir(), id)
+        return withContext(Dispatchers.IO) {
+            val size = origin.length()
+            require(size > 0) { "Файл недоступен. Откройте его и повторите пересылку." }
+            require(size <= limit) { "Файл слишком большой для пересылки." }
+            origin.copyTo(target, overwrite = true)
+        }
     }
 
     private fun UiMessage.asReply() = ReplyContent(id, senderId, text.take(180))
@@ -1471,7 +1519,7 @@ class ChatRepository(
                     DiagLog.log("outbox-item", e, note = "попытка $attempts, retryable=$retryable, kind=${m.localMediaKind ?: "text"}")
                     val giveUp = retryable && attempts >= 5
                     val mediaUpload = m.ciphertext.isBlank() && m.localMediaPath != null
-                    val voiceUpload = mediaUpload && m.localMediaKind == null
+                    val voiceUpload = mediaUpload && (m.localMediaKind == null || m.localMediaKind == MessageContent.KIND_VOICE)
                     commit(key) { db.messageDao().get(m.id)?.let { current ->
                         if (current.deliveryState == "pending") db.messageDao().upsert(current.copy(
                             deliveryState = if (retryable && !giveUp) "pending" else "failed",
@@ -1558,9 +1606,21 @@ class ChatRepository(
         val fileName = m.localMediaName?.takeIf { it.isNotBlank() } ?: if (voice) "voice.m4a" else file.name
         // Неизвестный или битый тип не должен ронять отправку: шлём как двоичный.
         val mediaType = mime.toMediaTypeOrNull() ?: Attachments.DEFAULT_MIME.toMediaType()
+        // Область видимости повторяет развилку отправки конверта: в личной
+        // переписке — адресат, в группе или канале — сам чат. Сервер 0.16.16+
+        // отдаёт вложение только им, а не любому, кто узнал media id.
+        val plain = "text/plain".toMediaType()
+        val chatScope = m.chatId.takeIf { m.recipientId.isEmpty() && it.isNotEmpty() }
+        val peerScope = m.recipientId.takeIf { it.isNotEmpty() }
         val up = request(key) { auth ->
             val part = MultipartBody.Part.createFormData("file", fileName, file.asRequestBody(mediaType))
-            val response = api.uploadMedia(auth, part, mime.toRequestBody("text/plain".toMediaType()))
+            val response = api.uploadMedia(
+                auth,
+                part,
+                mime.toRequestBody(plain),
+                chatScope?.toRequestBody(plain),
+                peerScope?.toRequestBody(plain),
+            )
             if (!response.isSuccessful) throw HttpException(response)
             response.body() ?: throw IOException("Empty upload response")
         }

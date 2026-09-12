@@ -249,8 +249,9 @@ func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since t
 
 func (p *PostgresStore) SaveMedia(ctx context.Context, m *model.Media) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO media (id, owner_id, content_type, size, created_at) VALUES ($1,$2,$3,$4,$5)`,
-		m.ID, m.OwnerID, m.ContentType, m.Size, m.CreatedAt)
+		`INSERT INTO media (id, owner_id, content_type, size, created_at, chat_id, recipient_id)
+		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''))`,
+		m.ID, m.OwnerID, m.ContentType, m.Size, m.CreatedAt, m.ChatID, m.RecipientID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // нет пользователя-владельца
 		return ErrNotFound
@@ -261,8 +262,10 @@ func (p *PostgresStore) SaveMedia(ctx context.Context, m *model.Media) error {
 func (p *PostgresStore) GetMedia(ctx context.Context, id string) (*model.Media, error) {
 	var m model.Media
 	err := p.pool.QueryRow(ctx,
-		`SELECT id, owner_id, content_type, size, created_at FROM media WHERE id = $1`, id).
-		Scan(&m.ID, &m.OwnerID, &m.ContentType, &m.Size, &m.CreatedAt)
+		`SELECT id, owner_id, content_type, size, created_at,
+		        COALESCE(chat_id, ''), COALESCE(recipient_id, '')
+		 FROM media WHERE id = $1`, id).
+		Scan(&m.ID, &m.OwnerID, &m.ContentType, &m.Size, &m.CreatedAt, &m.ChatID, &m.RecipientID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -497,6 +500,29 @@ func (p *PostgresStore) ListCallsForUser(ctx context.Context, userID string) ([]
 		}
 		c.Status = model.CallStatus(status)
 		out = append(out, &c)
+	}
+	return out, rows.Err()
+}
+
+// ExpireRingingCalls закрывает забытые вызовы одним UPDATE: иначе после
+// падения обоих клиентов звонок навсегда оставался ringing.
+func (p *PostgresStore) ExpireRingingCalls(ctx context.Context, olderThan time.Time) ([]string, error) {
+	rows, err := p.pool.Query(ctx,
+		`UPDATE calls SET status = 'missed', ended_at = now()
+		 WHERE status = 'ringing' AND created_at < $1
+		 RETURNING id`, olderThan)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

@@ -54,12 +54,21 @@ type Message struct {
 }
 
 // Media — метаданные ciphertext; имя файла, ключ и nonce серверу не передаются.
+//
+// ChatID/RecipientID — область видимости файла. Она задаётся при загрузке и
+// определяет, кто может скачать blob: раньше знание id давало доступ любому
+// авторизованному пользователю, и пересланный id открывал файл посторонним.
+// Пустая область = медиа, загруженное старым клиентом (см. MediaOpenAccess).
 type Media struct {
 	ID          string    `json:"id"`
 	OwnerID     string    `json:"owner_id"`
 	ContentType string    `json:"content_type"`
 	Size        int64     `json:"size"`
 	CreatedAt   time.Time `json:"created_at"`
+	// ChatID — файл доступен участникам этой группы/канала.
+	ChatID string `json:"chat_id,omitempty"`
+	// RecipientID — файл доступен владельцу и этому собеседнику (личный чат).
+	RecipientID string `json:"recipient_id,omitempty"`
 }
 
 // ChatType — тип чата: группа или канал.
@@ -114,7 +123,7 @@ const (
 	CallDeclined CallStatus = "declined"
 )
 
-// Call — запись о звонке (голосовом или видео). Сервер хранит только метаданные
+// Call — запись о звонке (голосово�� или видео). Сервер хранит только метаданные
 // звонка: медиа-поток идёт peer-to-peer (WebRTC) и через сервер не проходит.
 //
 // Participants — полный список участников, включая звонящего (появился в 0.9.0

@@ -330,6 +330,12 @@ interface UmbraApi {
         @Header("Authorization") auth: String,
         @Part file: MultipartBody.Part,
         @Part("content_type") contentType: RequestBody,
+        // Область видимости (сервер 0.16.16+): чат либо адресат личной
+        // переписки; взаимоисключаются. Без области (null — часть не
+        // отправляется) файл остаётся доступен только владельцу — так
+        // грузится аватар, он открывается всем после /v1/account/avatar.
+        @Part("chat_id") chatId: RequestBody?,
+        @Part("recipient_id") recipientId: RequestBody?,
     ): Response<MediaUploadResponse>
 
     @Streaming

@@ -46,6 +46,11 @@ type Config struct {
 	S3UseSSL    bool
 	// MaxUserMediaBytes — квота суммарного объёма медиа на пользователя (0 = без лимита).
 	MaxUserMediaBytes int64
+	// MediaOpenAccess возвращает прежнее поведение MVP: медиа без области
+	// видимости (chat_id/recipient_id) может скачать любой авторизованный
+	// пользователь. Нужно только для файлов, загруженных клиентами до 0.16.16.
+	// По умолчанию выключено: иначе знание id = доступ к файлу.
+	MediaOpenAccess bool
 	// StunURL — публичный STUN для сбора ICE-кандидатов звонка.
 	StunURL string
 	// TurnURL — TURN-сервер для ретрансляции, когда прямое соединение не поднялось.
@@ -96,6 +101,7 @@ func Load() *Config {
 		S3Region:          getenv("S3_REGION", ""),
 		S3UseSSL:          getenvBool("S3_USE_SSL", true),
 		MaxUserMediaBytes: int64(getenvInt("MAX_USER_MEDIA_BYTES", 0)),
+		MediaOpenAccess:   getenvBool("MEDIA_LEGACY_OPEN_ACCESS", false),
 		StunURL:           getenv("STUN_URL", "stun:stun.l.google.com:19302"),
 		TurnURL:           getenv("TURN_URL", ""),
 		TurnSecret:        getenv("TURN_SECRET", ""),

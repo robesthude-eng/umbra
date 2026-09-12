@@ -94,8 +94,9 @@ func (p *PostgresStore) SaveMediaWithQuota(ctx context.Context, media *model.Med
 			return ErrQuota
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO media(id,owner_id,content_type,size,created_at) VALUES ($1,$2,$3,$4,$5)`,
-		media.ID, media.OwnerID, media.ContentType, media.Size, media.CreatedAt)
+	_, err = tx.Exec(ctx, `INSERT INTO media(id,owner_id,content_type,size,created_at,chat_id,recipient_id)
+		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''))`,
+		media.ID, media.OwnerID, media.ContentType, media.Size, media.CreatedAt, media.ChatID, media.RecipientID)
 	if err != nil {
 		return mapErr(err)
 	}

@@ -24,6 +24,8 @@ const (
 	defaultMediaContentType  = "application/octet-stream"
 	maxMediaContentTypeBytes = 1024
 	mediaMultipartOverhead   = 64 << 10
+	// maxMediaScopeBytes — предел для chat_id/recipient_id: это токены, а не текст.
+	maxMediaScopeBytes = 128
 )
 
 type mediaResponse struct {
@@ -98,6 +100,9 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	contentType := defaultMediaContentType
 	var size int64
 	var fileSeen, contentTypeSeen, blobSaved, committed bool
+	// Область видимости файла: кому разрешено его скачать (см. model.Media).
+	var chatID, recipientID string
+	var chatSeen, recipientSeen bool
 	defer func() {
 		if blobSaved && !committed {
 			cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -168,6 +173,26 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "invalid content_type")
 				return
 			}
+		case "chat_id", "recipient_id":
+			name := part.FormName()
+			if part.FileName() != "" || (name == "chat_id" && chatSeen) || (name == "recipient_id" && recipientSeen) {
+				writeError(w, http.StatusBadRequest, "invalid scope field")
+				return
+			}
+			value, err := io.ReadAll(io.LimitReader(part, maxMediaScopeBytes+1))
+			if err != nil {
+				writeMediaReadError(w, err)
+				return
+			}
+			if len(value) > maxMediaScopeBytes {
+				writeError(w, http.StatusRequestEntityTooLarge, "scope too large")
+				return
+			}
+			if name == "chat_id" {
+				chatSeen, chatID = true, strings.TrimSpace(string(value))
+			} else {
+				recipientSeen, recipientID = true, strings.TrimSpace(string(value))
+			}
 		default:
 			writeError(w, http.StatusBadRequest, "unexpected multipart field")
 			return
@@ -184,9 +209,37 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	ownerID := r.Context().Value(ctxUserID).(string)
 
+	// Область видимости проверяем здесь: отказ до записи метаданных убирает
+	// уже залитый blob (defer выше: blobSaved && !committed).
+	if chatID != "" && recipientID != "" {
+		writeError(w, http.StatusBadRequest, "specify either chat_id or recipient_id")
+		return
+	}
+	if chatID != "" {
+		if _, err := s.store.GetMember(r.Context(), chatID, ownerID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusForbidden, "not a chat member")
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "service unavailable")
+			}
+			return
+		}
+	}
+	if recipientID != "" && recipientID != ownerID {
+		if _, err := s.store.GetUserByID(r.Context(), recipientID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "recipient not found")
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "service unavailable")
+			}
+			return
+		}
+	}
+
 	m := &model.Media{
 		ID: id, OwnerID: ownerID,
 		ContentType: contentType, Size: size, CreatedAt: time.Now().UTC(),
+		ChatID: chatID, RecipientID: recipientID,
 	}
 	if s.cfg.MaxUserMediaBytes > 0 {
 		err = s.store.SaveMediaWithQuota(r.Context(), m, s.cfg.MaxUserMediaBytes)
@@ -223,7 +276,18 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// По контракту MVP любой авторизованный получатель с id может получить ciphertext.
+	// Доступ по области видимости, а не по знанию id: пересланный или
+	// угаданный id больше не открывает чужое вложение.
+	allowed, err := s.mediaAccessAllowed(r.Context(), r.Context().Value(ctxUserID).(string), m)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "service unavailable")
+		return
+	}
+	if !allowed {
+		// 404, а не 403: иначе ответ подтверждает существование файла.
+		writeError(w, http.StatusNotFound, "media not found")
+		return
+	}
 	blob, err := blobstore.Get(r.Context(), s.blobs, m.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, blobstore.ErrInvalidID) {
@@ -248,6 +312,40 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 		// После отправки заголовков нельзя добавлять JSON к шифротексту.
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// mediaAccessAllowed — право на скачивание файла.
+//
+// Порядок проверок: владелец → участник чата → адресат личного сообщения →
+// текущий аватар владельца (его видят все в диалогах и группах) → медиа без
+// области видимости (старые загрузки) — только если явно разрешено в конфиге.
+func (s *Server) mediaAccessAllowed(ctx context.Context, userID string, m *model.Media) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	if m.OwnerID == userID {
+		return true, nil
+	}
+	if m.ChatID != "" {
+		if _, err := s.store.GetMember(ctx, m.ChatID, userID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
+	}
+	if m.RecipientID != "" {
+		return m.RecipientID == userID, nil
+	}
+	avatar, err := s.store.GetAvatar(ctx, m.OwnerID)
+	switch {
+	case err == nil && avatar == m.ID:
+		return true, nil
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		return false, err
+	}
+	return s.cfg.MediaOpenAccess, nil
 }
 
 func writeMediaReadError(w http.ResponseWriter, err error) {

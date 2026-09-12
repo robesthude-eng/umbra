@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -96,6 +97,24 @@ func (s *Server) handleInitiateCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Занятость: раньше второй звонок тому же человеку создавал вторую
+	// запись и второй экран входящего. Себя тоже проверяем: двойное
+	// нажатие «позвонить» давало два параллельных потока сигналинга.
+	for _, peer := range append([]string{callerID}, callees...) {
+		busy, err := s.hasRingingCall(r.Context(), peer)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "service unavailable")
+			return
+		}
+		if busy {
+			if peer == callerID {
+				writeError(w, http.StatusConflict, "already calling")
+			} else {
+				writeError(w, http.StatusConflict, "callee is busy")
+			}
+			return
+		}
+	}
 
 	id, err := crypto.NewToken()
 	if err != nil {
@@ -157,6 +176,12 @@ func (s *Server) handleCallSignal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not a participant")
 		return
 	}
+	// Законченный звонок сигналов больше не принимает: раньше offer/ice
+	// можно было шлать в любой момент жизни записи и будить чужой клиент.
+	if call.Status != model.CallRinging && call.Status != model.CallActive {
+		writeError(w, http.StatusConflict, "call is not active")
+		return
+	}
 	to := req.To
 	if to == "" && len(others) == 1 {
 		// Клиенты 0.8.0 не заполняют to в личном звонке — адресат там один.
@@ -205,6 +230,17 @@ func (s *Server) handleUpdateCallStatus(w http.ResponseWriter, r *http.Request) 
 	others := call.Others(userID)
 	if others == nil {
 		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+	// Завершённый звонок не меняет статус: оживлять ended в active или
+	// переписывать declined в missed нельзя. Повтор того же статуса
+	// идемпотентен: клиент повторяет ended при обрыве сети.
+	if call.Status == model.CallEnded || call.Status == model.CallDeclined || call.Status == model.CallMissed {
+		if status == call.Status {
+			writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
+			return
+		}
+		writeError(w, http.StatusConflict, "call already finished")
 		return
 	}
 
@@ -260,6 +296,28 @@ func (s *Server) handleListCalls(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- утилиты ----------
+
+// ringingBusyWindow — сколько времени вызов считается звонящим. Клиент
+// снимает неотвеченный вызов через 45 с, а maintenance переводит забытые
+// записи в missed, поэтому зависший ringing блокирует новые звонки
+// не дольше этого окна. Разговор (active) занятостью не считаем: убитый
+// процесс не присылает ended, и человек остался бы без звонков надолго.
+const ringingBusyWindow = 60 * time.Second
+
+// hasRingingCall — звонит ли у человека вызов прямо сейчас.
+func (s *Server) hasRingingCall(ctx context.Context, userID string) (bool, error) {
+	calls, err := s.store.ListCallsForUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	since := time.Now().UTC().Add(-ringingBusyWindow)
+	for _, c := range calls {
+		if c.Status == model.CallRinging && c.CreatedAt.After(since) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // containsID — есть ли id в списке участников.
 func containsID(ids []string, id string) bool {
