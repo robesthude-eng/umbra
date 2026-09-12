@@ -254,3 +254,21 @@ TCP-подключение к 3478, обмен данными relay↔relay и r
 - **FCM не настроен.** Без `google-services.json` сборка APK идёт без push.
 - **Лимит nginx** `client_max_body_size` поднят до `256m` 2026-09-10 под квоту
   `MAX_USER_MEDIA_BYTES` (256 МиБ) — пункт закрыт.
+
+## 2026-09-12 — 0.16.16 (vc39): медиа по области видимости + честные звонки
+
+**Бинаррь:** CI run `34679445412` (воркфлоу server-binary.yml, commit `e7b35f7`), sha256 `f80789fe24c486ffafe6e471989803b9c1d2dc429f14b1c09bed9ccfe44fbf92`, 13 332 640 Б, static linux-amd64. Приложен как `/root/umbra-server-0.16.16`, установлен в `/usr/local/bin/umbra-server` (10:03 UTC+3).
+
+**Бэкапы** (`/root/umbra-deploy-bak/`): pg_dump umbra, предыдущий бинаррь, `.env`.
+
+**Миграции** (через `cat … | sudo -u postgres psql umbra -v ON_ERROR_STOP=1`, т.к. postgres не читает /root):
+- `012_push_devices.sql` — таблица push_devices (задел под FCM, отложено пользователем);
+- `014_media_scope.sql` — media.chat_id/recipient_id (nullable) + частичные индексы.
+
+**.env:** `MEDIA_LEGACY_OPEN_ACCESS=1` — легаси-файлы (без scope) доступны всем авторизованным, чтобы старые вложения в переписках не пропали. Новые загрузки всегда пишут scope.
+
+**Проверки после рестарта:** active, TZ=UTC (drop-in), healthz `{"status":"ok"}`, PostgreSQL + blob-хранилище + Telegram-бот в логе, `/v1/media/*` без токена → 401, `/app/latest.json` → 200, APK → 206.
+
+**Клиент:** vc39 (0.16.16, sha256 `9a83e73d…`) опубликован на /app/ 10:03 UTC+3 (61 451 153 Б… см. latest.json). Порядок «сервер → клиент» соблюдён (старый сервер давал бы 400 на multipart-поля chat_id/recipient_id).
+
+**Текущая версия:** сервер 0.16.16 (vc39), клиент 0.16.16 (vc39).
