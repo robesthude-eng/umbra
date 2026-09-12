@@ -1,0 +1,41 @@
+name: Server binary (linux-amd64)
+
+# Собирает серверный бинаррь для продакшена (194.226.126.253, systemd umbra).
+# Запускается вручную (workflow_dispatch) перед деплоем сервера: артефакт
+# umbra-server-linux-amd64 скачивается и укладывается в /usr/local/bin/.
+# Миграции БД применяются отдельно (psql), сервис — systemctl restart umbra.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o umbra-server ./cmd/server
+
+      - name: Tests
+        run: go test ./...
+
+      - name: Checksum
+        run: |
+          sha256sum umbra-server | awk '{print $1}' > umbra-server.sha256
+          cat umbra-server.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: umbra-server-linux-amd64
+          path: |
+            umbra-server
+            umbra-server.sha256
+          retention-days: 60
