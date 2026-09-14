@@ -29,6 +29,15 @@ func (p *PostgresStore) GetReadCursor(ctx context.Context, readerID, peerID stri
 		readerID, peerID).Scan(&at)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			// Нет строки — «ещё не читал». Но несуществующий читатель — это
+			// ErrNotFound, как и в MemoryStore (семантика единая по контракту).
+			var exists bool
+			if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, readerID).Scan(&exists); err != nil {
+				return time.Time{}, err
+			}
+			if !exists {
+				return time.Time{}, ErrNotFound
+			}
 			return time.Time{}, nil
 		}
 		return time.Time{}, err
@@ -51,6 +60,15 @@ func (p *PostgresStore) SetChatRead(ctx context.Context, chatID, readerID string
 }
 
 func (p *PostgresStore) ListChatReads(ctx context.Context, chatID string) (map[string]time.Time, error) {
+	// Несуществующий чат — ErrNotFound (единая семантика с MemoryStore);
+	// существующий без прочтений — пустая карта.
+	var exists bool
+	if err := p.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM chats WHERE id = $1)`, chatID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
 	rows, err := p.pool.Query(ctx,
 		`SELECT reader_id, read_at FROM chat_reads WHERE chat_id = $1`, chatID)
 	if err != nil {
