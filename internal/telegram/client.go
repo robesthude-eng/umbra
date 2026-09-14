@@ -39,15 +39,20 @@ func NewClient(token, base, key string) *Client {
 	}
 	transport := &http.Transport{
 		// Пустая TLSNextProto-карта отключает апгрейд в HTTP/2.
-		TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
-		MaxIdleConns:    4,
-		IdleConnTimeout: 90 * time.Second,
+		TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		// Переиспользование соединений к workers.dev ненадёжно: раз в
+		// ~20-25 запросов край Cloudflare подвешивает соединение и запрос
+		// не получает ответа вовсе (проверено 200 запросами на одном
+		// keep-alive соединении: 8 зависаний; на свежих соединениях из
+		// 100 запросов — ни одного). Рукопожатие стоит ~50 мс, для
+		// опроса бота раз в секунду это несущественно.
+		DisableKeepAlives: true,
 	}
 	return &Client{
 		token: token,
 		base:  strings.TrimSuffix(base, "/"),
 		key:   key,
-		http:  &http.Client{Timeout: 60 * time.Second, Transport: transport},
+		http:  &http.Client{Timeout: 30 * time.Second, Transport: transport},
 	}
 }
 

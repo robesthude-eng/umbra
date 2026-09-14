@@ -27,6 +27,10 @@ func TestNewClientForcesHTTP1(t *testing.T) {
 	if len(tr.TLSNextProto) != 0 {
 		t.Errorf("TLSNextProto has %d entries, want 0", len(tr.TLSNextProto))
 	}
+	if !tr.DisableKeepAlives {
+		t.Error("DisableKeepAlives = false, want true: переиспользование " +
+			"соединений к workers.dev периодически подвешивает запросы")
+	}
 }
 
 // При заданном base (релей) токен в путь не подставляется, ключ идёт в
