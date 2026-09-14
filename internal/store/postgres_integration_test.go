@@ -105,7 +105,14 @@ func TestPostgresAccountTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	for _, path := range []string{"../../migrations/001_init.sql", "../../migrations/002_media.sql", "../../migrations/003_groups.sql", "../../migrations/004_calls.sql", "../../migrations/005_secret_chats.sql", "../../migrations/006_integrity.sql", "../../migrations/007_phone.sql", "../../migrations/008_account_transfer.sql"} {
+	// Миграции применяются все: часть кода (например, DeleteUser) уже опирается
+	// на колонки поздних миграций (media.blob_id из 015), поэтому список здесь
+	// не захардкожен, а берётся glob'ом, как в остальных интеграционных тестах.
+	paths, err := filepath.Glob("../../migrations/*.sql")
+	if err != nil || len(paths) != 16 {
+		t.Fatalf("migration files: %v %v", paths, err)
+	}
+	for _, path := range paths {
 		sqlBytes, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
