@@ -8,6 +8,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,15 +27,27 @@ type Client struct {
 
 // NewClient создаёт клиент. При base=="" используется прямой api.telegram.org.
 // При base != "" (Worker-релей) во все запросы добавляется x-umbra-key.
+//
+// Транспорт принудительно работает по HTTP/1.1: Cloudflare Worker-релей
+// периодически сбрасывает h2-стримы частых коротких getUpdates
+// ("stream error: PROTOCOL_ERROR; received from peer"), из-за чего цикл
+// опроса регулярно ловил ошибку и ждал лишние 3 секунды. api.telegram.org
+// и релей стабильно отвечают и по HTTP/1.1.
 func NewClient(token, base, key string) *Client {
 	if base == "" {
 		base = "https://api.telegram.org/bot" + token
+	}
+	transport := &http.Transport{
+		// Пустая TLSNextProto-карта отключает апгрейд в HTTP/2.
+		TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		MaxIdleConns:    4,
+		IdleConnTimeout: 90 * time.Second,
 	}
 	return &Client{
 		token: token,
 		base:  strings.TrimSuffix(base, "/"),
 		key:   key,
-		http:  &http.Client{Timeout: 60 * time.Second},
+		http:  &http.Client{Timeout: 60 * time.Second, Transport: transport},
 	}
 }
 
