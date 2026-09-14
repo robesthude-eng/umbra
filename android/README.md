@@ -23,7 +23,7 @@ Android — 8 (API 26), целевая — API 35. В этой ветке исп
 
 Текущая версия в исходниках — **versionCode 41, versionName 0.16.18**
 (`android/app/build.gradle.kts`). Номер предыдущей версии по архиву не
-восстанавливается: здесь ранее был указан versionCode 7, а в `USER_FIXES.md` — 6;
+восстанавливается: здесь ранее был указан versionCode 7, а в `docs/history/USER_FIXES.md` — 6;
 сверьте с историей репозитория. Для установки поверх прежней версии
 необходим тот же ключ подписи. Схема подписи `UMBRA_SIGNING_*` и
 `keystore.properties` сохранена. Без стабильного ключа debug использует ключ
@@ -34,7 +34,7 @@ Android — 8 (API 26), целевая — API 35. В этой ветке исп
 
 Главная страница содержит профиль и группы «Личное» / «Приложение».
 Все параметры распределены по отдельным экранам; подробная карта и статус
-проверок: [SETTINGS_CATEGORIES.md](../SETTINGS_CATEGORIES.md).
+проверок: [SETTINGS_CATEGORIES.md](../docs/design/SETTINGS_CATEGORIES.md).
 
 ## Дымчатое стекло
 
@@ -43,7 +43,7 @@ Android — 8 (API 26), целевая — API 35. В этой ветке исп
 Светлая/тёмная схема, цвет акцента, размер текста и уменьшение анимации
 настраиваются отдельно. Стандартная тема отключает эффекты Alien. Цвета обоев
 применяются в стандартной теме на Android 12+.
-Подробности: [THEME_SETTINGS.md](../THEME_SETTINGS.md) и [SMOKED_GLASS.md](../SMOKED_GLASS.md).
+Подробности: [THEME_SETTINGS.md](../docs/design/THEME_SETTINGS.md) и [SMOKED_GLASS.md](../docs/design/SMOKED_GLASS.md).
 
 ## Поведение аккаунта
 
@@ -183,7 +183,7 @@ splits или App Bundle. В ProGuard добавлено `-keep class org.webrtc
   `umbra_messages`; при открытии история догружается.
 - `kind=call` — полноэкранное уведомление входящего вызова поверх блокировки:
   канал `umbra_incoming_calls`, рингтон, кнопки «Ответить» и «Отклонить»
-  (`data/call/CallNotifications.kt`). «Отклонить» отправляет статус `declined`
+  (`data/call/CallNotifications.kt`). «Отклонить» отп��авляет статус `declined`
   без открытия приложения, само уведомление снимается через 45 секунд.
 - `kind=call_ended` — уведомление гаснет, когда звонящий бросил трубку.
 
@@ -246,7 +246,16 @@ Room обновлён до версии 4: `MIGRATION_3_4` добавляет в
 
 Сборка и instrumented-тесты в среде подготовки архива не выполнялись: Android SDK,
 Gradle с зависимостями и устройство отсутствуют. Результаты доступных проверок:
-[USER_FIXES.md](../USER_FIXES.md).
+[USER_FIXES.md](../docs/history/USER_FIXES.md).
+
+## Самообновление
+
+`data/update/AppUpdater.kt` проверяет `/app/latest.json` (троттлинг 15 минут),
+скачивает APK в `cacheDir/updates/umbra-<versionCode>.apk` с докачкой по `Range`,
+сверяет sha256 и только потом переименовывает `.part` в целевой файл.
+Уже скачанная сборка переиспользуется (`downloadedApk`), старые файлы в кэше
+удаляются. Диалог загрузки можно свернуть — прогресс остаётся в островке.
+Инструкция для пользователя со скриншотами — [../docs/UPDATE_GUIDE.md](../docs/UPDATE_GUIDE.md).
 
 ## Защита аккаунта
 

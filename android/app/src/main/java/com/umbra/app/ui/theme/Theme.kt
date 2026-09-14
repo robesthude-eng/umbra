@@ -2,11 +2,8 @@ package com.umbra.app.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.Shapes
-import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -21,7 +18,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -288,28 +284,7 @@ val UmbraDarkColors = darkColorScheme(
     onErrorContainer = Color(0xFFFFDADF),
 )
 
-private val Base = Typography()
-
-/** Типографика: плотнее межстрочный интервал, спокойные заголовки. */
-val UmbraTypography = Typography(
-    headlineMedium = Base.headlineMedium.copy(fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.6).sp),
-    headlineSmall = Base.headlineSmall.copy(fontWeight = FontWeight.Medium, letterSpacing = (-0.2).sp),
-    titleLarge = Base.titleLarge.copy(fontWeight = FontWeight.Medium, letterSpacing = (-0.2).sp),
-    titleMedium = Base.titleMedium.copy(fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
-    bodyLarge = Base.bodyLarge.copy(fontSize = 16.sp, lineHeight = 22.sp, letterSpacing = 0.1.sp),
-    bodyMedium = Base.bodyMedium.copy(lineHeight = 20.sp),
-    labelLarge = Base.labelLarge.copy(fontWeight = FontWeight.Medium),
-    labelSmall = Base.labelSmall.copy(fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.1.sp),
-)
-
-/** Скругления: крупные, как в современных мессенджерах. */
-val UmbraShapes = Shapes(
-    extraSmall = RoundedCornerShape(10.dp),
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(24.dp),
-    extraLarge = RoundedCornerShape(30.dp),
-)
+// Типографика, скругления и токены кнопок каждой темы — в StyleTokens.kt.
 
 /**
  * @param dynamicColor подхватить палитру обоев системы (Android 12+).
@@ -355,7 +330,12 @@ fun UmbraTheme(
     val baseVisuals = if (smokedGlass) smokedGlassVisualTokens(darkTheme) else futureVisuals(scheme, tokens)
     val visuals = if (customAccent) baseVisuals.copy(auraPrimary = scheme.primary, auraSecondary = scheme.secondary) else baseVisuals
     val size = messageTextSize.coerceIn(16, 22)
+    // Темы различаются не только цветом: гарнитура, формы и кнопки свои.
+    val typography = umbraTypography(interfaceStyle)
+    val shapes = umbraShapes(interfaceStyle)
+    val buttons = umbraButtonTokens(interfaceStyle)
     CompositionLocalProvider(
+        LocalUmbraButtons provides buttons,
         LocalUmbraChatColors provides chat,
         LocalUmbraVisuals provides visuals,
         LocalUmbraMotion provides UmbraMotionTokens(),
@@ -364,12 +344,12 @@ fun UmbraTheme(
         LocalUmbraSmokedGlass provides smokedGlass,
         LocalUmbraPersonalChatColors provides (!customAccent && !wallpaperColors),
         LocalUmbraAlienTokens provides tokens,
-        LocalUmbraMessageTextStyle provides UmbraTypography.bodyLarge.copy(fontSize = size.sp, lineHeight = (size + 6).sp),
+        LocalUmbraMessageTextStyle provides typography.bodyLarge.copy(fontSize = size.sp, lineHeight = (size + 6).sp),
     ) {
         MaterialTheme(
             colorScheme = scheme,
-            typography = UmbraTypography,
-            shapes = UmbraShapes,
+            typography = typography,
+            shapes = shapes,
             content = content,
         )
     }

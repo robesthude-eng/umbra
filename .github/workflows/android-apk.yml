@@ -13,9 +13,14 @@ on:
   workflow_dispatch:
     inputs:
       serverUrl:
-        description: 'Адрес сервера Umbra, вшиваемый в APK (BuildConfig.SERVER_URL)'
+        description: 'HTTPS-адрес сервера Umbra, вшиваемый в APK (BuildConfig.SERVER_URL)'
         required: false
-        default: 'http://194.226.126.253:8081'
+        default: 'https://umbra.example.org'
+      allowInsecureServerUrl:
+        description: 'Разрешить http:// (только для локальной отладки, не для раздачи APK)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -63,10 +68,39 @@ jobs:
           echo "UMBRA_SIGNING_KEY_PASSWORD=${KEY_PASSWORD}" >> "$GITHUB_ENV"
           echo "Keystore для подписи загружен."
 
+      # Адрес сервера обязан быть HTTPS: по http:// метаданные (номера, id чатов,
+      # токен сессии) идут открытым текстом и подменяются на любом промежуточном
+      # узле. Сборка падает до вызова Gradle, чтобы такой APK не попал к людям.
+      - name: Validate server URL
+        env:
+          UMBRA_SERVER_URL: ${{ inputs.serverUrl || vars.UMBRA_SERVER_URL }}
+          # Push-сборки не имеют inputs: осознанный http-флаг можно задать
+          # переменной репозитория UMBRA_ALLOW_INSECURE (видно в настройках).
+          ALLOW_INSECURE: ${{ inputs.allowInsecureServerUrl || vars.UMBRA_ALLOW_INSECURE }}
+        run: |
+          if [ -z "${UMBRA_SERVER_URL}" ]; then
+            echo "::error::Адрес сервера не задан. Укажите serverUrl при запуске или переменную репозитория UMBRA_SERVER_URL (https://...)."
+            exit 1
+          fi
+          case "${UMBRA_SERVER_URL}" in
+            https://*) ;;
+            http://*)
+              if [ "${ALLOW_INSECURE}" = "true" ]; then
+                echo "::warning::Сборка с http:// разрешена вручную. Такой APK нельзя раздавать пользователям."
+              else
+                echo "::error::Адрес ${UMBRA_SERVER_URL} без TLS. Используйте https:// или осознанно включите allowInsecureServerUrl для локальной отладки."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Адрес ${UMBRA_SERVER_URL} должен начинаться с https://"
+              exit 1
+              ;;
+          esac
+          echo "UMBRA_SERVER_URL=${UMBRA_SERVER_URL}" >> "$GITHUB_ENV"
+
       - name: Build debug APK
         working-directory: android
-        env:
-          UMBRA_SERVER_URL: ${{ inputs.serverUrl || 'http://194.226.126.253:8081' }}
         run: |
           chmod +x gradlew
           # Раннер GH: 16 ГБ RAM — поднимаем heap (дефолт в репозитории под слабые машины).

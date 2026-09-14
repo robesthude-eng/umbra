@@ -38,6 +38,7 @@ import com.umbra.app.ui.theme.LocalUmbraVisuals
 import com.umbra.app.ui.theme.LocalUmbraSmokedGlass
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 @Composable
 fun MainShell(
@@ -415,7 +416,7 @@ private fun NewConversationSheet(repo: ChatRepository, people: List<Conversation
                 shape = RoundedCornerShape(18.dp),
             )
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(onClick = {
+            UmbraPrimaryButton(onClick = {
                 busy = true; error = null
                 scope.launch {
                     try {

@@ -26,6 +26,7 @@ import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 @Composable
 internal fun CallsTab(container: AppContainer) {
@@ -173,7 +174,7 @@ private fun CallPickerSheet(repo: ChatRepository, onDismiss: () -> Unit, onCall:
             OutlinedTextField(username, { username = it.take(33); error = null }, Modifier.fillMaxWidth(),
                 label = { Text("@никнейм") }, singleLine = true, enabled = !busy)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button({ start(null) }, Modifier.fillMaxWidth().heightIn(min = 52.dp), enabled = !busy && InputRules.validUsername(InputRules.username(username))) {
+            UmbraPrimaryButton({ start(null) }, Modifier.fillMaxWidth().heightIn(min = 52.dp), enabled = !busy && InputRules.validUsername(InputRules.username(username))) {
                 Text(if (busy) "Соединяем…" else if (video) "Позвонить с видео" else "Позвонить")
             }
             val people = conversations.filter { !it.isGroup && it.chatId != repo.me() }

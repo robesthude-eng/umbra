@@ -59,6 +59,8 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
     val scope = rememberCoroutineScope()
     var updateUi by remember { mutableStateOf<UpdateUi?>(null) }
     var declinedVersion by remember { mutableStateOf<Int?>(null) }
+    // Свёрнутая загрузка: диалог не держит экран, прогресс виден в островке сверху.
+    var updateMinimized by remember { mutableStateOf(false) }
     val updateState by updater.updateState.collectAsState()
     LaunchedEffect(updateState.checkedAtMillis) {
         if (!pictureInPicture) updateState.info
@@ -151,19 +153,22 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
     }
 
     // Диалог обновления поверх любой фазы: обновление касается и экрана входа.
-    updateUi?.let { state ->
+    updateUi?.takeIf { !(updateMinimized && it is UpdateUi.Downloading) }?.let { state ->
         UpdateDialog(
             state = state,
             onCancel = {
                 declinedVersion = updateState.info?.versionCode
                 updateUi = null
+                updateMinimized = false
             },
+            onHide = { updateMinimized = true },
             onStart = { info ->
                 scope.launch {
                     updateUi = UpdateUi.Downloading(info, 0)
+                    // download() вернёт уже скачанный файл мгновенно и докачает прерванную загрузку.
                     runCatching { updater.download(info) { percent -> updateUi = UpdateUi.Downloading(info, percent) } }
-                        .onSuccess { updateUi = UpdateUi.Ready(info, it) }
-                        .onFailure { updateUi = UpdateUi.Failed(info, it.message ?: "Не удалось скачать обновление") }
+                        .onSuccess { updateUi = UpdateUi.Ready(info, it); updateMinimized = false }
+                        .onFailure { updateUi = UpdateUi.Failed(info, it.message ?: "Не удалось скачать обновление"); updateMinimized = false }
                 }
             },
             onInstall = { apk ->
@@ -175,8 +180,8 @@ fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
                 scope.launch {
                     updateUi = UpdateUi.Downloading(info, 0)
                     runCatching { updater.download(info) { percent -> updateUi = UpdateUi.Downloading(info, percent) } }
-                        .onSuccess { updateUi = UpdateUi.Ready(info, it) }
-                        .onFailure { updateUi = UpdateUi.Failed(info, it.message ?: "Не удалось скачать обновление") }
+                        .onSuccess { updateUi = UpdateUi.Ready(info, it); updateMinimized = false }
+                        .onFailure { updateUi = UpdateUi.Failed(info, it.message ?: "Не удалось скачать обновление"); updateMinimized = false }
                 }
             },
         )
@@ -206,6 +211,7 @@ private fun UpdateDialog(
     onStart: (UpdateInfo) -> Unit,
     onInstall: (File) -> Unit,
     onRetry: (UpdateInfo) -> Unit,
+    onHide: () -> Unit,
 ) {
     val info = when (state) {
         is UpdateUi.Offer -> state.info
@@ -229,22 +235,28 @@ private fun UpdateDialog(
                         modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                     )
                 }
-                is UpdateUi.Ready -> Text("Обновление скачано. Нажмите «Установить» — откроется системный установщик.")
+                is UpdateUi.Ready -> Text(
+                    "Обновление скачано. Нажмите «Установить» — откроется системный установщик.\n\n" +
+                        "Если Play Защита покажет «Рекомендуется проверка приложения» — это норма для сборки вне Google Play. " +
+                        "Нажмите «Подробнее» → «Установить без проверки».",
+                )
                 is UpdateUi.Failed -> Text("${state.message}\n\nПовторить скачивание?")
             }
         },
         confirmButton = {
             when (state) {
                 is UpdateUi.Offer -> TextButton({ onStart(info) }) { Text("Обновить") }
-                is UpdateUi.Downloading -> TextButton({}, enabled = false) { Text("Скачивание…") }
+                is UpdateUi.Downloading -> TextButton(onHide) { Text("Свернуть") }
                 is UpdateUi.Ready -> TextButton({ onInstall(state.apk) }) { Text("Установить") }
                 is UpdateUi.Failed -> TextButton({ onRetry(info) }) { Text("Повторить") }
             }
         },
         dismissButton = {
+            // Одно действие — одна кнопка: раньше в состоянии Ready рисовалось два
+            // одинаковых «Установить», а во время загрузки — две мёртвые кнопки.
             when (state) {
-                is UpdateUi.Downloading -> TextButton({}, enabled = false) { Text("Подождите") }
-                is UpdateUi.Ready -> TextButton({ onInstall(state.apk) }) { Text("Установить") }
+                is UpdateUi.Downloading -> {}
+                is UpdateUi.Ready -> TextButton(onCancel) { Text("Позже") }
                 else -> TextButton(onCancel) { Text("Позже") }
             }
         },

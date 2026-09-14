@@ -28,6 +28,7 @@ import com.umbra.app.data.repo.SessionPhase
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 private enum class AuthStep { PHONE, CODE, PROFILE }
 
@@ -131,7 +132,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
                             keyboardActions = KeyboardActions(onDone = { if (InputRules.normalizePhone(phone) != null) requestCode() }),
                         )
-                        Button(::requestCode, Modifier.fillMaxWidth(), enabled = !loading && InputRules.normalizePhone(phone) != null) { Text("Получить код") }
+                        UmbraPrimaryButton(::requestCode, Modifier.fillMaxWidth(), enabled = !loading && InputRules.normalizePhone(phone) != null) { Text("Получить код") }
                     }
                     AuthStep.CODE -> {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -145,7 +146,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
                             keyboardActions = KeyboardActions(onDone = { verifyCode() }),
                         )
-                        Button(::verifyCode, Modifier.fillMaxWidth(), enabled = !loading && code.length == 6) { Text("Войти") }
+                        UmbraPrimaryButton(::verifyCode, Modifier.fillMaxWidth(), enabled = !loading && code.length == 6) { Text("Войти") }
                         val seconds = ((resendAt - now + 999L) / 1000L).coerceAtLeast(0L)
                         TextButton(::requestCode, Modifier.fillMaxWidth(), enabled = !loading && seconds == 0L) {
                             Text(if (seconds > 0) "Повторить через $seconds с" else "Запросить новый код")
@@ -159,7 +160,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
                         if (avatarUri != null) TextButton({ avatarUri = null; error = null }, enabled = !loading) { Text("Убрать выбранное фото") }
                         ProfileFields(name, lastName, username,
                             { name = it; error = null }, { lastName = it; error = null }, { username = it; error = null }, !loading)
-                        Button(onClick = {
+                        UmbraPrimaryButton(onClick = {
                             if (!loading) {
                                 loading = true; error = null
                                 scope.launch {

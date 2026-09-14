@@ -18,7 +18,6 @@ import androidx.compose.ui.unit.dp
 import com.umbra.app.data.media.Attachments
 import com.umbra.app.data.repo.ChatRepository
 import com.umbra.app.data.repo.UiMessage
-import com.umbra.app.ui.theme.LocalUmbraChatColors
 
 /**
  * Галерея чата: всё, что было отправлено и получено вложениями,

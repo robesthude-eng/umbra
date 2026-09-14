@@ -830,7 +830,7 @@ class ChatRepository(
                 ?.let { db.messageDao().byClientId(key.owner, it) }
             if (expires == null || expires > System.currentTimeMillis()) {
                 db.messageDao().upsert(MessageEntity(
-                    dto.id, dto.senderId, dto.recipientId, chatId, dto.ciphertext, dto.createdAt, dto.expiresAt,
+                    dto.id, dto.senderId, dto.recipientId, chatId, dto.body, dto.createdAt, dto.expiresAt,
                     ownerId = key.owner, createdAtMillis = created, expiresAtMillis = expires,
                     deliveryState = "sent", clientId = dto.clientMessageId ?: local?.clientId,
                 ))
@@ -2217,7 +2217,7 @@ class ChatRepository(
 
     /** Кэш записей не должен расти бесконечно: держим бюджет, удаляя самые старые файлы. */
     private fun pruneMediaCache() {
-        // .part — файлы текущих загрузок, их убирает сама загрузка.
+        // .part — файлы текущих загрузок, их убивает сама загрузка.
         val files = mediaCacheDir().listFiles()?.filter { it.isFile && !it.name.endsWith(".part") } ?: return
         var total = files.sumOf { it.length() }
         if (total <= MEDIA_CACHE_BUDGET_BYTES) return

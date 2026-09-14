@@ -98,9 +98,9 @@ private fun InterfaceStyleSettings(preferences: UiPreferences) {
         Column(Modifier.selectableGroup()) {
             InterfaceStyle.entries.forEach { style ->
                 val (title, subtitle) = when (style) {
-                    InterfaceStyle.STANDARD -> "Стандартная" to "Исходный интерфейс Umbra · по умолчанию"
-                    InterfaceStyle.SMOKED_GLASS -> "Дымчатое стекло" to "Матовые панели и мягкие акценты"
-                    InterfaceStyle.ALIEN -> "Alien Interface" to "Космический фон и голографические эффекты"
+                    InterfaceStyle.STANDARD -> "Стандартная" to "Гротеск, мягкие скругления, плотные кнопки · по умолчанию"
+                    InterfaceStyle.SMOKED_GLASS -> "Дымчатое стекло" to "Антиква в заголовках, матовые панели, кнопки-таблетки"
+                    InterfaceStyle.ALIEN -> "Alien Interface" to "Моноширинный шрифт, срезанные углы, кнопки-рамки HUD"
                 }
                 AppearanceRadioRow(
                     selected = appearance.interfaceStyle == style,

@@ -112,21 +112,54 @@ class AppUpdater(
     }
 
     /**
+     * Готовый к установке файл, если эта сборка уже скачана и цела.
+     * Позволяет показать сразу «Установить» без повторной загрузки трафика.
+     */
+    fun downloadedApk(info: UpdateInfo): File? {
+        val target = File(File(context.cacheDir, "updates"), "umbra-${info.versionCode}.apk")
+        if (!target.isFile || target.length() <= 0L) return null
+        if (info.sha256.isNotBlank() && !sha256Hex(target).equals(info.sha256, ignoreCase = true)) {
+            target.delete()
+            return null
+        }
+        return target
+    }
+
+    /**
      * Скачивает APK в приватный кэш (updates/), ведёт прогресс (0..100)
      * и проверяет sha256 из latest.json. При несовпадении файл удаляется.
+     *
+     * Экономия трафика: уже скачанный целый файл возвращается сразу; недкачанный
+     * догружается через Range (если сервер умеет, ответ 206), старые версии чистятся.
      */
     suspend fun download(info: UpdateInfo, onProgress: (Int) -> Unit): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates").apply { mkdirs() }
         val target = File(dir, "umbra-${info.versionCode}.apk")
+        val part = File(dir, "umbra-${info.versionCode}.apk.part")
+        // Кэш на будущее не нужен: всё, что не относится к этой сборке, удаляем.
+        dir.listFiles()?.forEach { f ->
+            if (f != target && f != part) f.delete()
+        }
+        downloadedApk(info)?.let {
+            onProgress(100)
+            return@withContext it
+        }
         val url = if (info.apk.startsWith("http")) info.apk else base + info.apk
-        client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+        var alreadyRead = if (part.isFile) part.length() else 0L
+        val request = Request.Builder().url(url).apply {
+            if (alreadyRead > 0L) header("Range", "bytes=$alreadyRead-")
+        }.build()
+        client.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) error("Сервер вернул ${resp.code} при скачивании обновления")
             val body = resp.body ?: error("Пустой ответ при скачивании обновления")
-            val total = body.contentLength()
-            var read = 0L
+            // 206 — сервер поддержал докачку; иначе начинаем файл заново.
+            val resuming = resp.code == 206 && alreadyRead > 0L
+            if (!resuming) alreadyRead = 0L
+            val total = body.contentLength().takeIf { it > 0 }?.plus(alreadyRead) ?: -1L
+            var read = alreadyRead
             var lastPercent = -1
             body.byteStream().use { input ->
-                target.outputStream().use { output ->
+                java.io.FileOutputStream(part, resuming).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         val n = input.read(buffer)
@@ -144,10 +177,16 @@ class AppUpdater(
                 }
             }
         }
-        if (info.sha256.isNotBlank() && !sha256Hex(target).equals(info.sha256, ignoreCase = true)) {
-            target.delete()
+        if (info.sha256.isNotBlank() && !sha256Hex(part).equals(info.sha256, ignoreCase = true)) {
+            part.delete()
             error("Скачанный файл повреждён: контрольная сумма не совпала")
         }
+        target.delete()
+        if (!part.renameTo(target)) {
+            part.copyTo(target, overwrite = true)
+            part.delete()
+        }
+        onProgress(100)
         target
     }
 
@@ -170,10 +209,12 @@ class AppUpdater(
      * открываем нужный экран настроек и возвращаем false: пользователь
      * вернётся в приложение и нажмёт «Установить» ещё раз.
      */
+    /** Есть ли разрешение «устанавливать неизвестные приложения» (нужно для подсказки в UI). */
+    fun canInstall(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
+
     fun install(apk: File): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !context.packageManager.canRequestPackageInstalls()
-        ) {
+        if (!canInstall()) {
             context.startActivity(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + context.packageName))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),

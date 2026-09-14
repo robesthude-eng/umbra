@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.umbra.app.di.AppContainer
 import kotlinx.coroutines.launch
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 @Composable
 internal fun AboutSettings(container: AppContainer) {
@@ -33,9 +34,9 @@ internal fun UpdateCard(container: AppContainer) {
             status?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
-            Button(
+            UmbraPrimaryButton(
                 onClick = {
-                    if (checking) return@Button
+                    if (checking) return@UmbraPrimaryButton
                     checking = true
                     status = null
                     scope.launch {

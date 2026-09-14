@@ -14,6 +14,7 @@ import com.umbra.app.data.repo.ChatRepository
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 @Composable
 internal fun NetworkSettings(repo: ChatRepository) {
@@ -55,7 +56,7 @@ internal fun NetworkSettings(repo: ChatRepository) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(onClick = {
+            UmbraPrimaryButton(onClick = {
                 checking = true; actionMessage = null; report = null
                 scope.launch {
                     try { report = repo.runNetworkCheck() }

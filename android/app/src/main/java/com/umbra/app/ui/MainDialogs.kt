@@ -18,6 +18,7 @@ import com.umbra.app.data.InputRules
 import com.umbra.app.data.repo.ChatRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 @Composable
 internal fun CreateGroupDialog(repo: ChatRepository, onDismiss: () -> Unit, onOpenChat: (String) -> Unit) {
@@ -62,7 +63,7 @@ internal fun CreateGroupDialog(repo: ChatRepository, onDismiss: () -> Unit, onOp
                 supportingText = { Text("Необязательно: @никнеймы через запятую") })
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            Button(enabled = !busy && title.isNotBlank(), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), onClick = {
+            UmbraPrimaryButton(enabled = !busy && title.isNotBlank(), modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), onClick = {
                 busy = true; error = null
                 scope.launch {
                     try {

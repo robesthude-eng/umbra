@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -87,6 +86,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
+import com.umbra.app.ui.theme.UmbraPrimaryButton
 
 /**
  * Полноэкранный звонок: входящий вызов, ожидание ответа и сам разговор.
@@ -403,15 +403,14 @@ private fun CallControls(
         AlienDivider(if (incomingRinging) "входящий канал" else "управление каналом")
         if (incomingRinging) {
             // Independent rows keep both actions visible with a large system font.
-            Button(onClick = onAccept, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).alienGlow(strength = 1.3f),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary),
-                shape = RoundedCornerShape(22.dp)) {
+            UmbraPrimaryButton(onClick = onAccept, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).alienGlow(strength = 1.3f),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary)) {
                 Icon(Icons.Filled.Call, null)
                 Spacer(Modifier.width(10.dp))
                 Text("Ответить")
             }
-            Button(onClick = onDecline, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                colors = endColors, shape = RoundedCornerShape(22.dp)) {
+            UmbraPrimaryButton(onClick = onDecline, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                colors = endColors) {
                 Icon(Icons.Filled.CallEnd, null)
                 Spacer(Modifier.width(10.dp))
                 Text("Отклонить")
@@ -436,8 +435,8 @@ private fun CallControls(
                     )
                 }
             }
-            Button(onClick = onHangUp, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                colors = endColors, shape = RoundedCornerShape(22.dp)) {
+            UmbraPrimaryButton(onClick = onHangUp, enabled = !busy, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                colors = endColors) {
                 Icon(Icons.Filled.CallEnd, null)
                 Spacer(Modifier.width(10.dp))
                 Text("Завершить")

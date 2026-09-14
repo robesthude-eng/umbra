@@ -13,6 +13,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -161,7 +162,11 @@ data class LinkPreviewView(
 @Serializable
 data class MediaUploadResponse(val id: String = "", @SerialName("content_type") val contentType: String = "", val size: Long = 0)
 
-// ---------- DTO: сообщения (сервер хранит ciphertext-блоб; здесь base64 конверта) ----------
+// ---------- DTO: сообщения ----------
+// Тело сообщения — base64(utf8(JSON)) конверта. Это НЕ шифротекст:
+// сквозного шифрования нет, сервер видит содержимое и шифрует его лишь
+// при записи в базу. Новое имя поля — payload, ciphertext оставлен для
+// совместимости со серверами и клиентами до 0.19.
 
 @Serializable
 data class MessageDto(
@@ -170,10 +175,14 @@ data class MessageDto(
     @SerialName("recipient_id") val recipientId: String = "",
     @SerialName("chat_id") val chatId: String = "",
     val ciphertext: String = "",
+    val payload: String = "",
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("expires_at") val expiresAt: String? = null,
     @SerialName("client_message_id") val clientMessageId: String? = null,
-)
+) {
+    /** Тело сообщения: новое поле payload, иначе историческое ciphertext. */
+    val body: String get() = payload.ifBlank { ciphertext }
+}
 
 @Serializable
 data class MessagesResponse(val messages: List<MessageDto> = emptyList())
@@ -184,6 +193,8 @@ data class SendMessageRequest(
     val ciphertext: String,
     @SerialName("client_message_id") val clientId: String? = null,
     @SerialName("expires_in") val expiresIn: Long? = null,
+    // Отправляем оба имени поля: payload — каноническое, ciphertext — для старого сервера.
+    val payload: String = ciphertext,
 )
 
 // ---------- DTO: чаты/группы ----------
@@ -221,6 +232,8 @@ data class SendChatMessageRequest(
     val ciphertext: String,
     @SerialName("client_message_id") val clientId: String? = null,
     @SerialName("expires_in") val expiresIn: Long? = null,
+    // Отправляем оба имени поля: payload — каноническое, ciphertext — для старого сервера.
+    val payload: String = ciphertext,
 )
 
 // ---------- DTO: звонки (сигналинг; статусный автомат) ----------
