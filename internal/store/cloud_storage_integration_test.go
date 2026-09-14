@@ -59,7 +59,7 @@ func cloudPostgres(t *testing.T) (*PostgresStore, context.Context) {
 	}
 	t.Cleanup(pool.Close)
 	paths, err := filepath.Glob("../../migrations/*.sql")
-	if err != nil || len(paths) != 18 {
+	if err != nil || len(paths) != 19 {
 		t.Fatal("migrations", paths, err)
 	}
 	for _, path := range paths {

@@ -33,6 +33,8 @@ type Server struct {
 	hub            *ws.Hub
 	challenges     *challengeStore
 	typing         *typingStore
+	linkPreviews   *linkPreviewCache
+	linkClient     *http.Client
 	uploads        chan struct{}
 	otp            *otpStore
 	otpSender      OTPSender
@@ -55,7 +57,7 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 
 // NewServerForMain собирает сервер с OTP-доставкой кодов (Telegram) и готов к запуску.
 func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender, keys ...*cloudcrypto.Keyring) *http.Server {
-	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg), callLeavers: newCallLeaverStore()}
+	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg), callLeavers: newCallLeaverStore(), linkPreviews: newLinkPreviewCache(), linkClient: newLinkPreviewClient()}
 
 	s.allowedPhones, s.phonePolicyErr = config.ParseAllowedPhones(cfg.AllowedPhones)
 	if len(keys) > 0 {
@@ -93,6 +95,8 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	// «Прочитано» в личных чатах: {id} — собеседник.
 	mux.Handle("POST /v1/chats/{id}/read", s.requireAuth(http.HandlerFunc(s.handleMarkRead)))
 	mux.Handle("GET /v1/chats/{id}/read", s.requireAuth(http.HandlerFunc(s.handleGetRead)))
+	// Предпросмотр ссылки готовит сервер, чтобы не светить IP получателя.
+	mux.Handle("GET /v1/link-preview", s.requireAuth(http.HandlerFunc(s.handleLinkPreview)))
 	// Звонки (сигналинг; медиа peer-to-peer).
 	mux.Handle("POST /v1/calls", s.requireAuth(http.HandlerFunc(s.handleInitiateCall)))
 	mux.Handle("POST /v1/calls/{id}/signal", s.requireAuth(http.HandlerFunc(s.handleCallSignal)))

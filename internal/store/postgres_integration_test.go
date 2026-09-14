@@ -48,7 +48,7 @@ func TestPostgresReliability(t *testing.T) {
 	}
 	defer pool.Close()
 	paths, err := filepath.Glob("../../migrations/*.sql")
-	if err != nil || len(paths) != 18 {
+	if err != nil || len(paths) != 19 {
 		t.Fatalf("migration files: %v %v", paths, err)
 	}
 	for _, path := range paths {
@@ -109,7 +109,7 @@ func TestPostgresAccountTransfer(t *testing.T) {
 	// на колонки поздних миграций (media.blob_id из 015), поэтому список здесь
 	// не захардкожен, а берётся glob'ом, как в остальных интеграционных тестах.
 	paths, err := filepath.Glob("../../migrations/*.sql")
-	if err != nil || len(paths) != 18 {
+	if err != nil || len(paths) != 19 {
 		t.Fatalf("migration files: %v %v", paths, err)
 	}
 	for _, path := range paths {

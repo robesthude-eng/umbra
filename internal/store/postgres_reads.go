@@ -35,3 +35,36 @@ func (p *PostgresStore) GetReadCursor(ctx context.Context, readerID, peerID stri
 	}
 	return at.UTC(), nil
 }
+
+// Прочтения в группах живут в chat_reads (см. migrations/019_chat_reads.sql).
+
+func (p *PostgresStore) SetChatRead(ctx context.Context, chatID, readerID string, at time.Time) error {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO chat_reads (chat_id, reader_id, read_at) VALUES ($1, $2, $3)
+		 ON CONFLICT (chat_id, reader_id)
+		 DO UPDATE SET read_at = GREATEST(chat_reads.read_at, EXCLUDED.read_at)`,
+		chatID, readerID, at.UTC())
+	return err
+}
+
+func (p *PostgresStore) ListChatReads(ctx context.Context, chatID string) (map[string]time.Time, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT reader_id, read_at FROM chat_reads WHERE chat_id = $1`, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]time.Time)
+	for rows.Next() {
+		var id string
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		out[id] = at.UTC()
+	}
+	return out, rows.Err()
+}

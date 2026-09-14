@@ -113,6 +113,12 @@ type Store interface {
 	SetReadCursor(ctx context.Context, readerID, peerID string, at time.Time) error
 	GetReadCursor(ctx context.Context, readerID, peerID string) (time.Time, error)
 
+	// Прочтения в группах и каналах: курсор на участника.
+	// SetChatRead также не двигает курсор назад; ListChatReads отдаёт
+	// только тех, кто уже что-то прочитал (пустая карта — не ошибка).
+	SetChatRead(ctx context.Context, chatID, readerID string, at time.Time) error
+	ListChatReads(ctx context.Context, chatID string) (map[string]time.Time, error)
+
 	// Звонки (метаданные; медиа идёт peer-to-peer).
 	SaveCall(ctx context.Context, c *model.Call) error
 	GetCall(ctx context.Context, id string) (*model.Call, error)

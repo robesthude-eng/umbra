@@ -13,6 +13,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -135,6 +136,27 @@ data class ReadCursorView(
     @SerialName("user_id") val userId: String = "",
     @SerialName("read_at") val readAt: String = "",
     val hidden: Boolean = false,
+    // Групповой ответ: чат, размер и список тех, кто уже прочитал.
+    @SerialName("chat_id") val chatId: String = "",
+    val members: Int = 0,
+    val readers: List<ReaderView> = emptyList(),
+)
+
+/** Участник группы, прочитавший переписку. */
+@Serializable
+data class ReaderView(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("read_at") val readAt: String = "",
+)
+
+/** Карточка ссылки, собранная сервером (телефон не ходит на сайт сам). */
+@Serializable
+data class LinkPreviewView(
+    val url: String = "",
+    val title: String = "",
+    val description: String = "",
+    @SerialName("site_name") val siteName: String = "",
+    @SerialName("image_url") val imageUrl: String = "",
 )
 
 @Serializable
@@ -338,6 +360,13 @@ interface UmbraApi {
 
     @GET("/v1/chats/{id}/read")
     suspend fun readCursor(@Header("Authorization") auth: String, @Path("id") id: String): ReadCursorView
+
+    // Предпросмотр ссылки: 204 означает «карточки нет», поэтому нужен Response.
+    @GET("/v1/link-preview")
+    suspend fun linkPreview(
+        @Header("Authorization") auth: String,
+        @Query("url") url: String,
+    ): Response<LinkPreviewView>
 
     // Сообщения.
     @POST("/v1/messages")

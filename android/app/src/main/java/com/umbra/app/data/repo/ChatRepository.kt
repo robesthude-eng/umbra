@@ -54,6 +54,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.umbra.app.data.api.LinkPreviewView
 import retrofit2.HttpException
 import java.io.File
 import java.io.IOException
@@ -108,8 +109,10 @@ data class UiMessage(
     val edited: Boolean = false,
     val reactions: Map<String, Int> = emptyMap(),
     val deleted: Boolean = false,
-    /** Своё сообщение прочитано собеседником (только личные чаты). */
+    /** Своё сообщение прочитано (в группе — хотя бы одним участником). */
     val read: Boolean = false,
+    /** Сколько участников группы прочитало это сообщение. */
+    val readBy: Int = 0,
 )
 
 /**
@@ -651,6 +654,7 @@ class ChatRepository(
                         "read" -> applyRead(
                             event.data["chat_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                             event.data["read_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            event.data["user_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                         )
                         "connected" -> refresh(forceFull = false) // инкрементально: полная не нужна при каждом переподключении
                         "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
@@ -1195,25 +1199,88 @@ class ChatRepository(
         }
     }
 
-    /** Запасной путь к push: спрашиваем курсор собеседника при открытии чата. */
-    suspend fun refreshRead(peerId: String) {
-        if (peerId.isBlank() || peerId == me()) return
+    /**
+     * Кто прочитал групповой чат: chatId -> (userId -> время в миллисекундах).
+     * Так же как и в личных чатах, живёт в памяти и запрашивается при открытии.
+     */
+    private val _chatReads = MutableStateFlow<Map<String, Map<String, Long>>>(emptyMap())
+    val chatReads: StateFlow<Map<String, Map<String, Long>>> = _chatReads.asStateFlow()
+
+    /** Запасной путь к push: спрашиваем прочтения при открытии чата. */
+    suspend fun refreshRead(chatId: String) {
+        if (chatId.isBlank() || chatId == me()) return
         val key = key()
         val view = try {
-            request(key) { api.readCursor(it, peerId) }
+            request(key) { api.readCursor(it, chatId) }
         } catch (e: HttpException) {
             if (e.code() == 404 || e.code() == 405) return else throw e
         }
-        if (!view.hidden) applyRead(peerId, view.readAt)
+        if (view.readers.isNotEmpty() || view.chatId.isNotBlank()) {
+            // Группа: сервер отдаёт список читателей целиком — перезаписываем его.
+            val cursors = view.readers.mapNotNull { reader ->
+                val millis = runCatching { Instant.parse(reader.readAt).toEpochMilli() }.getOrNull()
+                if (reader.userId.isBlank() || millis == null) null else reader.userId to millis
+            }.toMap()
+            _chatReads.update { it + (chatId to cursors) }
+            return
+        }
+        if (!view.hidden) applyRead(chatId, view.readAt)
     }
 
-    private fun applyRead(peerId: String, readAt: String) {
-        if (peerId.isBlank() || readAt.isBlank()) return
+    /**
+     * Отметка о прочтении. Если userId пуст — это личный чат и chatId равен
+     * собеседнику; иначе это участник группы chatId.
+     */
+    private fun applyRead(chatId: String, readAt: String, userId: String = "") {
+        if (chatId.isBlank() || readAt.isBlank()) return
         val millis = runCatching { Instant.parse(readAt).toEpochMilli() }.getOrNull() ?: return
+        if (userId.isNotBlank()) {
+            if (userId == me()) return
+            _chatReads.update { current ->
+                val chat = current[chatId].orEmpty()
+                if ((chat[userId] ?: 0L) >= millis) current
+                else current + (chatId to (chat + (userId to millis)))
+            }
+            return
+        }
         // Курсор только растёт: галочки не должны пропадать из-за старого ответа.
         _readCursors.update { current ->
-            if ((current[peerId] ?: 0L) >= millis) current else current + (peerId to millis)
+            if ((current[chatId] ?: 0L) >= millis) current else current + (chatId to millis)
         }
+    }
+
+    // Кэш карточек ссылок на время жизни процесса: одна и та же ссылка в ленте
+    // не должна дёргать сервер при каждом перерисовывании списка.
+    private val linkPreviewCache = ConcurrentHashMap<String, LinkPreviewView>()
+    private val linkPreviewMisses = ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * Карточка ссылки от сервера. null — показывать нечего (включая старый сервер).
+     * Сам телефон на сторонний сайт не ходит: иначе ссылка в чате светила бы IP.
+     */
+    suspend fun linkPreview(url: String): LinkPreviewView? {
+        if (url.isBlank()) return null
+        linkPreviewCache[url]?.let { return it }
+        if (linkPreviewMisses.containsKey(url)) return null
+        val key = key()
+        val response = try {
+            request(key) { api.linkPreview(it, url) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            if (e.code() == 404 || e.code() == 405) linkPreviewMisses[url] = true
+            return null
+        } catch (_: Exception) {
+            // Сеть могла моргнуть — не запоминаем промах, попробуем позже.
+            return null
+        }
+        val body = response.body()
+        if (!response.isSuccessful || body == null || (body.title.isBlank() && body.description.isBlank())) {
+            linkPreviewMisses[url] = true
+            return null
+        }
+        linkPreviewCache[url] = body
+        return body
     }
 
     private fun publishProgress(key: String, percent: Int?) {
@@ -1353,9 +1420,14 @@ class ChatRepository(
 
     fun messagesFor(chatId: String): Flow<List<UiMessage>> {
         val owner = me().orEmpty()
-        return combine(db.messageDao().messagesFor(owner, chatId), _readCursors) { rows, cursors ->
-            // Прочитано то, что старше курсора собеседника; в группах курсора нет.
+        return combine(
+            db.messageDao().messagesFor(owner, chatId),
+            _readCursors,
+            _chatReads,
+        ) { rows, cursors, chatCursors ->
+            // Личный чат — один курсор; группа — курсор на каждого участника.
             val readUntil = cursors[chatId] ?: 0L
+            val groupCursors = chatCursors[chatId].orEmpty().values
             val decoded = rows.associate { row -> row.id to when {
                 row.ciphertext.isNotBlank() -> MessageCodec.decode(row.ciphertext)
                 !row.localBody.isNullOrBlank() -> MessageCodec.decode(row.localBody)
@@ -1417,7 +1489,9 @@ class ChatRepository(
                     e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice, attachment,
                     content?.reply?.text, content?.forwardedFrom, content,
                     edited = e.id in edits, reactions = reactions[e.id].orEmpty(), deleted = removed,
-                    read = e.senderId == owner && e.deliveryState == "sent" && e.createdAtMillis <= readUntil,
+                    read = e.senderId == owner && e.deliveryState == "sent" &&
+                        (e.createdAtMillis <= readUntil || groupCursors.any { it >= e.createdAtMillis }),
+                    readBy = if (e.senderId == owner) groupCursors.count { it >= e.createdAtMillis } else 0,
                 )
             }
         }.flowOn(Dispatchers.IO)
@@ -1761,12 +1835,25 @@ class ChatRepository(
         requestOutbox()
     }
 
+    /**
+     * Куда отдать очередь, если отправка сейчас не удалась: задаёт AppContainer
+     * (WorkManager). Оставлено как callback, чтобы репозиторий не знал о Android-работах.
+     */
+    var onOutboxDeferred: (() -> Unit)? = null
+
+    /** Для фоновой работы: отправить очередь сейчас и сообщить об ошибке исключением. */
+    suspend fun flushOutboxNow() = flushOutbox()
+
     private fun requestOutbox() {
         if (outboxJob?.isActive == true) return
         outboxJob = scope.launch {
             try { flushOutbox() }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { _syncProblem.value = "Отправка приостановлена. Сообщения сохранены на устройстве." }
+            catch (_: Exception) {
+                _syncProblem.value = "Отправка приостановлена. Сообщения сохранены на устройстве."
+                // Довозим очередь в фоне: даже если приложение закроют до возврата сети.
+                runCatching { onOutboxDeferred?.invoke() }
+            }
         }
     }
 

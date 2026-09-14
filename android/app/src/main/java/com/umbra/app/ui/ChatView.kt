@@ -213,8 +213,9 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         if (searchQuery.isBlank()) messages else messages.filter { it.text.contains(searchQuery.trim(), ignoreCase = true) }
     }
     val rendered = remember(visibleMessages, isGroup) { buildChatItems(visibleMessages, isGroup) }
-    // Личный чат открыт — сообщаем о прочтении и забираем чужой курсор (push мог не дойти).
-    if (!isGroup && available) LaunchedEffect(chatId, latestId) {
+    // Чат открыт — сообщаем о прочтении и забираем чужие курсоры (push мог не дойти).
+    // В группах тот же запрос отдаёт список тех, кто уже прочитал.
+    if (available) LaunchedEffect(chatId, latestId) {
         runCatching { repo.markRead(chatId) }
         runCatching { repo.refreshRead(chatId) }
     }
@@ -1336,6 +1337,7 @@ private fun MessageRow(
                     }
                     else -> Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
                         Text(message.text, color = onBubble, style = LocalUmbraMessageTextStyle.current)
+                        LinkPreviewCard(repo, message.text, onBubble, metaColor)
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 2.dp))
                     }
                 }
@@ -1519,6 +1521,15 @@ private fun MetaRow(message: UiMessage, tint: Color, modifier: Modifier = Modifi
                 if (message.failed) MaterialTheme.colorScheme.error else tint,
                 read = message.read,
             )
+            // В группе важно не только «прочитано», но и сколькими людьми.
+            if (message.readBy > 1) {
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    message.readBy.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint,
+                )
+            }
         }
     }
 }

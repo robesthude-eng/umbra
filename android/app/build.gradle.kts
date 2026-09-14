@@ -106,8 +106,8 @@ android {
         targetSdk = 35
         // Перед каждым выпуском увеличивайте versionCode, иначе Android не даст
         // обновить установленное приложение («Приложение не установлено»).
-        versionCode = 45
-        versionName = "0.17.4"
+        versionCode = 46
+        versionName = "0.18.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // С 0.7.0 основной источник ICE — сервер (`GET /v1/turn`), оттуда
@@ -183,6 +183,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.androidx.security.crypto)
+
+    // Очередь отправки довозится в фоне после возврата сети.
+    implementation(libs.androidx.work.runtime)
 
     // Сжатие медиа перед отправкой: видео — media3 Transformer, фото — EXIF-поворот.
     implementation(libs.androidx.media3.transformer)

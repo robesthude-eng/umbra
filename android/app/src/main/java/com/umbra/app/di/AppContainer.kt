@@ -14,6 +14,7 @@ import com.umbra.app.data.session.UiPreferences
 import com.umbra.app.data.update.AppUpdater
 import com.umbra.app.data.voice.VoicePlayer
 import com.umbra.app.data.voice.VoiceRecorder
+import com.umbra.app.data.work.OutboxWorker
 import com.umbra.app.data.ws.WebSocketClient
 
 /** Простой граф зависимостей (service locator). */
@@ -32,7 +33,10 @@ class AppContainer(context: Context) {
     val drafts = Drafts(context)
     val api: UmbraApi = createUmbraApi(baseUrl)
     val webSocketClient = WebSocketClient(baseUrl)
-    val chatRepository = ChatRepository(context, api, database, session, webSocketClient)
+    val chatRepository = ChatRepository(context, api, database, session, webSocketClient).apply {
+        // Не ушло сейчас — довезёт фоновая работа, когда появится сеть.
+        onOutboxDeferred = { OutboxWorker.schedule(context.applicationContext) }
+    }
 
     /** Запись голосовых сообщений: MediaRecorder из Android SDK, без новых зависимостей. */
     val voiceRecorder = VoiceRecorder(context)
