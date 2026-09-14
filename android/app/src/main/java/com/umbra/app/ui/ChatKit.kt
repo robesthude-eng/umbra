@@ -66,22 +66,13 @@ import kotlin.math.sin
  * Вынесены отдельно, чтобы ChatView остался читаемым.
  */
 
-/** Скругления пузыря: «хвост» со стороны отправителя, слитные углы внутри серии. */
-internal fun bubbleShape(outgoing: Boolean, first: Boolean, last: Boolean): RoundedCornerShape {
-    val big = 22.dp
-    val tight = 8.dp
-    return if (outgoing) RoundedCornerShape(
-        topStart = big,
-        topEnd = if (first) big else tight,
-        bottomEnd = if (last) 5.dp else tight,
-        bottomStart = big,
-    ) else RoundedCornerShape(
-        topStart = if (first) big else tight,
-        topEnd = big,
-        bottomEnd = big,
-        bottomStart = if (last) 5.dp else tight,
-    )
-}
+/**
+ * Форма пузыря: «хвост» со стороны отправителя, слитные углы внутри серии.
+ * Радиусы и сам тип угла (скругление или срез) берутся из текущей темы.
+ */
+@Composable
+internal fun bubbleShape(outgoing: Boolean, first: Boolean, last: Boolean): Shape =
+    com.umbra.app.ui.theme.LocalUmbraShapeKit.current.bubble(outgoing, first, last)
 
 /** Фон переписки: вертикальный градиент и два мягких световых пятна. */
 @Composable

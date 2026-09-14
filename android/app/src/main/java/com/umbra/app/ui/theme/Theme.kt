@@ -334,8 +334,10 @@ fun UmbraTheme(
     val typography = umbraTypography(interfaceStyle)
     val shapes = umbraShapes(interfaceStyle)
     val buttons = umbraButtonTokens(interfaceStyle)
+    val shapeKit = umbraShapeKit(interfaceStyle)
     CompositionLocalProvider(
         LocalUmbraButtons provides buttons,
+        LocalUmbraShapeKit provides shapeKit,
         LocalUmbraChatColors provides chat,
         LocalUmbraVisuals provides visuals,
         LocalUmbraMotion provides UmbraMotionTokens(),
