@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/minio/sio v0.5.1
 )
