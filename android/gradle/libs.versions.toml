@@ -21,7 +21,7 @@ webrtc = "114.5735.09"
 # Push-уведомления: Firebase Cloud Messaging. BOM держит версии
 # согласованными, плагин google-services читает google-services.json.
 firebaseBom = "33.5.1"
-googleServices = "4.4.2"
+googleServices = "4.5.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
