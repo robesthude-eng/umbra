@@ -13,6 +13,9 @@ enum class InterfaceStyle { STANDARD, SMOKED_GLASS, ALIEN }
 
 enum class AccentColor { DEFAULT, BLUE, TEAL, GREEN, AMBER, ROSE }
 
+/** Когда можно самостоятельно скачивать вложения для превью. */
+enum class AutoDownloadMode { NEVER, WIFI, ALWAYS }
+
 /**
  * Сила Alien Interface.
  *
@@ -34,6 +37,8 @@ data class AppearancePreferences(
     val mediaQuality: MediaSendQuality = MediaSendQuality.AUTO,
     /** Не показывать своё «был(а) в сети» (и не видеть чужое). */
     val hideLastSeen: Boolean = false,
+    /** Автозагрузка фото и видео для превью в переписке. */
+    val autoDownload: AutoDownloadMode = AutoDownloadMode.WIFI,
 ) {
     /** Сохранённая сила Alien не включает эффекты в других темах. */
     val effectiveAlienIntensity: AlienIntensity get() = resolveAlienIntensity(interfaceStyle, alienIntensity)
@@ -90,6 +95,9 @@ class UiPreferences(context: Context, preferenceName: String = "umbra_appearance
                 MediaSendQuality.valueOf(prefs.getString("media_quality", "AUTO").orEmpty())
             }.getOrDefault(MediaSendQuality.AUTO),
             hideLastSeen = prefs.getBoolean("hide_last_seen", false),
+            autoDownload = runCatching {
+                AutoDownloadMode.valueOf(prefs.getString("auto_download", "WIFI").orEmpty())
+            }.getOrDefault(AutoDownloadMode.WIFI),
         ),
     )
     val state = mutableState.asStateFlow()
@@ -123,6 +131,12 @@ class UiPreferences(context: Context, preferenceName: String = "umbra_appearance
     fun setMediaQuality(value: MediaSendQuality) {
         prefs.edit().putString("media_quality", value.name).apply()
         mutableState.value = mutableState.value.copy(mediaQuality = value)
+    }
+
+    /** Режим автозагрузки; ручное открытие файла работает всегда. */
+    fun setAutoDownload(value: AutoDownloadMode) {
+        prefs.edit().putString("auto_download", value.name).apply()
+        mutableState.value = mutableState.value.copy(autoDownload = value)
     }
 
     fun setHideLastSeen(value: Boolean) {

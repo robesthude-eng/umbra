@@ -90,6 +90,9 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.Handle("POST /v1/contacts/discover", s.requireAuth(http.HandlerFunc(s.handleDiscoverContacts)))
 	mux.Handle("POST /v1/chats/{id}/typing", s.requireAuth(http.HandlerFunc(s.handleMarkTyping)))
 	mux.Handle("GET /v1/chats/{id}/typing", s.requireAuth(http.HandlerFunc(s.handleListTyping)))
+	// «Прочитано» в личных чатах: {id} — собеседник.
+	mux.Handle("POST /v1/chats/{id}/read", s.requireAuth(http.HandlerFunc(s.handleMarkRead)))
+	mux.Handle("GET /v1/chats/{id}/read", s.requireAuth(http.HandlerFunc(s.handleGetRead)))
 	// Звонки (сигналинг; медиа peer-to-peer).
 	mux.Handle("POST /v1/calls", s.requireAuth(http.HandlerFunc(s.handleInitiateCall)))
 	mux.Handle("POST /v1/calls/{id}/signal", s.requireAuth(http.HandlerFunc(s.handleCallSignal)))

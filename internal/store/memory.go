@@ -35,6 +35,7 @@ type MemoryStore struct {
 	avatars     map[string]string                      // userID -> mediaID
 	presence    map[string]time.Time                   // userID -> последний визит
 	presenceHidden map[string]bool                     // userID -> скрыть статус
+	reads          map[string]map[string]time.Time     // readerID -> peerID -> прочитано до
 
 	// pushDevices — токен FCM -> устройство. Создаётся при первой записи.
 	pushDevices map[string]model.PushDevice

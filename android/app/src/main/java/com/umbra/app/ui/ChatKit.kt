@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Icon
@@ -158,17 +159,28 @@ internal fun DateChip(label: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Sent means acknowledged by the server; the protocol has no read receipts. */
+/**
+ * Одна галочка — сервер принял сообщение, две — собеседник открыл переписку.
+ * В группах и у скрывших статус второй галочки не будет никогда.
+ */
 @Composable
-internal fun MessageStatus(pending: Boolean, failed: Boolean, tint: Color, modifier: Modifier = Modifier) {
+internal fun MessageStatus(
+    pending: Boolean,
+    failed: Boolean,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    read: Boolean = false,
+) {
     val icon = when {
         failed -> Icons.Filled.ErrorOutline
         pending -> Icons.Filled.Schedule
+        read -> Icons.Filled.DoneAll
         else -> Icons.Filled.Done
     }
     val description = when {
         failed -> "Не отправлено"
         pending -> "Ожидает отправки"
+        read -> "Прочитано"
         else -> "Отправлено"
     }
     Icon(icon, description, modifier.size(14.dp), tint = tint)

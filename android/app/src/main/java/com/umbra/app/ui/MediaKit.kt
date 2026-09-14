@@ -96,7 +96,8 @@ internal fun AttachmentPhoto(
     val thumb by produceState<Bitmap?>(null, attachment.mediaId, attachment.localPath, attempt) {
         value = null
         failed = false
-        val loaded = runCatching { repo.attachmentThumbnail(attachment) }.getOrNull()
+        // attempt > 0 — ручной повтор: такая загрузка идёт даже без автозагрузки.
+        val loaded = runCatching { repo.attachmentThumbnail(attachment, force = attempt > 0) }.getOrNull()
         failed = loaded == null
         value = loaded
     }
@@ -142,7 +143,7 @@ internal fun AttachmentPhoto(
             // Ошибка и кнопка повтора вместо бесконечного кружка.
             failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    "Превью не загрузилось",
+                    if (attempt == 0) "Нажмите, чтобы загрузить" else "Превью не загрузилось",
                     style = MaterialTheme.typography.labelMedium,
                     color = palette.incomingMeta,
                     textAlign = TextAlign.Center,
@@ -150,7 +151,7 @@ internal fun AttachmentPhoto(
                 TextButton({ attempt++ }) {
                     Icon(Icons.Filled.Refresh, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Повторить")
+                    Text(if (attempt == 0) "Загрузить" else "Повторить")
                 }
             }
             else -> Box(Modifier.fillMaxSize().mediaSkeleton(accent, animated = !reduced))

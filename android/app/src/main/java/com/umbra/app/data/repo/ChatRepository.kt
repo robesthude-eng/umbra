@@ -108,6 +108,8 @@ data class UiMessage(
     val edited: Boolean = false,
     val reactions: Map<String, Int> = emptyMap(),
     val deleted: Boolean = false,
+    /** Своё сообщение прочитано собеседником (только личные чаты). */
+    val read: Boolean = false,
 )
 
 /**
@@ -642,6 +644,14 @@ class ChatRepository(
                             event.data["last_seen_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                             event.data["hidden"]?.jsonPrimitive?.contentOrNull == "true",
                         )
+                        "typing" -> applyTypingEvent(
+                            event.data["chat_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            event.data["user_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        )
+                        "read" -> applyRead(
+                            event.data["chat_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            event.data["read_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        )
                         "connected" -> refresh(forceFull = false) // инкрементально: полная не нужна при каждом переподключении
                         "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
                         "call" -> handleCallEvent(key, json.decodeFromJsonElement(CallDto.serializer(), event.data))
@@ -1154,12 +1164,57 @@ class ChatRepository(
 
     private val typingSentAt = ConcurrentHashMap<String, Long>()
 
+    /** Столько же держит отметку сервер (typingTTL в groups.go). */
+    private val TYPING_TTL_MILLIS = 5_000L
+
     /** Отменённые пользователем загрузки: ключ совпадает с stableId строки. */
     private val cancelledUploads = ConcurrentHashMap<String, Boolean>()
 
     /** «Был(а) в сети»: ключ — id пользователя. */
     private val _presence = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
     val presence: StateFlow<Map<String, UserPresence>> = _presence.asStateFlow()
+
+    /**
+     * «Прочитано до» в личной переписке: id собеседника -> время в миллисекундах.
+     * Курсор живёт в памяти: при перезапуске он запрашивается заново при открытии чата,
+     * так что отдельная колонка в базе и миграция Room не нужны.
+     */
+    private val _readCursors = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val readCursors: StateFlow<Map<String, Long>> = _readCursors.asStateFlow()
+
+    /**
+     * Отмечает личную переписку прочитанной. Старый сервер отвечает 404/405 — это не ошибка.
+     */
+    suspend fun markRead(peerId: String) {
+        if (peerId.isBlank() || peerId == me()) return
+        val key = key()
+        try {
+            request(key) { api.markRead(it, peerId) }
+        } catch (e: HttpException) {
+            if (e.code() != 404 && e.code() != 405) throw e
+        }
+    }
+
+    /** Запасной путь к push: спрашиваем курсор собеседника при открытии чата. */
+    suspend fun refreshRead(peerId: String) {
+        if (peerId.isBlank() || peerId == me()) return
+        val key = key()
+        val view = try {
+            request(key) { api.readCursor(it, peerId) }
+        } catch (e: HttpException) {
+            if (e.code() == 404 || e.code() == 405) return else throw e
+        }
+        if (!view.hidden) applyRead(peerId, view.readAt)
+    }
+
+    private fun applyRead(peerId: String, readAt: String) {
+        if (peerId.isBlank() || readAt.isBlank()) return
+        val millis = runCatching { Instant.parse(readAt).toEpochMilli() }.getOrNull() ?: return
+        // Курсор только растёт: галочки не должны пропадать из-за старого ответа.
+        _readCursors.update { current ->
+            if ((current[peerId] ?: 0L) >= millis) current else current + (peerId to millis)
+        }
+    }
 
     private fun publishProgress(key: String, percent: Int?) {
         _mediaProgress.update { current ->
@@ -1192,6 +1247,37 @@ class ChatRepository(
         if (userId.isBlank()) return
         val millis = runCatching { Instant.parse(lastSeenAt).toEpochMilli() }.getOrNull()
         _presence.update { it + (userId to UserPresence(online, millis, hidden)) }
+    }
+
+    /** Отметка живёт столько же, сколько на сервере (5 секунд). */
+    private val typingSeen = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Пуш «кто-то печатает». Событие дешевле опроса, поэтому чат спрашивает
+     * список реже — опрос остаётся запасным путём для старого сервера.
+     */
+    private fun applyTypingEvent(chatId: String, userId: String) {
+        if (chatId.isBlank() || userId.isBlank() || userId == me()) return
+        typingSeen["$chatId:$userId"] = System.currentTimeMillis() + TYPING_TTL_MILLIS
+        rebuildTyping()
+        // Строка гаснет сама, даже если больше событий не придёт.
+        scope.launch {
+            delay(TYPING_TTL_MILLIS + 250L)
+            rebuildTyping()
+        }
+    }
+
+    private fun rebuildTyping() {
+        val now = System.currentTimeMillis()
+        typingSeen.entries.removeAll { it.value <= now }
+        val grouped = typingSeen.keys
+            .mapNotNull { entry ->
+                val chat = entry.substringBefore(':', "")
+                val user = entry.substringAfter(':', "")
+                if (chat.isBlank() || user.isBlank()) null else chat to user
+            }
+            .groupBy({ it.first }, { it.second })
+        _typing.value = grouped
     }
 
     /**
@@ -1230,7 +1316,10 @@ class ChatRepository(
         } ?: return
         val mine = me()
         val others = ids.filter { it.isNotBlank() && it != mine }
-        _typing.update { if (others.isEmpty()) it - chatId else it + (chatId to others) }
+        val until = System.currentTimeMillis() + TYPING_TTL_MILLIS
+        typingSeen.keys.removeAll { it.substringBefore(':', "") == chatId }
+        for (id in others) typingSeen["$chatId:$id"] = until
+        rebuildTyping()
     }
 
     /**
@@ -1264,7 +1353,9 @@ class ChatRepository(
 
     fun messagesFor(chatId: String): Flow<List<UiMessage>> {
         val owner = me().orEmpty()
-        return db.messageDao().messagesFor(owner, chatId).map { rows ->
+        return combine(db.messageDao().messagesFor(owner, chatId), _readCursors) { rows, cursors ->
+            // Прочитано то, что старше курсора собеседника; в группах курсора нет.
+            val readUntil = cursors[chatId] ?: 0L
             val decoded = rows.associate { row -> row.id to when {
                 row.ciphertext.isNotBlank() -> MessageCodec.decode(row.ciphertext)
                 !row.localBody.isNullOrBlank() -> MessageCodec.decode(row.localBody)
@@ -1326,6 +1417,7 @@ class ChatRepository(
                     e.clientId?.let { "${e.senderId}:$it" } ?: e.id, voice, attachment,
                     content?.reply?.text, content?.forwardedFrom, content,
                     edited = e.id in edits, reactions = reactions[e.id].orEmpty(), deleted = removed,
+                    read = e.senderId == owner && e.deliveryState == "sent" && e.createdAtMillis <= readUntil,
                 )
             }
         }.flowOn(Dispatchers.IO)
@@ -1632,6 +1724,33 @@ class ChatRepository(
         requestOutbox()
     }
 
+    /**
+     * Повторить всё неотправленное одним движением после возвращения сети.
+     * Счётчик попыток сбрасывается: это явное действие человека, а не автоповтор.
+     * Возвращает число строк, вернувшихся в очередь.
+     */
+    suspend fun retryAllFailed(): Int {
+        val key = key()
+        var restored = 0
+        commit(key) {
+            for (m in db.messageDao().failed(key.owner)) {
+                if (m.senderId != key.owner) continue
+                m.clientId?.let { sendAttempts.remove(it) }
+                cancelledUploads.remove(m.id)
+                db.messageDao().upsert(m.copy(deliveryState = "pending", error = null))
+                restored++
+            }
+        }
+        if (restored > 0) requestOutbox()
+        return restored
+    }
+
+    /** Сколько строк сейчас в ошибке — для кнопки «Повторить всё». */
+    suspend fun failedCount(): Int {
+        val key = key()
+        return db.messageDao().failed(key.owner).count { it.senderId == key.owner }
+    }
+
     suspend fun retryMessage(id: String) {
         val key = key()
         commit(key) {
@@ -1756,12 +1875,14 @@ class ChatRepository(
      * Миниатюра фото или кадр видео. Если своей копии нет, файл скачивается
      * один раз и остаётся в кэше медиа.
      */
-    suspend fun attachmentThumbnail(a: UiAttachment): Bitmap? {
+    suspend fun attachmentThumbnail(a: UiAttachment, force: Boolean = false): Bitmap? {
         if (!Attachments.hasPreview(a.kind)) return null
         return thumbMutex.withLock {
             val cacheKey = a.mediaId ?: a.localPath ?: return@withLock null
             thumbCache.get(cacheKey)?.let { return@withLock it }
             val local = a.localPath?.let { File(it) }?.takeIf { it.isFile && it.length() > 0 }
+            // Когда автозагрузка выключена, сеть трогается только по кнопке.
+            if (local == null && !force && !autoDownloadAllowed()) return@withLock null
             val file = local ?: a.mediaId?.let { runCatching { attachmentFile(it) }.getOrNull() }
                 ?: return@withLock null
             val bitmap = withContext(Dispatchers.IO) { Attachments.thumbnail(file, a.kind) }
@@ -2018,6 +2139,40 @@ class ChatRepository(
             if (file.delete()) total -= size
             if (total <= MEDIA_CACHE_BUDGET_BYTES) break
         }
+    }
+
+    /**
+     * Режим автозагрузки читается прямо из настроек: значение нужно в момент
+     * загрузки, а не на момент создания репозитория.
+     */
+    private fun autoDownloadAllowed(): Boolean {
+        val mode = context.getSharedPreferences("umbra_appearance", Context.MODE_PRIVATE)
+            .getString("auto_download", "WIFI") ?: "WIFI"
+        return when (mode) {
+            "NEVER" -> false
+            "WIFI" -> !meteredNetwork()
+            else -> true
+        }
+    }
+
+    /** Занятое место под медиа и очередь отправки на этом устройстве. */
+    suspend fun localMediaBytes(): Long = withContext(Dispatchers.IO) {
+        listOf(MEDIA_CACHE_DIR, VOICE_DIR, ATTACH_DIR).sumOf { name ->
+            val dir = File(context.filesDir, name)
+            if (dir.isDirectory) dir.walkBottomUp().filter { it.isFile }.sumOf { it.length() } else 0L
+        }
+    }
+
+    /**
+     * Чистка кэша скачанных файлов. Очередь неотправленного не трогается:
+     * удалить её значило бы потерять ещё не отправленные файлы. Возвращает сколько освобождено.
+     */
+    suspend fun clearMediaCache(): Long = withContext(Dispatchers.IO) {
+        val before = localMediaBytes()
+        runCatching { File(context.filesDir, MEDIA_CACHE_DIR).deleteRecursively() }
+        thumbMutex.withLock { thumbCache.evictAll() }
+        val after = localMediaBytes()
+        (before - after).coerceAtLeast(0L)
     }
 
     /** Смена аккаунта или удаление: локальные файлы записей тоже должны исчезнуть. */

@@ -18,6 +18,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
+import com.umbra.app.data.media.Attachments
+import com.umbra.app.data.session.AutoDownloadMode
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun NotificationSettings() {
@@ -44,7 +47,10 @@ internal fun NotificationSettings() {
 }
 
 @Composable
-internal fun StorageSettings(preferences: com.umbra.app.data.session.UiPreferences) {
+internal fun StorageSettings(
+    repo: com.umbra.app.data.repo.ChatRepository,
+    preferences: com.umbra.app.data.session.UiPreferences,
+) {
     val context = LocalContext.current
     val ui by preferences.state.collectAsState()
     val quality = ui.mediaQuality
@@ -65,9 +71,24 @@ internal fun StorageSettings(preferences: com.umbra.app.data.session.UiPreferenc
             preferences.setMediaQuality(com.umbra.app.data.media.MediaSendQuality.ORIGINAL)
         }
     }
-    SettingsCard("На этом устройстве") {
-        SettingsDescription("Umbra сохраняет локальную историю, загруженные вложения и очередь неотправленных сообщений. Занимаемое место можно посмотреть в настройках Android.")
+    SettingsCard("Автозагрузка вложений") {
+        SettingsDescription(
+            "Когда автозагрузка выключена, превью появляется по кнопке «Загрузить» в самом сообщении. " +
+                "Открытие файла вручную работает всегда.",
+        )
     }
+    SettingsGroup {
+        MediaQualityRow("Всегда", "Любая сеть", ui.autoDownload == AutoDownloadMode.ALWAYS) {
+            preferences.setAutoDownload(AutoDownloadMode.ALWAYS)
+        }
+        MediaQualityRow("Только по Wi-Fi", "На мобильном интернете — вручную", ui.autoDownload == AutoDownloadMode.WIFI) {
+            preferences.setAutoDownload(AutoDownloadMode.WIFI)
+        }
+        MediaQualityRow("Никогда", "Экономит трафик и место", ui.autoDownload == AutoDownloadMode.NEVER) {
+            preferences.setAutoDownload(AutoDownloadMode.NEVER)
+        }
+    }
+    MediaCacheCard(repo)
     SettingsCard("Хранение данных на сервере") {
         SettingsDescription("Сообщения, фото, видео и другие отправленные файлы хранятся на сервере владельца Umbra.")
     }
@@ -124,5 +145,42 @@ private fun AndroidSettingsRow(
             }
         })
         error?.let { Text(it, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+/**
+ * Сколько занято медиа на устройстве и кнопка очистки кэша.
+ * Очередь неотправленного и записи не удаляются: их неоткуда восстановить.
+ */
+@Composable
+private fun MediaCacheCard(repo: com.umbra.app.data.repo.ChatRepository) {
+    val scope = rememberCoroutineScope()
+    var bytes by remember { mutableStateOf<Long?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var freed by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(Unit) { bytes = runCatching { repo.localMediaBytes() }.getOrNull() }
+    SettingsCard("Медиа на этом устройстве") {
+        SettingsDescription(
+            when (val size = bytes) {
+                null -> "Считаем занятое место…"
+                else -> "Скачанные файлы, записи и очередь отправки занимают ${Attachments.sizeText(size)}."
+            },
+        )
+        freed?.let { SettingsDescription("Освобождено ${Attachments.sizeText(it)}.") }
+        TextButton(
+            onClick = {
+                if (busy) return@TextButton
+                busy = true
+                scope.launch {
+                    freed = runCatching { repo.clearMediaCache() }.getOrNull()
+                    bytes = runCatching { repo.localMediaBytes() }.getOrNull()
+                    busy = false
+                }
+            },
+            enabled = !busy,
+        ) { Text(if (busy) "Очищаем…" else "Очистить кэш скачанных файлов") }
+    }
+    SettingsCard("Хранение данных на сервере") {
+        SettingsDescription("Сообщения, фото, видео и другие отправленные файлы хранятся на сервере владельца Umbra.")
     }
 }

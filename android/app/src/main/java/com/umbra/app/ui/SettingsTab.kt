@@ -85,7 +85,7 @@ internal fun SettingsTab(container: AppContainer) {
                             SettingsCategory.APPEARANCE -> AppearanceSettings(container.uiPreferences)
                             SettingsCategory.NOTIFICATIONS -> NotificationSettings()
                             SettingsCategory.NETWORK -> NetworkSettings(repo)
-                            SettingsCategory.STORAGE -> StorageSettings(container.uiPreferences)
+                            SettingsCategory.STORAGE -> StorageSettings(repo, container.uiPreferences)
                             SettingsCategory.PRIVACY -> PrivacySettings(
                                 repo = repo,
                                 preferences = container.uiPreferences,

@@ -97,6 +97,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE ownerId = :owner AND deliveryState = 'pending' ORDER BY createdAtMillis, id LIMIT 50")
     suspend fun pending(owner: String): List<MessageEntity>
 
+    @Query("SELECT * FROM messages WHERE ownerId = :owner AND deliveryState = 'failed' ORDER BY createdAtMillis, id LIMIT 200")
+    suspend fun failed(owner: String): List<MessageEntity>
+
     @Query("SELECT MAX(createdAtMillis) FROM messages WHERE ownerId = :owner AND deliveryState = 'sent'")
     suspend fun maxCreatedAtMillis(owner: String): Long?
 

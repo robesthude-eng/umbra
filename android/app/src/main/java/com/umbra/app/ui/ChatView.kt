@@ -213,6 +213,11 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         if (searchQuery.isBlank()) messages else messages.filter { it.text.contains(searchQuery.trim(), ignoreCase = true) }
     }
     val rendered = remember(visibleMessages, isGroup) { buildChatItems(visibleMessages, isGroup) }
+    // Личный чат открыт — сообщаем о прочтении и забираем чужой курсор (push мог не дойти).
+    if (!isGroup && available) LaunchedEffect(chatId, latestId) {
+        runCatching { repo.markRead(chatId) }
+        runCatching { repo.refreshRead(chatId) }
+    }
     val reducedMotion = LocalUmbraReducedMotion.current
     suspend fun goToLatest() {
         if (reducedMotion) listState.scrollToItem(0) else listState.animateScrollToItem(0)
@@ -448,6 +453,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
                     onMembers = { showMembers = true },
                     onSearch = { searching = !searching; if (!searching) searchQuery = "" },
                     onMedia = { showMedia = true },
+                    onRetryAll = { scope.launch { runCatching { repo.retryAllFailed() } } },
                 )
             },
         ) { padding ->
@@ -697,6 +703,7 @@ private fun ChatTopBar(
     onMembers: () -> Unit,
     onSearch: () -> Unit,
     onMedia: () -> Unit,
+    onRetryAll: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
     val smokedGlass = LocalUmbraSmokedGlass.current
@@ -707,19 +714,20 @@ private fun ChatTopBar(
     val presenceMap by repo.presence.collectAsState()
     val peer = if (isGroup) null else presenceMap[chatId]
     val lastSeen = peer?.takeIf { !it.hidden && !it.online }?.lastSeenAtMillis?.let { lastSeenText(it) }
+    // Статус приходит пушом по ws; опрос раз в две минуты — страховка от потери события.
     if (!isGroup) LaunchedEffect(chatId) {
         while (true) {
             runCatching { repo.refreshPresence(chatId) }
-            delay(45_000L)
+            delay(120_000L)
         }
     }
-    // «Печатает…»: отметка живёт 5 секунд, поэтому спрашиваем чаще присутствия.
+    // «Печатает…» приходит пушом; опрос остаётся запасным путём для старого сервера.
     val typingMap by repo.typing.collectAsState()
     val typingHere = typingMap[chatId].orEmpty()
     if (available) LaunchedEffect(chatId) {
         while (true) {
             runCatching { repo.refreshTyping(chatId) }
-            delay(4_000L)
+            delay(10_000L)
         }
     }
     // В Alien-режиме статус звучит как бортовой журнал, но смысл строк тот же.
@@ -811,6 +819,11 @@ private fun ChatTopBar(
                     if (isGroup && available) DropdownMenuItem(
                         text = { Text("Участники группы") }, leadingIcon = { Icon(Icons.Filled.Groups, null) },
                         onClick = { menu = false; onMembers() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Повторить всё неотправленное") },
+                        leadingIcon = { Icon(Icons.Filled.Replay, null) },
+                        onClick = { menu = false; onRetryAll() },
                     )
                     DropdownMenuItem(
                         text = { Text("Медиа и файлы") },
@@ -1292,7 +1305,7 @@ private fun MessageRow(
                                 )
                                 if (outgoing) {
                                     Spacer(Modifier.width(4.dp))
-                                    MessageStatus(message.pending, message.failed, Color.White)
+                                    MessageStatus(message.pending, message.failed, Color.White, read = message.read)
                                 }
                             }
                         }
@@ -1458,6 +1471,7 @@ private fun MessageRow(
     }
 }
 
+@Composable
 /**
  * Индикатор загрузки вложения: полоса + живые проценты 0…100.
  */
@@ -1504,6 +1518,7 @@ private fun MetaRow(message: UiMessage, tint: Color, modifier: Modifier = Modifi
                 message.pending,
                 message.failed,
                 if (message.failed) MaterialTheme.colorScheme.error else tint,
+                read = message.read,
             )
         }
     }

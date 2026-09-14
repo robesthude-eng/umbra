@@ -107,6 +107,12 @@ type Store interface {
 	// SetPresenceHidden включает взаимное скрытие «был(а) в сети».
 	SetPresenceHidden(ctx context.Context, userID string, hidden bool) error
 
+	// «Прочитано» в личной переписке: курсор чтения readerID по чату с peerID.
+	// SetReadCursor не двигает курсор назад; GetReadCursor отдаёт нулевое время,
+	// если человек ещё ничего не прочитал, и ErrNotFound на неизвестного пользователя.
+	SetReadCursor(ctx context.Context, readerID, peerID string, at time.Time) error
+	GetReadCursor(ctx context.Context, readerID, peerID string) (time.Time, error)
+
 	// Звонки (метаданные; медиа идёт peer-to-peer).
 	SaveCall(ctx context.Context, c *model.Call) error
 	GetCall(ctx context.Context, id string) (*model.Call, error)

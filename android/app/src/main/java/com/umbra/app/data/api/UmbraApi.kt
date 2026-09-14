@@ -129,6 +129,14 @@ data class PrivacyRequest(@SerialName("hide_last_seen") val hideLastSeen: Boolea
 @Serializable
 data class TypingResponse(val typing: List<String> = emptyList())
 
+/** «Прочитано до» в личной переписке. Пустой readAt — ещё не читал либо скрыто. */
+@Serializable
+data class ReadCursorView(
+    @SerialName("user_id") val userId: String = "",
+    @SerialName("read_at") val readAt: String = "",
+    val hidden: Boolean = false,
+)
+
 @Serializable
 data class MediaUploadResponse(val id: String = "", @SerialName("content_type") val contentType: String = "", val size: Long = 0)
 
@@ -323,6 +331,13 @@ interface UmbraApi {
 
     @GET("/v1/chats/{id}/typing")
     suspend fun typing(@Header("Authorization") auth: String, @Path("id") id: String): TypingResponse
+
+    // «Прочитано» в личном чате: id — собеседник.
+    @POST("/v1/chats/{id}/read")
+    suspend fun markRead(@Header("Authorization") auth: String, @Path("id") id: String): ReadCursorView
+
+    @GET("/v1/chats/{id}/read")
+    suspend fun readCursor(@Header("Authorization") auth: String, @Path("id") id: String): ReadCursorView
 
     // Сообщения.
     @POST("/v1/messages")

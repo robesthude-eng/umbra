@@ -508,8 +508,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	})
 	s.hub.Register(client)
 	go s.touchPresence(userID)
+	go s.broadcastPresence(userID, true)
 	go client.WritePump()
-	go client.ReadPump()
+	go func() {
+		client.ReadPump()
+		// Соединение закрылось. Если у человека остались другие устройства,
+		// он по-прежнему в сети — событие не шлём.
+		s.touchPresence(userID)
+		if !s.hub.Online(userID) {
+			s.broadcastPresence(userID, false)
+		}
+	}()
 }
 
 // ---------- утилиты ----------

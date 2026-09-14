@@ -405,6 +405,20 @@ func (s *Server) handleMarkTyping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.typing.mark(chatID, userID)
+	// Сразу толкаем событие остальным участникам: клиенту не нужно
+	// опрашивать список каждые несколько секунд. Ошибка рассылки не ломает ответ:
+	// опрос /v1/chats/{id}/typing остаётся запасным путём.
+	if members, err := s.store.ListMembers(r.Context(), chatID); err == nil {
+		for _, m := range members {
+			if m.UserID == userID {
+				continue
+			}
+			s.hub.Push(m.UserID, ws.Event{Type: "typing", Data: map[string]string{
+				"chat_id": chatID,
+				"user_id": userID,
+			}})
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

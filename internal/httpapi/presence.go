@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"umbra/server/internal/store"
+	"umbra/server/internal/ws"
 )
 
 // presenceView — ответ клиенту. last_seen_at пуст, если собеседник скрыл
@@ -47,6 +49,61 @@ func (s *Server) touchPresence(userID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = s.store.TouchPresence(ctx, userID, now)
+}
+
+// presenceFanoutLimit — верхняя граница рассылки статуса. Статус важен в личной
+// переписке; рассылать его в каждую крупную группу бессмысленно дорого.
+const presenceFanoutLimit = 8
+
+// broadcastPresence толкает смену статуса собеседникам по WebSocket, чтобы
+// клиенту не приходилось опрашивать /presence по таймеру. Ошибки глотаем:
+// опрос остаётся запасным путём.
+func (s *Server) broadcastPresence(userID string, online bool) {
+	if userID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lastSeen, hidden, err := s.store.GetPresence(ctx, userID)
+	if err != nil || hidden {
+		// Скрывший статус не рассылает его вовсе.
+		return
+	}
+	chats, err := s.store.ListChatsForUser(ctx, userID)
+	if err != nil {
+		return
+	}
+	seen := make(map[string]bool, len(chats))
+	for _, chat := range chats {
+		if chat == nil {
+			continue
+		}
+		members, err := s.store.ListMembers(ctx, chat.ID)
+		if err != nil || len(members) > presenceFanoutLimit {
+			continue
+		}
+		for _, m := range members {
+			if m == nil || m.UserID == userID || seen[m.UserID] {
+				continue
+			}
+			seen[m.UserID] = true
+			if !s.hub.Online(m.UserID) {
+				continue
+			}
+			data := map[string]string{
+				"user_id": userID,
+				"online":  strconv.FormatBool(online),
+				"hidden":  "false",
+			}
+			if !lastSeen.IsZero() {
+				data["last_seen_at"] = lastSeen.UTC().Format(time.RFC3339)
+			}
+			if online {
+				data["last_seen_at"] = time.Now().UTC().Format(time.RFC3339)
+			}
+			s.hub.Push(m.UserID, ws.Event{Type: "presence", Data: data})
+		}
+	}
 }
 
 // handleGetPresence — GET /v1/users/{user_id}/presence.
