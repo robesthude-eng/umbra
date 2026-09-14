@@ -5,13 +5,13 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
-import androidx.media3.common.Effects
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
@@ -167,15 +167,15 @@ object VideoCompressor {
     /**
      * 720p по короткой стороне без апскейла: маленькие кадры не растягиваем,
      * маленькие вообще не масштабируем (пережатие только сменой кодека).
-     * Presentation.createForShortSide в media3 1.4.1 отсутствует, поэтому
-     * считаем сами по размеру кадра.
+     * В media3 1.4.1 нет createForShortSide/createForWidth, поэтому считаем
+     * целевой кадр сами и задаём его через createForWidthAndHeight.
      */
     private fun presentationFor(source: File): Presentation? {
         val (w, h) = frameSize(source) ?: return null
-        return when {
-            w <= SHORT_SIDE_PX && h <= SHORT_SIDE_PX -> null
-            w >= h -> Presentation.createForHeight(SHORT_SIDE_PX)
-            else -> Presentation.createForWidth(SHORT_SIDE_PX)
-        }
+        if (w <= SHORT_SIDE_PX && h <= SHORT_SIDE_PX) return null
+        val scale = SHORT_SIDE_PX.toDouble() / minOf(w, h)
+        val targetW = (w * scale).toInt().coerceAtLeast(1)
+        val targetH = (h * scale).toInt().coerceAtLeast(1)
+        return Presentation.createForWidthAndHeight(targetW, targetH)
     }
 }
