@@ -6,6 +6,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -38,7 +39,10 @@ private fun ProfileValue(label: String, value: String) {
 }
 
 @Composable
-internal fun PrivacySettings(busy: Boolean, onLogout: () -> Unit, onDelete: () -> Unit) {
+internal fun PrivacySettings(repo: ChatRepository, busy: Boolean, onLogout: () -> Unit, onDelete: () -> Unit) {
+    var showDevices by remember { mutableStateOf(false) }
+    if (showDevices) DevicesDialog(repo) { showDevices = false }
+    SettingsGroup { SettingsActionRow("Устройства", "Просмотр и завершение сессий", Icons.Filled.Devices, enabled = !busy, onClick = { showDevices = true }) }
     SettingsCard("Доступ к переписке") {
         SettingsDescription("Сообщения и файлы хранятся на сервере владельца Umbra. Сквозное шифрование в этой версии не используется.")
     }

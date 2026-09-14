@@ -94,9 +94,9 @@ func (p *PostgresStore) SaveMediaWithQuota(ctx context.Context, media *model.Med
 			return ErrQuota
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO media(id,owner_id,content_type,size,created_at,chat_id,recipient_id)
-		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''))`,
-		media.ID, media.OwnerID, media.ContentType, media.Size, media.CreatedAt, media.ChatID, media.RecipientID)
+	_, err = tx.Exec(ctx, `INSERT INTO media(id,owner_id,content_type,size,created_at,chat_id,recipient_id,storage_format,blob_id)
+		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''))`,
+		media.ID, media.OwnerID, media.ContentType, media.Size, media.CreatedAt, media.ChatID, media.RecipientID, media.StorageFormat, media.BlobID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -171,7 +171,7 @@ func (p *PostgresStore) PurgeExpired(ctx context.Context, now time.Time) error {
 }
 
 func (p *PostgresStore) ListMessagesPage(ctx context.Context, userID string, since time.Time, afterID string, limit int) ([]*model.Message, error) {
-	rows, err := p.pool.Query(ctx, `SELECT m.id,m.sender_id,m.recipient_id,m.chat_id,m.ciphertext,m.created_at,m.expires_at,COALESCE(receipt.client_id,'')
+	rows, err := p.pool.Query(ctx, `SELECT m.id,m.sender_id,m.recipient_id,m.chat_id,m.ciphertext,m.created_at,m.expires_at,COALESCE(receipt.client_id,''),m.storage_format
      FROM messages m LEFT JOIN message_receipts receipt
        ON receipt.sender_id=m.sender_id AND receipt.message_id=m.id
      WHERE (m.created_at > $2 OR ($3 <> '' AND m.created_at=$2 AND m.id > $3))
@@ -186,7 +186,8 @@ func (p *PostgresStore) ListMessagesPage(ctx context.Context, userID string, sin
 	for rows.Next() {
 		var m model.Message
 		var recipient, chat *string
-		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chat, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt, &m.ClientID); err != nil {
+		var format int
+		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chat, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt, &m.ClientID, &format); err != nil {
 			return nil, err
 		}
 		if recipient != nil {
@@ -194,6 +195,9 @@ func (p *PostgresStore) ListMessagesPage(ctx context.Context, userID string, sin
 		}
 		if chat != nil {
 			m.ChatID = *chat
+		}
+		if err := p.openMessage(&m, format); err != nil {
+			return nil, err
 		}
 		out = append(out, &m)
 	}

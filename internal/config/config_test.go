@@ -46,3 +46,19 @@ func TestMediaConfig(t *testing.T) {
 		t.Fatalf("custom BLOB_DIR ignored: %q", cfg.BlobDir)
 	}
 }
+
+func TestAllowedPhonePolicy(t *testing.T) {
+	for _, value := range []string{"*", "79991234567", "+79991234567,", "+09991234567", "+7 999 1234567"} {
+		if _, err := ParseAllowedPhones(value); err == nil {
+			t.Fatalf("invalid policy: %q", value)
+		}
+	}
+	phones, err := ParseAllowedPhones(" +79991234567, +79991234568 ")
+	if err != nil || len(phones) != 2 {
+		t.Fatal(phones, err)
+	}
+	phones, err = ParseAllowedPhones("")
+	if err != nil || len(phones) != 0 {
+		t.Fatal(phones, err)
+	}
+}

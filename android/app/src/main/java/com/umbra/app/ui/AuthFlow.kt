@@ -38,6 +38,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
     val phase by repo.phase.collectAsState()
     var step by rememberSaveable { mutableStateOf(AuthStep.PHONE.name) }
     var phone by rememberSaveable { mutableStateOf(repo.accountInfo().phone) }
+    var requestId by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf(repo.accountInfo().displayName) }
     var lastName by rememberSaveable { mutableStateOf(repo.accountInfo().lastName) }
@@ -58,7 +59,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
         now = System.currentTimeMillis()
         while (now < resendAt) { delay(1000); now = System.currentTimeMillis() }
     }
-    fun backToPhone() { step = AuthStep.PHONE.name; code = ""; error = null }
+    fun backToPhone() { step = AuthStep.PHONE.name; code = ""; requestId = ""; error = null }
     BackHandler(currentStep == AuthStep.CODE) { if (!loading) backToPhone() }
     BackHandler(loading) { /* Let an in-flight action finish. */ }
 
@@ -67,10 +68,11 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
         loading = true; error = null
         scope.launch {
             try {
-                repo.requestCode(phone)
+                val response = repo.requestCode(phone)
+                requestId = response.requestId
                 phone = InputRules.normalizePhone(phone) ?: phone
                 code = ""; step = AuthStep.CODE.name
-                resendAt = System.currentTimeMillis() + 60_000L
+                resendAt = System.currentTimeMillis() + response.retryAfter.coerceIn(60, 1800) * 1000L
             } catch (e: Exception) { error = e.userMessage() }
             finally { loading = false }
         }
@@ -79,7 +81,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
         if (loading || code.length != 6) return
         loading = true; error = null
         scope.launch {
-            try { repo.verifyCode(phone, code) }
+            try { repo.verifyCode(phone, code, requestId) }
             catch (e: Exception) { error = e.userMessage() }
             finally { loading = false }
         }

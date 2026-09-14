@@ -28,7 +28,8 @@ func (m *MemoryStore) OneTimePrekeyCount(_ context.Context, userID string) (int,
 }
 
 func messageRequestHash(m *model.Message) [32]byte {
-	// Хэш ciphertext и адресации, не открытый текст. JSON исключает неоднозначную склейку.
+	// Хэш API-конверта и адресации для повторов. PostgreSQL шифрует и этот
+	// дайджест: открытый SHA-256 позволил бы подбирать короткие сообщения.
 	b, _ := json.Marshal([]any{m.RecipientID, m.ChatID, m.Ciphertext, m.ExpiresIn})
 	return sha256.Sum256(b)
 }
@@ -184,7 +185,7 @@ func (m *MemoryStore) PurgeExpired(_ context.Context, now time.Time) error {
 	m.messages = kept
 	for key, value := range m.tokens {
 		if !value.expires.After(now) {
-			delete(m.tokens, key)
+			m.deleteSessionLocked(key)
 		}
 	}
 	for key, receipt := range m.receipts {

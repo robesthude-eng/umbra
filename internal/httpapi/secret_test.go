@@ -77,8 +77,15 @@ func TestSecretChatGroupSelfDestruct(t *testing.T) {
 }
 
 func TestBurnAccount(t *testing.T) {
-	h := newTestServer(t)
-	u := setupUsers(t, h, "alice", "bob")
+	sender := &fakeOTPSender{}
+	h, _ := newTestServerWith(t, sender)
+	u := setupUsers(t, h, "bob")
+	a, token := registerVerifiedPhone(t, h, sender, "Alice", "+79991234567")
+	doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": "Alice", "username": "alice"}, token)
+	u["alice"] = struct {
+		ID    string
+		Token string
+	}{a["id"].(string), token}
 
 	// alice шлёт сообщение bob'у
 	ciphertext := base64.StdEncoding.EncodeToString([]byte("перед сжиганием"))
@@ -96,7 +103,15 @@ func TestBurnAccount(t *testing.T) {
 	}
 
 	// alice сжигает аккаунт
-	code, _ = doReq(t, h, http.MethodPost, "/v1/account/burn", nil, u["alice"].Token)
+	if c, _ := doReq(t, h, http.MethodPost, "/v1/account/burn", nil, token); c != 400 {
+		t.Fatalf("missing proof: %d", c)
+	}
+	advanceOTPClock(h)
+	c, proof := doReq(t, h, http.MethodPost, "/v1/account/security/code", map[string]any{"purpose": "delete_account"}, token)
+	if c != 200 {
+		t.Fatal(c, proof)
+	}
+	code, _ = doReq(t, h, http.MethodPost, "/v1/account/burn", map[string]any{"request_id": proof["request_id"], "code": sender.code("+79991234567")}, token)
 	if code != http.StatusOK {
 		t.Fatalf("burn account: %d", code)
 	}

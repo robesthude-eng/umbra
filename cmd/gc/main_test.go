@@ -16,8 +16,8 @@ import (
 
 type metadataFailure struct{ store.Store }
 
-func (metadataFailure) GetMedia(context.Context, string) (*model.Media, error) {
-	return nil, errors.New("database offline")
+func (metadataFailure) BlobReferenced(context.Context, string) (bool, error) {
+	return false, errors.New("database offline")
 }
 
 func TestGCDryRunAndFailClosed(t *testing.T) {
@@ -41,7 +41,7 @@ func TestGCDryRunAndFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := st.SaveMedia(ctx, &model.Media{ID: "live", OwnerID: "owner", Size: 6}); err != nil {
+	if err := st.SaveMedia(ctx, &model.Media{ID: "logical", BlobID: "live", OwnerID: "owner", Size: 6}); err != nil {
 		t.Fatal(err)
 	}
 	if err := collect(ctx, st, blobs, false); err != nil {

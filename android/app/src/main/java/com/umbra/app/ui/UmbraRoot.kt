@@ -30,6 +30,18 @@ import java.io.File
 fun UmbraRoot(container: AppContainer, pictureInPicture: Boolean = false) {
     val repo = container.chatRepository
     val phase by repo.phase.collectAsState()
+    val securityNotice by repo.securityNotice.collectAsState()
+    var showSecurityDevices by remember { mutableStateOf(false) }
+    LaunchedEffect(phase) { if (phase != SessionPhase.READY) showSecurityDevices = false }
+    if (phase == SessionPhase.READY && !pictureInPicture) {
+        securityNotice?.let { device ->
+            AlertDialog(onDismissRequest = { repo.dismissSecurityNotice() }, title = { Text("Новый вход в аккаунт") },
+                text = { Text("Устройство: $device. Если это были не вы, завершите неизвестную сессию.") },
+                confirmButton = { TextButton({ repo.dismissSecurityNotice(); showSecurityDevices = true }) { Text("Проверить устройства") } },
+                dismissButton = { TextButton({ repo.dismissSecurityNotice() }) { Text("Это я") } })
+        }
+        if (showSecurityDevices) DevicesDialog(repo) { showSecurityDevices = false }
+    }
     LaunchedEffect(phase) {
         if (phase == SessionPhase.READY) {
             repo.startRealtime()

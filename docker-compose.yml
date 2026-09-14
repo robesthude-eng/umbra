@@ -5,6 +5,7 @@ services:
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8080:8080"
     environment:
+      AUTH_ALLOWED_PHONES: ${AUTH_ALLOWED_PHONES:-}
       LISTEN_ADDR: ":8080"
       STORE: postgres
       DATABASE_URL: "postgres://${POSTGRES_USER:-umbra}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-umbra}?sslmode=disable"
@@ -17,6 +18,7 @@ services:
       TELEGRAM_API_KEY: "${TELEGRAM_API_KEY:-}"
       MAX_MESSAGE_BYTES: "${MAX_MESSAGE_BYTES:-2097152}"
       BLOB_DIR: /data/blobs
+      STORAGE_KEY_FILE: /data/keys/storage-keys.json
       MAX_MEDIA_BYTES: "${MAX_MEDIA_BYTES:-52428800}"
       MAX_USER_MEDIA_BYTES: "${MAX_USER_MEDIA_BYTES:-1073741824}"
       # Переключение на S3: задайте BLOB_STORE_TYPE=s3 в .env.
@@ -37,6 +39,7 @@ services:
       FCM_PROJECT_ID: "${FCM_PROJECT_ID:-}"
     volumes:
       - blobdata:/data/blobs
+      - keydata:/data/keys
       # Ключ сервисного аккаунта Firebase: положите файл рядом с compose,
       # раскомментируйте строку и задайте FCM_CREDENTIALS_FILE=/run/secrets/fcm.json
       # - ./fcm-service-account.json:/run/secrets/fcm.json:ro
@@ -106,4 +109,5 @@ services:
 volumes:
   pgdata:
   blobdata:
+  keydata:
   miniodata:

@@ -5,6 +5,7 @@ run:          ## запустить сервер локально (in-memory)
 
 build:        ## собрать бинарник
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/server ./cmd/server
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/umbra-storage ./cmd/storage
 
 test:         ## прогнать тесты
 	go test ./...
@@ -27,3 +28,11 @@ docker-down:
 .PHONY: help
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+.PHONY: storage-init storage-migrate
+storage-init: ## создать серверные ключи один раз для локального запуска
+	mkdir -p data
+	go run ./cmd/storage init
+
+storage-migrate: ## перенести старые данные; остановите сервер, см. CLOUD_STORAGE.md
+	go run ./cmd/storage migrate

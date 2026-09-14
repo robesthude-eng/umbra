@@ -19,8 +19,7 @@ func (p *PostgresStore) SavePushDevice(ctx context.Context, userID, token, platf
 
 // ListPushDevices — все устройства пользователя, свежие первыми.
 func (p *PostgresStore) ListPushDevices(ctx context.Context, userID string) ([]model.PushDevice, error) {
-	rows, err := p.pool.Query(ctx, `SELECT token, user_id, platform, updated_at
-		FROM push_devices WHERE user_id = $1 ORDER BY updated_at DESC`, userID)
+	rows, err := p.pool.Query(ctx, `SELECT d.token,d.user_id,d.platform,d.updated_at,COALESCE(d.session_id,'') FROM push_devices d LEFT JOIN auth_tokens a ON a.session_id=d.session_id WHERE d.user_id=$1 AND (d.session_id IS NULL OR (a.expires_at>now() AND a.created_at>now()-interval '2160 hours')) ORDER BY d.updated_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +28,7 @@ func (p *PostgresStore) ListPushDevices(ctx context.Context, userID string) ([]m
 	var out []model.PushDevice
 	for rows.Next() {
 		var d model.PushDevice
-		if err := rows.Scan(&d.Token, &d.UserID, &d.Platform, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.Token, &d.UserID, &d.Platform, &d.UpdatedAt, &d.SessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

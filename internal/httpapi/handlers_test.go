@@ -63,6 +63,7 @@ func newTestServerWith(t *testing.T, sender OTPSender) (http.Handler, *store.Mem
 		// These compatibility fixtures exercise username-only key clients.
 		// Production defaults and phone-only rules have separate regression tests.
 		AllowLegacyAuth: true,
+		AllowedPhones:   "+12025550147,+123456789012345,+4930901820,+75550001122,+79001112233,+79002223344,+79003334455,+79004445566,+79005556677,+79006667788,+79991112233,+79991234567,+79991234568,+79992223344,+79994445566",
 		ListenAddr:      ":0",
 		Store:           "memory",
 		TokenTTL:        time.Hour,
@@ -71,6 +72,7 @@ func newTestServerWith(t *testing.T, sender OTPSender) (http.Handler, *store.Mem
 	}
 	st := store.NewMemoryStore()
 	hub := ws.NewHub()
+	t.Cleanup(hub.Close)
 	srv := NewServerForMain(cfg, st, hub, nil, sender)
 	return srv.Handler, st
 }
@@ -281,4 +283,12 @@ func TestPrekeys(t *testing.T) {
 	if code != http.StatusNotFound {
 		t.Fatalf("ожидался 404, получен %d", code)
 	}
+}
+
+func advanceOTPClock(h http.Handler) {
+	o := h.(*Server).otp
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	now := o.now().Add(otpCooldown)
+	o.now = func() time.Time { return now }
 }

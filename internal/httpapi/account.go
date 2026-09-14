@@ -16,6 +16,9 @@ import (
 func (s *Server) handleBurnAccount(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(ctxUserID).(string)
 
+	if !s.confirmAccountDeletion(w, r, userID) {
+		return
+	}
 	if err := s.store.DeleteUser(r.Context(), userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

@@ -16,6 +16,7 @@ ExecStart=/usr/local/bin/umbra-server
 Environment=LISTEN_ADDR=127.0.0.1:8080
 Environment=STORE=postgres
 Environment=BLOB_DIR=/opt/umbra/data/blobs
+Environment=STORAGE_KEY_FILE=/opt/umbra/data/storage-keys.json
 Environment=TOKEN_TTL_SECONDS=2592000
 Environment=ALLOW_LEGACY_AUTH=false
 Environment=TRUSTED_PROXIES=127.0.0.1,::1

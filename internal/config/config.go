@@ -1,11 +1,12 @@
 // Package config читает настройки сервера из переменных окружения.
-// Все секреты задаются через env, никогда не хардкодятся в коде.
+// Настройки задаются через env; ключи облачного хранения — в отдельном файле.
 package config
 
 import (
 	"errors"
 	"net/netip"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,11 +21,14 @@ type Config struct {
 	Store string
 	// DatabaseURL — DSN PostgreSQL (используется при Store=postgres).
 	DatabaseURL string
+	// StorageKeyFile — owner-only JSON keyring, stored outside the database.
+	StorageKeyFile string
 	// TokenTTL — срок сессии после входа или последнего продления.
 	TokenTTL time.Duration
 	// AllowLegacyAuth enables username-only key authentication for old clients.
 	// Phone accounts always require OTP, including when this option is enabled.
 	AllowLegacyAuth bool
+	AllowedPhones   string
 	// TrustedProxies is a comma-separated list of proxy IP addresses/CIDRs.
 	// Forwarded client addresses are ignored unless the direct peer is trusted.
 	TrustedProxies string
@@ -32,7 +36,7 @@ type Config struct {
 	MaxMessageBytes int64
 	// BlobDir — директория с зашифрованными файлами (при BlobStoreType=file).
 	BlobDir string
-	// MaxMediaBytes — лимит байтов ciphertext, без multipart-обвязки.
+	// MaxMediaBytes — лимит исходных байтов файла, без обвязки и шифрования.
 	MaxMediaBytes int
 	// BlobStoreType — "file" (по умолчанию) или "s3".
 	BlobStoreType string
@@ -87,8 +91,10 @@ func Load() *Config {
 		ListenAddr:        getenv("LISTEN_ADDR", ":8080"),
 		Store:             getenv("STORE", "memory"),
 		DatabaseURL:       getenv("DATABASE_URL", ""),
+		StorageKeyFile:    getenv("STORAGE_KEY_FILE", "./data/storage-keys.json"),
 		TokenTTL:          time.Duration(getenvInt("TOKEN_TTL_SECONDS", 30*24*60*60)) * time.Second,
 		AllowLegacyAuth:   getenvBool("ALLOW_LEGACY_AUTH", false),
+		AllowedPhones:     getenv("AUTH_ALLOWED_PHONES", ""),
 		TrustedProxies:    getenv("TRUSTED_PROXIES", ""),
 		MaxMessageBytes:   int64(getenvInt("MAX_MESSAGE_BYTES", 2_097_152)), // 2 MiB по умолчанию
 		BlobDir:           getenv("BLOB_DIR", "./data/blobs"),
@@ -119,6 +125,9 @@ func Load() *Config {
 }
 
 func (c *Config) Validate() error {
+	if _, err := ParseAllowedPhones(c.AllowedPhones); err != nil {
+		return err
+	}
 	if c.Store != "memory" && c.Store != "postgres" {
 		return errors.New("STORE must be memory or postgres")
 	}
@@ -209,4 +218,24 @@ func getenvInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+// ParseAllowedPhones accepts canonical E.164 numbers separated by commas.
+func ParseAllowedPhones(value string) (map[string]bool, error) {
+	out := make(map[string]bool)
+	if strings.TrimSpace(value) == "" {
+		return out, nil
+	}
+	if len(value) > 16384 {
+		return nil, errors.New("AUTH_ALLOWED_PHONES is too long")
+	}
+	valid := regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
+	for _, phone := range strings.Split(value, ",") {
+		phone = strings.TrimSpace(phone)
+		if !valid.MatchString(phone) {
+			return nil, errors.New("AUTH_ALLOWED_PHONES must contain comma-separated E.164 numbers")
+		}
+		out[phone] = true
+	}
+	return out, nil
 }

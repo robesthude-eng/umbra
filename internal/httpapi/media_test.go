@@ -328,7 +328,15 @@ func TestMediaStorageFailures(t *testing.T) {
 			if w.Code != tc.status {
 				t.Fatalf("upload: %d %s", w.Code, w.Body)
 			}
-			assertNoBlobs(t, f.dir)
+			if tc.name == "metadata-failure" {
+				// Unknown database outcome: retain until GC can establish no reference.
+				ids, err := f.blobs.List()
+				if err != nil || len(ids) != 1 {
+					t.Fatalf("ambiguous write lost blob: %v %v", ids, err)
+				}
+			} else {
+				assertNoBlobs(t, f.dir)
+			}
 		})
 	}
 	f := newMediaFixture(t, 256)

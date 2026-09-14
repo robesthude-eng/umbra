@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
+	"unicode"
 
 	"umbra/server/internal/crypto"
 	"umbra/server/internal/model"
@@ -18,8 +20,7 @@ import (
 )
 
 // Вход и регистрация по номеру телефона с кодом из Telegram (v0.4).
-// Код приходит в личный чат бота (номер привязан к chat_id один раз),
-// а не SMS: для семьи это бесплатно и достаточно.
+// Код получает владелец сервера и передаёт пользователю; владение SIM не проверяется.
 
 const (
 	otpTTL         = 5 * time.Minute
@@ -34,63 +35,28 @@ type OTPSender interface {
 	SendCode(ctx context.Context, phone string, tgChatID int64, code string) error
 }
 
-// otpStore — одноразовые коды подтверждения номера (в памяти сервера:
-// экземпляр один, коды живут 5 минут; при рестарте истёкшие теряются — приемлемо).
-type otpEntry struct {
-	codeHash string
-	expires  time.Time
-	attempts int
-}
-
-type otpStore struct {
-	mu sync.Mutex
-	m  map[string]*otpEntry
-}
-
-func newOTPStore() *otpStore {
-	return &otpStore{m: make(map[string]*otpEntry)}
-}
-
-func (o *otpStore) put(phone, code string, ttl time.Duration) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.m[phone] = &otpEntry{codeHash: crypto.HashToken(code), expires: time.Now().Add(ttl)}
-}
-
-// verify проверяет код и при успехе удаляет запись (одноразовость).
-func (o *otpStore) verify(phone, code string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	e, ok := o.m[phone]
-	if !ok || !e.expires.After(time.Now()) {
-		delete(o.m, phone)
-		return otpErrExpired
-	}
-	if e.attempts >= otpMaxAttempts {
-		delete(o.m, phone)
-		return otpErrTooMany
-	}
-	if crypto.HashToken(code) != e.codeHash {
-		e.attempts++
-		return otpErrInvalid
-	}
-	delete(o.m, phone)
-	return nil
-}
-
-var (
-	otpErrExpired = errors.New("код не найден или истёк")
-	otpErrTooMany = errors.New("слишком много попыток")
-	otpErrInvalid = errors.New("неверный код")
-)
-
 func randomOTPCode() (string, error) {
-	buf := make([]byte, 3)
-	if _, err := rand.Read(buf); err != nil {
+	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
+	if err != nil {
 		return "", err
 	}
-	n := int(buf[0])<<16 | int(buf[1])<<8 | int(buf[2])
-	return fmt.Sprintf("%06d", n%1000000), nil
+	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+func cleanDeviceName(raw string) string {
+	raw = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, raw)
+	r := []rune(strings.TrimSpace(raw))
+	if len(r) > 80 {
+		r = r[:80]
+	}
+	if len(r) == 0 {
+		return "Неизвестное устройство"
+	}
+	return string(r)
 }
 
 func normalizeCodeInput(raw string) string {
@@ -104,12 +70,11 @@ func normalizeCodeInput(raw string) string {
 }
 
 type requestCodeRequest struct {
-	Phone string `json:"phone"`
+	DeviceName string `json:"device_name"`
+	Phone      string `json:"phone"`
 }
 
-// handleRequestCode — POST /v1/auth/request_code. Проверяет привязку номера к
-// Telegram и отправляет код в чат бота. Аккаунт при этом не требуется:
-// код — подтверждение номера и для входа, и для регистрации.
+// handleRequestCode checks the phone policy and requests owner approval.
 func (s *Server) handleRequestCode(w http.ResponseWriter, r *http.Request) {
 	var req requestCodeRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
@@ -121,34 +86,84 @@ func (s *Server) handleRequestCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid phone")
 		return
 	}
-	if s.otpSender == nil {
-		writeError(w, http.StatusServiceUnavailable, "подтверждение по коду не настроено")
+	if !s.allowPhone(w, r, phone) {
 		return
 	}
-	// Универсальная схема: код с ЛЮБОГО номера уходит в чат владельца
-	// (TELEGRAM_CHAT_ID) — он озвучивает код тому, кто регистрируется.
-	chatID := s.cfg.TelegramChatID
-	if chatID == 0 {
-		writeError(w, http.StatusServiceUnavailable, "получатель кодов не настроен")
+	s.sendCode(w, r, phone, "login", "", cleanDeviceName(req.DeviceName), req.DeviceName == "")
+}
+
+// Sensitive codes must be explicitly labelled by their delivery adapter.
+type SecurityCodeSender interface {
+	SendSecurityCode(context.Context, string, int64, string, string, string) error
+}
+
+func (s *Server) sendCode(w http.ResponseWriter, r *http.Request, phone, purpose, binding, device string, legacy bool) {
+	if s.otpSender == nil || s.cfg.TelegramChatID == 0 {
+		writeError(w, 503, "доставка кодов не настроена")
+		return
+	}
+	secure, canLabel := s.otpSender.(SecurityCodeSender)
+	if purpose != "login" && !canLabel {
+		writeError(w, 503, "подтверждение удаления не настроено")
 		return
 	}
 	code, err := randomOTPCode()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeError(w, 500, "internal error")
 		return
 	}
-	s.otp.put(phone, code, otpTTL)
-	if err := s.otpSender.SendCode(r.Context(), phone, chatID, code); err != nil {
-		log.Printf("otp: не удалось отправить код для %s: %v", phone, err)
-		writeError(w, http.StatusBadGateway, "не удалось отправить код")
+	id, retry, err := s.otp.issue(phone, purpose, binding, device, code, legacy)
+	if err != nil {
+		if retry > 0 {
+			seconds := int((retry + time.Second - 1) / time.Second)
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			writeError(w, 429, fmt.Sprintf("Слишком много запросов. Повторите через %d с.", seconds))
+		} else {
+			writeError(w, 500, "internal error")
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent", "expires_in": otpCodeTTLText})
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if canLabel {
+		err = secure.SendSecurityCode(ctx, phone, s.cfg.TelegramChatID, code, purpose, device)
+	} else {
+		err = s.otpSender.SendCode(ctx, phone, s.cfg.TelegramChatID, code)
+	}
+	if err != nil {
+		s.otp.invalidate(phone, purpose, id)
+		log.Print("otp: delivery failed")
+		writeError(w, 502, "Не удалось отправить код. Повторите позже.")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"status": "sent", "expires_in": otpCodeTTLText, "request_id": id, "retry_after": 60})
+}
+func (s *Server) allowPhone(w http.ResponseWriter, r *http.Request, phone string) bool {
+	if s.phonePolicyErr != nil {
+		writeError(w, 503, "service unavailable")
+		return false
+	}
+	allowed := s.allowedPhones[phone]
+	if len(s.allowedPhones) == 0 {
+		_, err := s.store.GetUserByPhone(r.Context(), phone)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, 503, "service unavailable")
+			return false
+		}
+		allowed = err == nil
+	}
+	if !allowed {
+		writeError(w, 403, "Вход для этого номера не разрешён владельцем Umbra")
+		return false
+	}
+	return true
 }
 
 type verifyCodeRequest struct {
-	Phone string `json:"phone"`
-	Code  string `json:"code"`
+	RequestID string `json:"request_id"`
+	Phone     string `json:"phone"`
+	Code      string `json:"code"`
 }
 
 type verifyCodeResponse struct {
@@ -187,15 +202,12 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	if err := s.otp.verify(phone, code); err != nil {
-		switch {
-		case errors.Is(err, otpErrInvalid):
-			writeError(w, http.StatusUnauthorized, "неверный код")
-		case errors.Is(err, otpErrTooMany):
-			writeError(w, http.StatusTooManyRequests, "слишком много попыток. Запросите новый код")
-		default:
-			writeError(w, http.StatusNotFound, "код не найден или истёк. Запросите новый")
-		}
+	if !s.allowPhone(w, r, phone) {
+		return
+	}
+	device, err := s.otp.verify(phone, "login", "", req.RequestID, code)
+	if err != nil {
+		writeOTPError(w, err)
 		return
 	}
 
@@ -229,11 +241,22 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	expires := time.Now().Add(s.cfg.TokenTTL)
-	if err := s.store.PutToken(r.Context(), crypto.HashToken(token), u.ID, expires); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+	now := time.Now().UTC()
+	sessionID, err := crypto.NewToken()
+	if err != nil {
+		writeError(w, 500, "internal error")
 		return
 	}
+	session := &model.AuthSession{ID: sessionID, UserID: u.ID, TokenHash: crypto.HashToken(token), DeviceName: device, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(s.cfg.TokenTTL)}
+	if err := s.store.CreateSession(r.Context(), session); err != nil {
+		writeError(w, 500, "internal error")
+		return
+	}
+	expires := session.ExpiresAt
+	if !newAccount {
+		s.notifyNewSession(u.ID, session.ID, device, now)
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	avatar, _ := s.store.GetAvatar(r.Context(), u.ID)
 	writeJSON(w, http.StatusOK, verifyCodeResponse{
 		Token:           token,

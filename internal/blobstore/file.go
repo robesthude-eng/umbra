@@ -58,7 +58,8 @@ func (f *FileBlobStore) Put(id string, r io.Reader) error {
 		}
 		return fmt.Errorf("publish blob: %w", err)
 	}
-	return nil
+	// Persist publication before a database transaction can reference this object.
+	return f.syncDir()
 }
 
 func (f *FileBlobStore) Get(id string) (io.ReadCloser, error) {
@@ -97,7 +98,16 @@ func (f *FileBlobStore) Delete(id string) error {
 		}
 		return fmt.Errorf("delete blob: %w", err)
 	}
-	return nil
+	return f.syncDir()
+}
+
+func (f *FileBlobStore) syncDir() error {
+	dir, err := os.Open(f.dir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // List перечисляет id всех блобов в директории (только обычные файлы,

@@ -113,7 +113,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	for {
-		// NextRawPart не декодирует quoted-printable: ciphertext должен остаться побайтно тем же.
+		// NextRawPart сохраняет исходные байты без quoted-printable-декодирования.
 		part, err := mr.NextRawPart()
 		if err == io.EOF {
 			break
@@ -131,7 +131,15 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 			fileSeen = true
 			source := &observedReader{Reader: part}
 			limited := &io.LimitedReader{R: source, N: limit}
-			if err := blobstore.Put(r.Context(), s.blobs, id, limited); err != nil {
+			var payload io.Reader = limited
+			if s.storage != nil {
+				payload, err = s.storage.EncryptReader(limited, id)
+				if err != nil {
+					writeError(w, 500, "internal error")
+					return
+				}
+			}
+			if err := blobstore.Put(r.Context(), s.blobs, id, payload); err != nil {
 				if source.err != nil {
 					writeMediaReadError(w, source.err)
 				} else if errors.Is(err, store.ErrConflict) {
@@ -241,12 +249,20 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 		ContentType: contentType, Size: size, CreatedAt: time.Now().UTC(),
 		ChatID: chatID, RecipientID: recipientID,
 	}
+	if s.storage != nil {
+		m.StorageFormat = 1
+	}
 	if s.cfg.MaxUserMediaBytes > 0 {
 		err = s.store.SaveMediaWithQuota(r.Context(), m, s.cfg.MaxUserMediaBytes)
 	} else {
 		err = s.store.SaveMedia(r.Context(), m)
 	}
 	if err != nil {
+		// A lost database reply may follow a successful commit. Keep that blob;
+		// GC later reclaims genuine orphans after its grace period.
+		if !errors.Is(err, store.ErrQuota) && !errors.Is(err, store.ErrConflict) && !errors.Is(err, store.ErrNotFound) {
+			committed = true
+		}
 		if errors.Is(err, store.ErrQuota) {
 			writeError(w, 413, "user media quota exceeded")
 			return
@@ -288,7 +304,7 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "media not found")
 		return
 	}
-	blob, err := blobstore.Get(r.Context(), s.blobs, m.ID)
+	blob, err := blobstore.Get(r.Context(), s.blobs, m.ObjectID())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, blobstore.ErrInvalidID) {
 			writeError(w, http.StatusNotFound, "media not found")
@@ -298,6 +314,29 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer blob.Close()
+	var plain io.Reader = blob
+	switch m.StorageFormat {
+	case 0:
+	case 1:
+		plain, err = s.storage.DecryptReader(blob, m.ID)
+		if err != nil {
+			writeError(w, 500, "media decryption failed")
+			return
+		}
+	default:
+		writeError(w, 500, "unsupported media format")
+		return
+	}
+	if m.Size < 0 {
+		writeError(w, 500, "invalid media size")
+		return
+	}
+	if m.Size == 0 && r.Method != http.MethodHead {
+		if err := copyVerifiedMedia(io.Discard, plain, 0); err != nil {
+			writeError(w, 500, "media verification failed")
+			return
+		}
+	}
 	w.Header().Set("Content-Type", m.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(m.Size, 10))
 	w.Header().Set("Content-Disposition", "attachment")
@@ -307,9 +346,9 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	if _, err := io.CopyN(w, blob, m.Size); err != nil {
+	if err := copyVerifiedMedia(w, plain, m.Size); err != nil {
 		log.Printf("ошибка передачи blob: %v", err)
-		// После отправки заголовков нельзя добавлять JSON к шифротексту.
+		// Прерываем ответ при повреждении, включая неверный последний блок.
 		panic(http.ErrAbortHandler)
 	}
 }
@@ -370,4 +409,37 @@ func parseMediaContentType(value string) (string, error) {
 		return "", errors.New("invalid MIME type")
 	}
 	return mime.FormatMediaType(mediaType, params), nil
+}
+
+// Hold the last byte until EOF and the declared size are verified. Otherwise a
+// client could accept Content-Length bytes before we detect a corrupt trailer.
+func copyVerifiedMedia(dst io.Writer, src io.Reader, size int64) error {
+	if size < 0 {
+		return errors.New("invalid media size")
+	}
+	if size > 1 {
+		if _, err := io.CopyN(dst, src, size-1); err != nil {
+			return err
+		}
+	}
+	var last [1]byte
+	if size > 0 {
+		if _, err := io.ReadFull(src, last[:]); err != nil {
+			return err
+		}
+	}
+	var extra [1]byte
+	if n, err := io.ReadFull(src, extra[:]); n != 0 || err != io.EOF {
+		return errors.New("media length or integrity check failed")
+	}
+	if size > 0 {
+		n, err := dst.Write(last[:])
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }

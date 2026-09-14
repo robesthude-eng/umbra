@@ -12,3 +12,12 @@
 /build/
 /bin/
 /data/
+
+# Server encryption keys and backups
+*storage-keys*.json
+*.umbraenc
+
+backup.env
+*.pgpass
+*.umbraenc
+*.part

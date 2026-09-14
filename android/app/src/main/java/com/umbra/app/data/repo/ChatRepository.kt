@@ -6,6 +6,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import android.os.SystemClock
 import android.util.LruCache
 import androidx.room.withTransaction
@@ -406,6 +409,15 @@ class ChatRepository(
         report
     }
 
+    private val _securityNotice = MutableStateFlow<String?>(null)
+    val securityNotice = _securityNotice.asStateFlow()
+    fun dismissSecurityNotice() { _securityNotice.value = null }
+    fun acceptsPush(userId: String?): Boolean = session.isLoggedIn() && (userId == null || userId == session.userId())
+    fun showSecurityNotice(userId: String?, device: String): Boolean {
+        if (userId == null || !acceptsPush(userId)) return false
+        _securityNotice.value = device.take(80).ifBlank { "Неизвестное устройство" }
+        return true
+    }
     fun me(): String? = session.userId()
     fun accountInfo() = AccountView(
         id = session.userId().orEmpty(), username = session.username().orEmpty(),
@@ -431,6 +443,7 @@ class ChatRepository(
     }
 
     private fun clearSessionLocally() {
+        _securityNotice.value = null
         session.clearToken()
         stopRealtime()
         _activeCall.value = null
@@ -448,15 +461,15 @@ class ChatRepository(
         _phase.value = SessionPhase.LOGGED_OUT
     }
 
-    suspend fun requestCode(phone: String) {
+    suspend fun requestCode(phone: String): RequestCodeResponse {
         val normalized = requireNotNull(InputRules.normalizePhone(phone)) { "Проверьте номер телефона. Пример: +7 999 123-45-67" }
-        api.requestCode(RequestCodeRequest(normalized))
+        return api.requestCode(RequestCodeRequest(normalized, "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80)))
     }
 
-    suspend fun verifyCode(phone: String, code: String): VerifyCodeResponse = scope.async {
+    suspend fun verifyCode(phone: String, code: String, requestId: String = ""): VerifyCodeResponse = scope.async {
         val normalized = requireNotNull(InputRules.normalizePhone(phone)) { "Проверьте номер телефона" }
         require(code.matches(Regex("[0-9]{6}"))) { "Введите код из 6 цифр" }
-        val result = api.verifyCode(VerifyCodeRequest(normalized, code))
+        val result = api.verifyCode(VerifyCodeRequest(normalized, code, requestId))
         val a = requireNotNull(result.account) { "Сервер не вернул аккаунт. Запросите новый код." }
         check(result.token.isNotBlank() && a.id.isNotBlank()) { "Сервер не завершил вход. Запросите новый код." }
         withContext(NonCancellable) {
@@ -466,6 +479,7 @@ class ChatRepository(
                 if (session.userId() != a.id) { db.clearAllTables(); clearLocalMediaFiles() }
                 _userCache.value = emptyMap()
                 avatarCache.evictAll()
+                _securityNotice.value = null
                 session.save(result.token, a.id, a.username, a.phone, a.displayName, a.lastName, a.avatarMediaId)
                 _account.value = accountInfo()
                 lastFullSyncMillis = 0L
@@ -545,11 +559,20 @@ class ChatRepository(
         }
     }
 
-    suspend fun deleteAccount() {
+    suspend fun requestDeletionCode(): RequestCodeResponse = request(key()) { api.securityCode(it, SecurityCodeRequest()) }
+    suspend fun sessions(): List<AuthSession> {
+        val key = key()
+        val result = request(key) { api.sessions(it).sessions }
+        return commit(key) { result }
+    }
+    suspend fun revokeSession(id: String) = request(key()) { api.revokeSession(it, id) }
+    suspend fun revokeOtherSessions() = request(key()) { api.revokeOtherSessions(it) }
+    suspend fun deleteAccount(requestId: String, code: String) {
+        require(requestId.isNotBlank() && code.matches(Regex("[0-9]{6}"))) { "Введите отдельный код удаления" }
         val key = key()
         scope.async {
             // A failed/ambiguous server response must never be presented as successful deletion.
-            request(key) { api.burnAccount(it) }
+            request(key) { api.burnAccount(it, DeleteAccountRequest(requestId, code)) }
             withContext(NonCancellable) {
                 commit(key) {
                     clearSessionLocally()
@@ -600,6 +623,8 @@ class ChatRepository(
                 if (!isCurrent(key) || event.token != key.token) return@collect
                 try {
                     when (event.type) {
+                        "security" -> showSecurityNotice(event.data["user_id"]?.jsonPrimitive?.contentOrNull,
+                            event.data["device_name"]?.jsonPrimitive?.contentOrNull.orEmpty())
                         "connected" -> refresh(forceFull = false) // инкрементально: полная не нужна при каждом переподключении
                         "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
                         "call" -> handleCallEvent(key, json.decodeFromJsonElement(CallDto.serializer(), event.data))

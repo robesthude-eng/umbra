@@ -481,7 +481,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "missing token")
 		return
 	}
-	userID, err := s.store.GetUserIDByTokenHash(r.Context(), crypto.HashToken(token))
+	userID, err := s.sessionUser(r.Context(), crypto.HashToken(token))
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -503,7 +503,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	client.SetAuthorization(func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		id, err := s.store.GetUserIDByTokenHash(ctx, crypto.HashToken(token))
+		id, err := s.sessionUser(ctx, crypto.HashToken(token))
 		return err == nil && id == userID
 	})
 	s.hub.Register(client)

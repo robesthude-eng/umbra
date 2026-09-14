@@ -10,12 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"umbra/server/internal/cloudcrypto"
 	"umbra/server/internal/model"
 )
 
 // PostgresStore — продакшн-хранилище на PostgreSQL (через pgx).
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	storage *cloudcrypto.Keyring
 }
 
 func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
@@ -134,7 +136,7 @@ func (p *PostgresStore) TakeOneTimePrekey(ctx context.Context, userID string) ([
 
 func (p *PostgresStore) PutToken(ctx context.Context, tokenHash, userID string, expires time.Time) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO auth_tokens (token_hash, user_id, expires_at) VALUES ($1,$2,$3)`,
+		`INSERT INTO auth_tokens (token_hash, user_id, expires_at) VALUES ($1,$2,LEAST($3,now()+interval '2160 hours'))`,
 		tokenHash, userID, expires)
 	return mapErr(err)
 }
@@ -142,7 +144,7 @@ func (p *PostgresStore) PutToken(ctx context.Context, tokenHash, userID string, 
 func (p *PostgresStore) GetUserIDByTokenHash(ctx context.Context, tokenHash string) (string, error) {
 	var userID string
 	err := p.pool.QueryRow(ctx,
-		`SELECT user_id FROM auth_tokens WHERE token_hash = $1 AND expires_at > now()`, tokenHash).Scan(&userID)
+		`SELECT user_id FROM auth_tokens WHERE token_hash = $1 AND expires_at > now() AND created_at>now()-interval '2160 hours'`, tokenHash).Scan(&userID)
 	if err != nil {
 		return "", mapErr(err)
 	}
@@ -157,8 +159,8 @@ func (p *PostgresStore) DeleteToken(ctx context.Context, tokenHash string) error
 func (p *PostgresStore) RenewToken(ctx context.Context, tokenHash, userID string, expires time.Time) (time.Time, error) {
 	var renewed time.Time
 	err := p.pool.QueryRow(ctx,
-		`UPDATE auth_tokens SET expires_at = GREATEST(expires_at, $3)
-		 WHERE token_hash = $1 AND user_id = $2 AND expires_at > now()
+		`UPDATE auth_tokens SET expires_at = LEAST(GREATEST(expires_at,$3),created_at+interval '2160 hours'), last_seen_at=now()
+		 WHERE token_hash = $1 AND user_id = $2 AND expires_at > now() AND created_at>now()-interval '2160 hours'
 		 RETURNING expires_at`, tokenHash, userID, expires).Scan(&renewed)
 	return renewed, mapErr(err)
 }
@@ -177,10 +179,14 @@ func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error
 	defer tx.Rollback(ctx)
 	if m.ClientID != "" {
 		hash := messageRequestHash(m)
+		digest, err := p.sealReceipt(hash[:], m.SenderID, m.ClientID)
+		if err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `INSERT INTO message_receipts
 		 (sender_id,client_id,request_hash,message_id,created_at,expires_at)
 		 VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (sender_id,client_id) DO NOTHING`,
-			m.SenderID, m.ClientID, hash[:], m.ID, m.CreatedAt, m.ExpiresAt)
+			m.SenderID, m.ClientID, digest, m.ID, m.CreatedAt, m.ExpiresAt)
 		if err != nil {
 			return mapErr(err)
 		}
@@ -192,11 +198,19 @@ func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error
 			if err != nil {
 				return mapErr(err)
 			}
+			previous, err = p.openReceipt(previous, m.SenderID, m.ClientID)
+			if err != nil {
+				return err
+			}
 			if !bytes.Equal(previous, hash[:]) {
 				return ErrConflict
 			}
 			return tx.Commit(ctx)
 		}
+	}
+	ciphertext, format, err := p.sealMessage(m)
+	if err != nil {
+		return err
 	}
 	var recipient, chatID any
 	if m.RecipientID != "" {
@@ -206,9 +220,9 @@ func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error
 		chatID = m.ChatID
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext, expires_at, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		m.ID, m.SenderID, recipient, chatID, m.Ciphertext, m.ExpiresAt, m.CreatedAt)
+		`INSERT INTO messages (id, sender_id, recipient_id, chat_id, ciphertext, expires_at, created_at, storage_format)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		m.ID, m.SenderID, recipient, chatID, ciphertext, m.ExpiresAt, m.CreatedAt, format)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -217,7 +231,7 @@ func (p *PostgresStore) SaveMessage(ctx context.Context, m *model.Message) error
 
 func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since time.Time) ([]*model.Message, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, sender_id, recipient_id, chat_id, ciphertext, created_at, expires_at
+		`SELECT id, sender_id, recipient_id, chat_id, ciphertext, created_at, expires_at, storage_format
 		 FROM messages
 		 WHERE created_at > $2
 		   AND (expires_at IS NULL OR expires_at > now())
@@ -233,7 +247,8 @@ func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since t
 	for rows.Next() {
 		var m model.Message
 		var recipient, chatID *string
-		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chatID, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt); err != nil {
+		var format int
+		if err := rows.Scan(&m.ID, &m.SenderID, &recipient, &chatID, &m.Ciphertext, &m.CreatedAt, &m.ExpiresAt, &format); err != nil {
 			return nil, err
 		}
 		if recipient != nil {
@@ -242,6 +257,9 @@ func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since t
 		if chatID != nil {
 			m.ChatID = *chatID
 		}
+		if err := p.openMessage(&m, format); err != nil {
+			return nil, err
+		}
 		out = append(out, &m)
 	}
 	return out, rows.Err()
@@ -249,9 +267,9 @@ func (p *PostgresStore) ListMessages(ctx context.Context, userID string, since t
 
 func (p *PostgresStore) SaveMedia(ctx context.Context, m *model.Media) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO media (id, owner_id, content_type, size, created_at, chat_id, recipient_id)
-		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''))`,
-		m.ID, m.OwnerID, m.ContentType, m.Size, m.CreatedAt, m.ChatID, m.RecipientID)
+		`INSERT INTO media (id, owner_id, content_type, size, created_at, chat_id, recipient_id, storage_format, blob_id)
+		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''))`,
+		m.ID, m.OwnerID, m.ContentType, m.Size, m.CreatedAt, m.ChatID, m.RecipientID, m.StorageFormat, m.BlobID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // нет пользователя-владельца
 		return ErrNotFound
@@ -263,9 +281,9 @@ func (p *PostgresStore) GetMedia(ctx context.Context, id string) (*model.Media, 
 	var m model.Media
 	err := p.pool.QueryRow(ctx,
 		`SELECT id, owner_id, content_type, size, created_at,
-		        COALESCE(chat_id, ''), COALESCE(recipient_id, '')
+		        COALESCE(chat_id, ''), COALESCE(recipient_id, ''), storage_format, COALESCE(blob_id, '')
 		 FROM media WHERE id = $1`, id).
-		Scan(&m.ID, &m.OwnerID, &m.ContentType, &m.Size, &m.CreatedAt, &m.ChatID, &m.RecipientID)
+		Scan(&m.ID, &m.OwnerID, &m.ContentType, &m.Size, &m.CreatedAt, &m.ChatID, &m.RecipientID, &m.StorageFormat, &m.BlobID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -542,7 +560,7 @@ func (p *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
 	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedID); err != nil {
 		return mapErr(err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO blob_deletions(id) SELECT id FROM media WHERE owner_id=$1 ON CONFLICT DO NOTHING`, userID); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO blob_deletions(id) SELECT COALESCE(blob_id,id) FROM media WHERE owner_id=$1 ON CONFLICT DO NOTHING`, userID); err != nil {
 		return err
 	}
 

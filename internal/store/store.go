@@ -22,6 +22,11 @@ var (
 
 // Store — единый интерфейс персистентности.
 type Store interface {
+	CreateSession(context.Context, *model.AuthSession) error
+	ListSessions(context.Context, string) ([]model.AuthSession, error)
+	RevokeSession(context.Context, string, string) error
+	RevokeOtherSessions(context.Context, string, string) error
+	SavePushDeviceForSession(context.Context, string, string, string, string) error
 	// Пользователи и ключи.
 	CreateUser(ctx context.Context, u *model.User) error
 	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
@@ -46,7 +51,7 @@ type Store interface {
 	RenewToken(ctx context.Context, tokenHash, userID string, expires time.Time) (time.Time, error)
 	DeleteToken(ctx context.Context, tokenHash string) error
 
-	// Сообщения (хранится только ciphertext).
+	// Сообщения: API-конверт шифруется PostgreSQL-хранилищем при включённом cloud storage.
 	SaveMessage(ctx context.Context, m *model.Message) error
 	// ListMessages возвращает личные (recipient_id = userID) и групповые
 	// (userID — участник чата) сообщения, созданные после since.
@@ -56,6 +61,8 @@ type Store interface {
 	// Метаданные медиа; зашифрованные байты хранятся отдельно в BlobStore.
 	SaveMedia(ctx context.Context, m *model.Media) error
 	GetMedia(ctx context.Context, id string) (*model.Media, error)
+	// BlobReferenced checks physical IDs, including migrated objects.
+	BlobReferenced(ctx context.Context, id string) (bool, error)
 	// MediaBytesForUser — суммарный объём медиа пользователя (для квоты).
 	MediaBytesForUser(ctx context.Context, userID string) (int64, error)
 	SaveMediaWithQuota(ctx context.Context, m *model.Media, limit int64) error

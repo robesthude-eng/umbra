@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"umbra/server/internal/crypto"
 	"umbra/server/internal/model"
 )
 
@@ -45,6 +46,7 @@ type accountTransfer struct {
 }
 
 type tokenEntry struct {
+	session model.AuthSession
 	userID  string
 	expires time.Time
 }
@@ -168,7 +170,13 @@ func (m *MemoryStore) TakeOneTimePrekey(_ context.Context, userID string) ([]byt
 func (m *MemoryStore) PutToken(_ context.Context, tokenHash, userID string, expires time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.tokens[tokenHash] = tokenEntry{userID: userID, expires: expires}
+	id, err := crypto.NewToken()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	expires = capSessionExpiry(now, expires)
+	m.tokens[tokenHash] = tokenEntry{userID: userID, expires: expires, session: model.AuthSession{ID: id, UserID: userID, TokenHash: tokenHash, CreatedAt: now, LastSeenAt: now, ExpiresAt: expires, DeviceName: "Устройство до 0.16.18"}}
 	return nil
 }
 
@@ -179,8 +187,8 @@ func (m *MemoryStore) GetUserIDByTokenHash(_ context.Context, tokenHash string) 
 	if !ok {
 		return "", ErrNotFound
 	}
-	if !e.expires.After(time.Now()) {
-		delete(m.tokens, tokenHash)
+	if !e.expires.After(time.Now()) || !e.session.CreatedAt.Add(MaxSessionLifetime).After(time.Now()) {
+		m.deleteSessionLocked(tokenHash)
 		return "", ErrNotFound
 	}
 	return e.userID, nil
@@ -190,20 +198,23 @@ func (m *MemoryStore) RenewToken(_ context.Context, tokenHash, userID string, ex
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.tokens[tokenHash]
-	if !ok || e.userID != userID || !e.expires.After(time.Now()) {
+	if !ok || e.userID != userID || (!e.expires.After(time.Now()) || !e.session.CreatedAt.Add(MaxSessionLifetime).After(time.Now())) {
 		return time.Time{}, ErrNotFound
 	}
+	expires = capSessionExpiry(e.session.CreatedAt, expires)
 	if expires.After(e.expires) {
 		e.expires = expires
-		m.tokens[tokenHash] = e
 	}
+	e.session.ExpiresAt = e.expires
+	e.session.LastSeenAt = time.Now().UTC()
+	m.tokens[tokenHash] = e
 	return e.expires, nil
 }
 
 func (m *MemoryStore) DeleteToken(_ context.Context, tokenHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.tokens, tokenHash)
+	m.deleteSessionLocked(tokenHash)
 	return nil
 }
 
@@ -468,7 +479,7 @@ func (m *MemoryStore) DeleteUser(_ context.Context, userID string) error {
 	// медиа
 	for mid, media := range m.media {
 		if media.OwnerID == userID {
-			m.deletions[mid] = true
+			m.deletions[media.ObjectID()] = true
 			delete(m.media, mid)
 		}
 	}

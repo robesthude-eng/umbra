@@ -110,6 +110,7 @@ func TestProfileRoundTripClearsLastNameAndRetainsAvatar(t *testing.T) {
 	if code, body := doReq(t, h, "POST", "/v1/account/profile", map[string]any{"name": "Иван", "last_name": ""}, token); code != 200 || body["last_name"] != "" {
 		t.Fatalf("surname was not cleared: %d %v", code, body)
 	}
+	advanceOTPClock(h)
 	_, restored := login()
 	if restored["avatar_media_id"] != "avatar-id" {
 		t.Fatalf("login lost avatar: %v", restored)

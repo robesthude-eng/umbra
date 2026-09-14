@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"umbra/server/internal/blobstore"
+	"umbra/server/internal/cloudcrypto"
 	"umbra/server/internal/config"
 	"umbra/server/internal/httpapi"
 	"umbra/server/internal/maintenance"
@@ -32,20 +33,38 @@ func (t tgOTPSender) SendCode(ctx context.Context, phone string, chatID int64, c
 		fmt.Sprintf("Umbra: код для номера %s — %s. Действует 5 минут.", phone, code))
 }
 
+func (t tgOTPSender) SendSecurityCode(ctx context.Context, phone string, chatID int64, code, purpose, device string) error {
+	action := "ВХОД"
+	detail := "Передавайте код только после проверки запроса. Название устройства сообщает само приложение."
+	if purpose == "delete_account" {
+		action = "УДАЛЕНИЕ АККАУНТА НАВСЕГДА"
+		detail = "Код подтверждает безвозвратное удаление аккаунта и его данных."
+	}
+	return t.cl.SendMessage(ctx, chatID, fmt.Sprintf("Umbra: %s\nНомер: %s\nУстройство: %s\nКод: %s\nДействует 5 минут. %s", action, phone, device, code, detail))
+}
 func main() {
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
 
+	keys, err := cloudcrypto.LoadFile(cfg.StorageKeyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
 	var st store.Store
-	var err error
 	if cfg.Store == "postgres" {
 		st, err = store.NewPostgresStore(context.Background(), cfg.DatabaseURL)
 		if err != nil {
 			log.Fatalf("не удалось подключиться к PostgreSQL: %v", err)
 		}
-		log.Printf("используется PostgreSQL")
+		if err := st.(*store.PostgresStore).CheckSessionSchema(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+		if err := st.(*store.PostgresStore).EnableCloudStorage(context.Background(), keys); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("используется PostgreSQL с шифрованием облачного хранения")
 	} else {
 		st = store.NewMemoryStore()
 		log.Printf("используется in-memory хранилище (для продакшна задайте STORE=postgres)")
@@ -82,7 +101,7 @@ func main() {
 		tg := telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramAPIBase, cfg.TelegramAPIKey)
 		otpSender = tgOTPSender{cl: tg}
 		go tg.StartPolling(background, func(ctx context.Context, chatID int64, text string) string {
-			log.Printf("telegram: сообщение от chat %d: %q", chatID, text)
+			log.Printf("telegram: message from chat %d", chatID)
 			// Пока не задан TELEGRAM_CHAT_ID — любой /start сообщает свой chat_id,
 			// чтобы владелец мог прописать его и включить приём кодов.
 			if cfg.TelegramChatID == 0 && (text == "/start" || strings.HasPrefix(text, "/start")) {
@@ -95,7 +114,7 @@ func main() {
 		log.Printf("TELEGRAM_BOT_TOKEN не задан: вход/регистрация по коду выключены")
 	}
 
-	srv := httpapi.NewServerForMain(cfg, st, hub, blobs, otpSender)
+	srv := httpapi.NewServerForMain(cfg, st, hub, blobs, otpSender, keys)
 
 	go func() {
 		log.Printf("Umbra сервер запущен на %s", cfg.ListenAddr)

@@ -67,6 +67,7 @@ func TestOTPRegisterAndLoginByPhone(t *testing.T) {
 		t.Fatalf("заполнение профиля: %d %v", code, m)
 	}
 
+	advanceOTPClock(h)
 	// Повторный verify того же номера — это вход (new_account=false), профиль полный.
 	doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": phone}, "")
 	code, m = doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": phone, "code": sender.code(phone)}, "")
@@ -94,7 +95,7 @@ func TestOTPWrongCodeAndOneTime(t *testing.T) {
 	doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": phone}, "")
 	otp := sender.code(phone)
 
-	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": phone, "code": "000000"}, ""); code != http.StatusUnauthorized {
+	if code, _ := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": phone, "code": differentCode(otp)}, ""); code != http.StatusUnauthorized {
 		t.Fatalf("неверный код: ожидался 401, получен %d", code)
 	}
 	if code, m := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": phone, "code": otp}, ""); code != http.StatusOK {
@@ -106,12 +107,12 @@ func TestOTPWrongCodeAndOneTime(t *testing.T) {
 	}
 }
 
-func TestOTPAnyPhoneSendsCodeWithoutBinding(t *testing.T) {
+func TestOTPAllowedPhoneSendsCodeWithoutBinding(t *testing.T) {
 	sender := &fakeOTPSender{}
 	h, _ := newTestServerWith(t, sender)
-	// Универсальная схема: привязка номера не нужна, код уходит владельцу.
+	// Номер явно разрешён конфигурацией тестового сервера.
 	if code, m := doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": "+79003334455"}, ""); code != http.StatusOK {
-		t.Fatalf("код с любого номера: ожидался 200, получен %d %v", code, m)
+		t.Fatalf("код с разрешённого номера: ожидался 200, получен %d %v", code, m)
 	}
 	if sender.code("+79003334455") == "" {
 		t.Fatal("код не отправлен владельцу")
@@ -145,6 +146,7 @@ func TestOTPUsernameConflict(t *testing.T) {
 			t.Fatalf("profile %s: %d", username, c)
 		}
 	}
+	advanceOTPClock(h)
 	// Второй пытается занять @dad → 409.
 	doReq(t, h, http.MethodPost, "/v1/auth/request_code", map[string]any{"phone": "+79006667788"}, "")
 	code, m := doReq(t, h, http.MethodPost, "/v1/auth/verify_code", map[string]any{"phone": "+79006667788", "code": sender.code("+79006667788")}, "")
@@ -152,4 +154,14 @@ func TestOTPUsernameConflict(t *testing.T) {
 	if c, _ := doReq(t, h, http.MethodPost, "/v1/account/profile", map[string]any{"name": "X", "username": "dad"}, token); c != http.StatusConflict {
 		t.Fatalf("занятый username: ожидался 409, получен %d (verify=%d)", c, code)
 	}
+}
+
+func (f *fakeOTPSender) SendSecurityCode(ctx context.Context, phone string, chatID int64, code, purpose, device string) error {
+	return f.SendCode(ctx, phone, chatID, code)
+}
+func differentCode(code string) string {
+	if code == "000000" {
+		return "000001"
+	}
+	return "000000"
 }

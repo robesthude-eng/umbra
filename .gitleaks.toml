@@ -1,0 +1,9 @@
+title = "Umbra secret scanning"
+[extend]
+useDefault = true
+[[allowlists]]
+description = "Empty TURN_SECRET followed by TURN_TTL_SECONDS, including old commits"
+condition = "AND"
+paths = ['''(^|/)\.env\.example$''']
+regexTarget = "match"
+regexes = ['''^TURN_SECRET=\r?\nTURN_TTL_SECONDS$''']

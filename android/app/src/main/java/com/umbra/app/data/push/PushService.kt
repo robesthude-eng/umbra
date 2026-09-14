@@ -52,14 +52,16 @@ class PushService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
         val repo = (applicationContext as? UmbraApp)?.container?.chatRepository
+        if (repo?.acceptsPush(data["user_id"]) != true) return
         when (data["kind"]) {
+            "security" -> { if (repo.showSecurityNotice(data["user_id"], data["device_name"].orEmpty())) SecurityNotifications.show(this) }
             "call" -> {
                 val callId = data["call_id"].orEmpty()
                 if (callId.isBlank()) return
                 val peerId = data["caller_id"].orEmpty()
                 val peerName = data["caller_name"].orEmpty()
                 val video = data["video"] == "true"
-                // Сначала уведомление (работает даже без входа в аккаунт), потом состояние.
+                // Аккаунт уже проверен; сначала уведомление, затем состояние.
                 CallNotifications.show(this, callId, peerId, peerName, video)
                 repo?.showIncomingCallFromPush(callId, peerId, peerName, video)
             }
@@ -209,5 +211,23 @@ private object MessageNotifications {
             enableVibration(true)
         }
         manager.createNotificationChannel(channel)
+    }
+}
+
+private object SecurityNotifications {
+    private const val CHANNEL = "umbra_security"
+    fun show(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+                NotificationChannel(CHANNEL, "Безопасность аккаунта", NotificationManager.IMPORTANCE_HIGH))
+        }
+        val open = PendingIntent.getActivity(context, 180018,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notice = NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Новый вход в Umbra").setContentText("Проверьте устройства в настройках аккаунта")
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(open).setAutoCancel(true).build()
+        try { NotificationManagerCompat.from(context).notify(180018, notice) } catch (_: SecurityException) { }
     }
 }

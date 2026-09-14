@@ -20,7 +20,7 @@ func TestDefaultServerRequiresOTP(t *testing.T) {
 	hub := ws.NewHub()
 	t.Cleanup(hub.Close)
 	sender := &fakeOTPSender{}
-	h := NewServerForMain(&config.Config{TokenTTL: time.Hour, MaxMessageBytes: 1 << 20, TelegramChatID: 42}, st, hub, nil, sender).Handler
+	h := NewServerForMain(&config.Config{TokenTTL: time.Hour, MaxMessageBytes: 1 << 20, TelegramChatID: 42, AllowedPhones: "+79991234567"}, st, hub, nil, sender).Handler
 	for _, path := range []string{"/v1/register", "/v1/auth/challenge", "/v1/auth/verify"} {
 		if code, body := doReq(t, h, http.MethodPost, path, newKeyBundle("outsider").reg, ""); code != http.StatusGone {
 			t.Fatalf("%s: %d %v", path, code, body)

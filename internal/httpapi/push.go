@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"umbra/server/internal/config"
+	"umbra/server/internal/crypto"
 	"umbra/server/internal/model"
 	"umbra/server/internal/push"
 	"umbra/server/internal/store"
@@ -91,7 +92,8 @@ func (s *Server) handleRegisterPushDevice(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.store.SavePushDevice(r.Context(), userID, token, platform); err != nil {
+	sessionToken, _ := bearerToken(r)
+	if err := s.store.SavePushDeviceForSession(r.Context(), userID, token, platform, crypto.HashToken(sessionToken)); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "user not found")
 			return
@@ -247,6 +249,12 @@ func (s *Server) notifyCallEnded(userID, callID, status string) {
 // мёртвые токены. Ошибки только логируются: уведомление — вспомогательный
 // канал, основной обмен идёт по WebSocket.
 func (s *Server) deliverPush(ctx context.Context, userID string, m push.Message) {
+	data := make(map[string]string, len(m.Data)+1)
+	for k, v := range m.Data {
+		data[k] = v
+	}
+	data["user_id"] = userID
+	m.Data = data
 	devices, err := s.store.ListPushDevices(ctx, userID)
 	if err != nil {
 		log.Printf("push: cannot list devices for %s: %v", userID, err)

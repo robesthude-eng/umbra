@@ -30,13 +30,31 @@ import java.util.concurrent.TimeUnit
 // ---------- DTO: вход по номеру с кодом из Telegram (v0.4, T1) ----------
 
 @Serializable
-data class RequestCodeRequest(val phone: String)
+data class RequestCodeRequest(val phone: String, @SerialName("device_name") val deviceName: String = "")
 
 @Serializable
-data class RequestCodeResponse(val status: String = "", @SerialName("expires_in") val expiresIn: String = "")
+data class RequestCodeResponse(
+ val status: String = "", @SerialName("expires_in") val expiresIn: String = "",
+ @SerialName("request_id") val requestId: String = "", @SerialName("retry_after") val retryAfter: Int = 60,
+)
 
 @Serializable
-data class VerifyCodeRequest(val phone: String, val code: String)
+data class VerifyCodeRequest(val phone: String, val code: String, @SerialName("request_id") val requestId: String = "")
+@Serializable
+data class SecurityCodeRequest(val purpose: String = "delete_account")
+@Serializable
+data class DeleteAccountRequest(@SerialName("request_id") val requestId: String, val code: String)
+@Serializable
+data class AuthSession(
+ val id: String,
+ @SerialName("device_name") val deviceName: String = "",
+ @SerialName("created_at") val createdAt: String = "",
+ @SerialName("last_seen_at") val lastSeenAt: String = "",
+ @SerialName("expires_at") val expiresAt: String = "",
+ val current: Boolean = false,
+)
+@Serializable
+data class SessionsResponse(val sessions: List<AuthSession> = emptyList())
 
 @Serializable
 data class SessionRenewalResponse(@SerialName("expires_at") val expiresAt: String)
@@ -258,7 +276,15 @@ interface UmbraApi {
     suspend fun refreshSession(@Header("Authorization") auth: String): SessionRenewalResponse
 
     @POST("/v1/account/burn")
-    suspend fun burnAccount(@Header("Authorization") auth: String): Unit
+    suspend fun burnAccount(@Header("Authorization") auth: String, @Body body: DeleteAccountRequest): Unit
+    @POST("/v1/account/security/code")
+    suspend fun securityCode(@Header("Authorization") auth: String, @Body body: SecurityCodeRequest): RequestCodeResponse
+    @GET("/v1/account/sessions")
+    suspend fun sessions(@Header("Authorization") auth: String): SessionsResponse
+    @DELETE("/v1/account/sessions/{id}")
+    suspend fun revokeSession(@Header("Authorization") auth: String, @Path("id") id: String): Unit
+    @POST("/v1/account/sessions/revoke_others")
+    suspend fun revokeOtherSessions(@Header("Authorization") auth: String): Unit
 
     @GET("/v1/users/{id}")
     suspend fun user(@Header("Authorization") auth: String, @Path("id") id: String): UserCard

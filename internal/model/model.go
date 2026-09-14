@@ -32,12 +32,11 @@ type User struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// Message — сообщение. Ciphertext — уже зашифрованный на клиенте блоб.
-// Сервер не может его прочитать и не знает тип/размер содержимого.
+// Message — API-конверт сообщения. Шифрование при хранении выполняет сервер.
 //
 // Адресация: для личного сообщения заполнен RecipientID; для группового/канального —
-// заполнен ChatID (RecipientID при этом пуст). Сервер не различает содержимое,
-// только маршрутизирует шифротекст.
+// заполнен ChatID (RecipientID при этом пуст). Ciphertext — историческое имя
+// API-поля; облачный сервер шифрует его при сохранении и расшифровывает при чтении.
 //
 // ExpiresAt — для секретных чатов: если задано, сообщение самоуничтожается после
 // этого момента. Сервер не отдаёт просроченные сообщения и удаляет их.
@@ -53,22 +52,32 @@ type Message struct {
 	ExpiresIn   int64      `json:"-"` // исходный TTL для проверки повторов
 }
 
-// Media — метаданные ciphertext; имя файла, ключ и nonce серверу не передаются.
+// Media — метаданные облачного вложения. Size — размер исходных байтов.
 //
 // ChatID/RecipientID — область видимости файла. Она задаётся при загрузке и
 // определяет, кто может скачать blob: раньше знание id давало доступ любому
 // авторизованному пользователю, и пересланный id открывал файл посторонним.
 // Пустая область = медиа, загруженное старым клиентом (см. MediaOpenAccess).
 type Media struct {
-	ID          string    `json:"id"`
-	OwnerID     string    `json:"owner_id"`
-	ContentType string    `json:"content_type"`
-	Size        int64     `json:"size"`
-	CreatedAt   time.Time `json:"created_at"`
+	StorageFormat int       `json:"-"`
+	BlobID        string    `json:"-"`
+	ID            string    `json:"id"`
+	OwnerID       string    `json:"owner_id"`
+	ContentType   string    `json:"content_type"`
+	Size          int64     `json:"size"`
+	CreatedAt     time.Time `json:"created_at"`
 	// ChatID — файл доступен участникам этой группы/канала.
 	ChatID string `json:"chat_id,omitempty"`
 	// RecipientID — файл доступен владельцу и этому собеседнику (личный чат).
 	RecipientID string `json:"recipient_id,omitempty"`
+}
+
+// ObjectID resolves the physical blob while preserving public media URLs.
+func (m *Media) ObjectID() string {
+	if m.BlobID != "" {
+		return m.BlobID
+	}
+	return m.ID
 }
 
 // ChatType — тип чата: группа или канал.
@@ -88,7 +97,7 @@ const (
 	RoleMember MemberRole = "member"
 )
 
-// Chat — групповой чат или канал. Содержимое сообщений сервер не видит.
+// Chat — групповой чат или канал облачного сервера.
 type Chat struct {
 	ID        string    `json:"id"`
 	Type      ChatType  `json:"type"`
@@ -189,8 +198,21 @@ func (c *Call) Others(userID string) []string {
 // PushDevice — токен устройства для push-уведомлений. У одного человека
 // может быть несколько телефонов, поэтому храним списком.
 type PushDevice struct {
+	SessionID string    `json:"-"`
 	Token     string    `json:"token"`
 	UserID    string    `json:"user_id"`
 	Platform  string    `json:"platform"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// AuthSession exposes a public session identifier, never bearer credentials.
+type AuthSession struct {
+	ID         string    `json:"id"`
+	UserID     string    `json:"-"`
+	TokenHash  string    `json:"-"`
+	DeviceName string    `json:"device_name"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Current    bool      `json:"current"`
 }

@@ -68,12 +68,12 @@ func collect(ctx context.Context, st store.Store, blobs blobstore.BlobStore, rem
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		_, err := st.GetMedia(ctx, id)
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, store.ErrNotFound) {
+		referenced, err := st.BlobReferenced(ctx, id)
+		if err != nil {
 			return err
+		}
+		if referenced {
+			continue
 		}
 		modified, err := timestamps.ModifiedAt(ctx, id)
 		if errors.Is(err, store.ErrNotFound) {

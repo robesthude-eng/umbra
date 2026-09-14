@@ -128,7 +128,7 @@ check('REST sync stages', 'SyncStepException' in repo and 'список чато
 check('Precise sync errors', 'HTTP 401' in repo and 'ошибка DNS' in repo and 'TLS' in repo)
 check('Last successful sync', 'lastSuccessfulSyncAtMillis' in repo and 'Последняя успешная синхронизация' in settings)
 check('Settings realtime status', 'realtimeDiagnostics' in settings and 'Онлайн-канал' in settings)
-check('Merged release version', 'versionCode = 38' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.15"' in text(Path('android/app/build.gradle.kts')))
+check('Merged release version', 'versionCode = 41' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.18"' in text(Path('android/app/build.gradle.kts')))
 
 
 # 0.16.8 Network Recovery
@@ -141,7 +141,7 @@ check('Built-in network check', 'runNetworkCheck' in repo and 'Проверит�
 check('Network mode model', 'enum class NetworkMode' in repo and 'медленный REST' in settings and 'только локально' in settings)
 check('Safe network report', 'NetworkCheckReport' in repo and 'asText()' in repo and 'Отправить отчёт' in settings)
 check('Clear diagnostics', 'fun clear()' in diag and 'Очистить журнал' in settings)
-check('Network recovery version', 'versionCode = 38' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.15"' in text(Path('android/app/build.gradle.kts')))
+check('Network recovery version', 'versionCode = 41' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.18"' in text(Path('android/app/build.gradle.kts')))
 
 
 # 0.16.9 Alien Interface
@@ -150,7 +150,7 @@ theme=text(Path('android/app/src/main/java/com/umbra/app/ui/theme/Theme.kt'))
 root=text(Path('android/app/src/main/java/com/umbra/app/MainActivity.kt'))
 main_shell=text(Path('android/app/src/main/java/com/umbra/app/ui/MainShell.kt'))
 visuals=text(Path('android/app/src/main/java/com/umbra/app/ui/FutureVisuals.kt'))
-check('Alien preference persisted', 'alienInterface' in prefs and 'alien_interface' in prefs and 'setAlienInterface' in prefs)
+check('Alien preference persisted', 'readInterfaceStyle' in prefs and 'putString(INTERFACE_THEME, value.name)' in prefs and 'setInterfaceStyle' in prefs and 'setAlienIntensity' in prefs)
 check('Alien theme provider', 'LocalUmbraAlienMode' in theme and 'alienIntensity = appearance.alienIntensity' in root)
 check('Quantum alien backdrop', 'QuantumBackdrop' in visuals and 'alien-orbit' in visuals and 'Stroke' in visuals)
 check('Holographic glass edge', 'BorderStroke' in visuals and 'auraSecondary.copy(alpha = 0.54f)' in visuals)
@@ -160,7 +160,7 @@ check('Alien live preview', 'QuantumBackdrop' in settings and 'AlienSignalMeter'
 check('Alien chat palette', 'Color(0xFF4B38FF)' in theme and 'Color(0xFFE957FF)' in theme)
 check('Reduced alien motion', 'selected && !reduced' in visuals)
 check('Settings preference and network wiring', 'AppearanceSettings(container.uiPreferences)' in settings and 'fun AppearanceSettings(preferences: UiPreferences)' in settings and 'NetworkSettings(repo)' in settings and 'fun NetworkSettings(repo: ChatRepository)' in settings)
-check('Alien release version', 'versionCode = 38' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.15"' in text(Path('android/app/build.gradle.kts')))
+check('Alien release version', 'versionCode = 41' in text(Path('android/app/build.gradle.kts')) and 'versionName = "0.16.18"' in text(Path('android/app/build.gradle.kts')))
 
 # 0.16.10 Alien Interface II
 alien=text(Path('android/app/src/main/java/com/umbra/app/ui/AlienVisuals.kt'))

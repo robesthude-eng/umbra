@@ -15,7 +15,7 @@ import (
 
 // S3BlobStore хранит блобы в S3-совместимом объектном хранилище
 // (AWS S3, MinIO, Backblaze B2, DigitalOcean Spaces и т.п.).
-// Блобы — непрозрачный ciphertext; ключи и расшифровка остаются у клиента.
+// Блобы шифрует облачный сервер; ключи в S3 не передаются.
 type S3BlobStore struct {
 	client *minio.Client
 	bucket string

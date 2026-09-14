@@ -23,6 +23,7 @@ jobs:
       - name: Build
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o umbra-server ./cmd/server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o umbra-storage ./cmd/storage
 
       - name: Tests
         run: go test ./...
@@ -31,6 +32,7 @@ jobs:
         run: |
           sha256sum umbra-server | awk '{print $1}' > umbra-server.sha256
           cat umbra-server.sha256
+          sha256sum umbra-storage | awk '{print $1}' > umbra-storage.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -38,4 +40,6 @@ jobs:
           path: |
             umbra-server
             umbra-server.sha256
+            umbra-storage
+            umbra-storage.sha256
           retention-days: 60

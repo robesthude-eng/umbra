@@ -87,6 +87,7 @@ internal fun SettingsTab(container: AppContainer) {
                             SettingsCategory.NETWORK -> NetworkSettings(repo)
                             SettingsCategory.STORAGE -> StorageSettings()
                             SettingsCategory.PRIVACY -> PrivacySettings(
+                                repo = repo,
                                 busy = busy,
                                 onLogout = { error = null; confirmLogout = true },
                                 onDelete = { error = null; confirmBurn = true },
@@ -128,21 +129,5 @@ internal fun SettingsTab(container: AppContainer) {
         text = { Text("Для входа понадобится новый код. Неотправленные сообщения сохранятся на этом устройстве для этого номера. При входе в другой аккаунт локальные данные будут очищены.") },
         confirmButton = { TextButton({ confirmLogout = false; scope.launch { repo.logout() } }) { Text("Выйти") } },
         dismissButton = { TextButton({ confirmLogout = false }) { Text("Отмена") } })
-    if (confirmBurn) AlertDialog(onDismissRequest = { if (!busy) confirmBurn = false }, title = { Text("Удалить аккаунт навсегда?") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Будут удалены аккаунт, его сообщения, созданные вами группы и локальная история. Файлы будут поставлены в очередь удаления. Чужие копии и резервные копии могут сохраниться.")
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        } }, confirmButton = {
-            TextButton(enabled = !busy, onClick = {
-                if (!busy) {
-                    busy = true; error = null
-                    scope.launch {
-                        try { repo.deleteAccount() }
-                        catch (e: Exception) { error = "Удаление не подтверждено. " + e.userMessage() }
-                        finally { busy = false }
-                    }
-                }
-            }) { Text("Удалить навсегда", color = MaterialTheme.colorScheme.error) }
-        }, dismissButton = { TextButton({ confirmBurn = false }, enabled = !busy) { Text("Отмена") } })
+    if (confirmBurn) AccountDeletionDialog(repo) { confirmBurn = false }
 }

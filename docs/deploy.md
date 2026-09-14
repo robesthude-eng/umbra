@@ -1,5 +1,9 @@
 # Запуск и обновление Umbra
 
+В 0.16.17 обязательны миграция `015_cloud_storage.sql` и постоянные серверные
+ключи. Новый запуск, перенос данных и резервные копии описаны в
+[../CLOUD_STORAGE.md](../CLOUD_STORAGE.md). Одного обновления APK недостаточно.
+
 Рассчитано на один экземпляр сервера за HTTPS-прокси. Для постоянных данных нужны
 PostgreSQL и согласованное хранилище файлов. Challenge, typing и WebSocket-хаб
 локальны процессу; несколько экземпляров без дополнительных механизмов
@@ -11,14 +15,17 @@ PostgreSQL и согласованное хранилище файлов. Challe
 
 ```bash
 cp .env.example .env
-# Укажите собственный POSTGRES_PASSWORD.
-docker compose up -d --build
+# Заполните POSTGRES_PASSWORD, TURN_SECRET и TURN_PUBLIC_IP; настройте Telegram.
+docker compose build server
+docker compose run --rm --no-deps --entrypoint /umbra-storage server init
+# Сохраните ключи отдельно по CLOUD_STORAGE.md.
+docker compose up -d
 curl http://127.0.0.1:8080/healthz
 ```
 
 В автоматически собираемом Compose DSN используйте пароль без специальных символов
-URL, например hex. PostgreSQL хранится в томе pgdata, файлы — blobdata. Новый
-PostgreSQL-том получает все миграции 001–013 автоматически. На существующем томе
+URL, например hex. PostgreSQL хранится в томе pgdata, файлы — blobdata, серверные ключи — keydata. Новый
+PostgreSQL-том получает все миграции 001–016 автоматически. На существующем томе
 init-скрипты повторно не выполняются.
 
 Порт API опубликован только на 127.0.0.1. Для внешнего подключения настройте
@@ -45,29 +52,15 @@ docker inspect "$(docker compose ps -q server)" --format '{{range .NetworkSettin
 
 ## Обновление существующей базы
 
-Сделайте резервную копию БД и файлов. Остановите все прежние экземпляры сервера,
-сохранив тома. Примените недостающие миграции в порядке номеров. При обновлении
-с 0.4.1 (схема 001–010) нужны 011, 012 и 013, при обновлении с 0.7.0 — 012 и 013,
-а с 0.8.0 — только 013:
+С 0.16.17 примените миграцию 016 и сохраните действующие ключи. Полный порядок,
+разрешённые номера и новый юнит бэкапа — [SECURITY.md](../SECURITY.md).
 
-```bash
-docker compose stop server
-docker compose up -d db
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/011_revoke_legacy_sessions.sql
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/012_push_devices.sql
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < migrations/013_call_participants.sql
-docker compose up -d --build server
-```
-
-Для более ранней схемы сначала примените отсутствующие миграции до 010 включительно.
-Не используйте `docker compose down -v`: это удаляет тома. При прямом подключении
-эквивалентная команда миграции:
-
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/011_revoke_legacy_sessions.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/012_push_devices.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/013_call_participants.sql
-```
+Для перехода с 0.16.16 используйте полный порядок из
+[CLOUD_STORAGE.md](../CLOUD_STORAGE.md#обновление-работающего-сервера-с-01616):
+резервная копия, остановка записи, миграция 015, создание и резервирование ключей,
+перенос старых сообщений и вложений, проверка остатка, миграция 016 и запуск сервера.
+На более старой базе сначала примените отсутствующие миграции до 014 по порядку;
+уже применённые SQL повторно не запускайте.
 
 Миграция 011 **однократно отзывает старые сессии и коды переноса**: прежние токены
 могли быть получены через неподтверждённый номер. Аккаунты, переписка и файлы

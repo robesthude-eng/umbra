@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"umbra/server/internal/blobstore"
+	"umbra/server/internal/cloudcrypto"
 	"umbra/server/internal/config"
 	"umbra/server/internal/crypto"
 	"umbra/server/internal/model"
@@ -23,17 +24,20 @@ const ctxUserID ctxKey = "user_id"
 
 // Server связывает конфигурацию, хранилище и WebSocket-хаб.
 type Server struct {
-	cfg        *config.Config
-	store      store.Store
-	blobs      blobstore.BlobStore
-	hub        *ws.Hub
-	challenges *challengeStore
-	typing     *typingStore
-	uploads    chan struct{}
-	otp        *otpStore
-	otpSender  OTPSender
-	pusher     pushSender
-	handler    http.Handler
+	allowedPhones  map[string]bool
+	phonePolicyErr error
+	storage        *cloudcrypto.Keyring
+	cfg            *config.Config
+	store          store.Store
+	blobs          blobstore.BlobStore
+	hub            *ws.Hub
+	challenges     *challengeStore
+	typing         *typingStore
+	uploads        chan struct{}
+	otp            *otpStore
+	otpSender      OTPSender
+	pusher         pushSender
+	handler        http.Handler
 
 	// callLeavers помнит, кто уже вышел из группового звонка (см. calls.go).
 	callLeavers *callLeaverStore
@@ -45,14 +49,18 @@ func NewServer(cfg *config.Config, st store.Store, hub *ws.Hub) *http.Server {
 }
 
 // NewServerWithBlobStore включает медиа; вызывающий код закрывает оба хранилища.
-func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore) *http.Server {
-	return NewServerForMain(cfg, st, hub, blobs, nil)
+func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, keys ...*cloudcrypto.Keyring) *http.Server {
+	return NewServerForMain(cfg, st, hub, blobs, nil, keys...)
 }
 
 // NewServerForMain собирает сервер с OTP-доставкой кодов (Telegram) и готов к запуску.
-func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender) *http.Server {
+func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender, keys ...*cloudcrypto.Keyring) *http.Server {
 	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg), callLeavers: newCallLeaverStore()}
 
+	s.allowedPhones, s.phonePolicyErr = config.ParseAllowedPhones(cfg.AllowedPhones)
+	if len(keys) > 0 {
+		s.storage = keys[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /v1/register", s.handleRegister)
@@ -93,6 +101,10 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.Handle("DELETE /v1/push/devices", s.requireAuth(http.HandlerFunc(s.handleDeletePushDevice)))
 	// Аккаунт: получение и полное удаление («сжечь»).
 	mux.Handle("GET /v1/account", s.requireAuth(http.HandlerFunc(s.handleGetAccount)))
+	mux.Handle("POST /v1/account/security/code", s.requireAuth(http.HandlerFunc(s.handleSecurityCode)))
+	mux.Handle("GET /v1/account/sessions", s.requireAuth(http.HandlerFunc(s.handleListSessions)))
+	mux.Handle("DELETE /v1/account/sessions/{id}", s.requireAuth(http.HandlerFunc(s.handleRevokeSession)))
+	mux.Handle("POST /v1/account/sessions/revoke_others", s.requireAuth(http.HandlerFunc(s.handleRevokeOtherSessions)))
 	mux.Handle("POST /v1/account/burn", s.requireAuth(http.HandlerFunc(s.handleBurnAccount)))
 	mux.Handle("POST /v1/account/transfer", s.requireAuth(http.HandlerFunc(s.handleCreateTransfer)))
 	mux.HandleFunc("POST /v1/account/transfer/claim", s.handleClaimTransfer)
@@ -113,7 +125,7 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	s.handler = logMiddleware(newRequestLimiter(trustedProxies...).wrap(mux))
 	return &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           s.handler,
+		Handler:           s,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      5 * time.Minute,
@@ -129,7 +141,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		userID, err := s.store.GetUserIDByTokenHash(r.Context(), crypto.HashToken(token))
+		userID, err := s.sessionUser(r.Context(), crypto.HashToken(token))
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -160,4 +172,25 @@ func logMiddleware(next http.Handler) http.Handler {
 		}
 		log.Printf("%s %s %s (%s)", r.Method, r.URL.Path, r.RemoteAddr, time.Since(start))
 	})
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+func (s *Server) sessionUser(ctx context.Context, hash string) (string, error) {
+	id, err := s.store.GetUserIDByTokenHash(ctx, hash)
+	if err != nil {
+		return "", err
+	}
+	if s.phonePolicyErr != nil {
+		return "", s.phonePolicyErr
+	}
+	if len(s.allowedPhones) > 0 {
+		u, err := s.store.GetUserByID(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		if !(u.Phone == "" && s.cfg.AllowLegacyAuth) && !s.allowedPhones[u.Phone] {
+			return "", store.ErrNotFound
+		}
+	}
+	return id, nil
 }

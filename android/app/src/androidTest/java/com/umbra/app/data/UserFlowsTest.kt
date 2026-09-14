@@ -195,7 +195,7 @@ class UserFlowsTest {
     @Test fun failedDeletionKeepsSessionAndHistory() = runBlocking {
         seedPending()
         handler = { ok("""{"error":"unavailable"}""", 503) }
-        val failure = runCatching { repo.deleteAccount() }.exceptionOrNull()
+        val failure = runCatching { repo.deleteAccount("deletion-request", "123456") }.exceptionOrNull()
         assertTrue(failure is HttpException)
         assertEquals(SessionPhase.READY, repo.phase.value)
         assertEquals("token", session.token())

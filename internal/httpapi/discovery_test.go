@@ -46,6 +46,7 @@ func TestVerifiedPhoneAccountAndLogin(t *testing.T) {
 		t.Fatalf("служебный username должен строиться из номера, получено %q", username)
 	}
 
+	advanceOTPClock(h)
 	// Re-verification must recover the same account, not create a duplicate.
 	second, _ := registerVerifiedPhone(t, h, sender, "Григорий", "+7 999 123 45 67")
 	if second["id"] != m["id"] {

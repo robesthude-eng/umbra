@@ -7,3 +7,7 @@ data
 dist
 build
 *.zip
+
+# Server encryption keys and backups
+*storage-keys*.json
+*.umbraenc

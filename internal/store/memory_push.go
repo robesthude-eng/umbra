@@ -39,6 +39,18 @@ func (m *MemoryStore) ListPushDevices(_ context.Context, userID string) ([]model
 	out := make([]model.PushDevice, 0, len(m.pushDevices))
 	for _, d := range m.pushDevices {
 		if d.UserID == userID {
+			if d.SessionID != "" {
+				active := false
+				for _, t := range m.tokens {
+					if t.session.ID == d.SessionID && t.expires.After(time.Now()) && t.session.CreatedAt.Add(MaxSessionLifetime).After(time.Now()) {
+						active = true
+						break
+					}
+				}
+				if !active {
+					continue
+				}
+			}
 			out = append(out, d)
 		}
 	}
