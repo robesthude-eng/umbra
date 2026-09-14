@@ -40,8 +40,17 @@ jobs:
 
       - name: Accept SDK licenses and install SDK components
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;34.0.0" "platform-tools"
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          ZIP=/tmp/commandlinetools.zip
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip -o "$ZIP"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          rm -rf "$SDK_ROOT/cmdline-tools/_new" "$SDK_ROOT/cmdline-tools/latest"
+          unzip -q "$ZIP" -d "$SDK_ROOT/cmdline-tools/_new"
+          mv "$SDK_ROOT/cmdline-tools/_new/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          rm -rf "$SDK_ROOT/cmdline-tools/_new"
+          SDKM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" "platforms;android-35" "build-tools;34.0.0" "platform-tools"
 
       # Стабильная подпись: APK из CI подписываются постоянным ключом (секреты),
       # поэтому новые сборки ОБНОВЛЯЮТ установленное приложение без удаления.
