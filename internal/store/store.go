@@ -99,6 +99,14 @@ type Store interface {
 	// GetAvatar возвращает id медиа-аватара; ErrNotFound, если аватара нет.
 	GetAvatar(ctx context.Context, userID string) (string, error)
 
+	// «Был(а) в сети». TouchPresence вызывается с дебаунсом из requireAuth,
+	// поэтому реализация должна быть дешёвой и не ломаться на удалённом пользователе.
+	TouchPresence(ctx context.Context, userID string, at time.Time) error
+	// GetPresence отдаёт время последнего визита и флаг скрытия.
+	GetPresence(ctx context.Context, userID string) (time.Time, bool, error)
+	// SetPresenceHidden включает взаимное скрытие «был(а) в сети».
+	SetPresenceHidden(ctx context.Context, userID string, hidden bool) error
+
 	// Звонки (метаданные; медиа идёт peer-to-peer).
 	SaveCall(ctx context.Context, c *model.Call) error
 	GetCall(ctx context.Context, id string) (*model.Call, error)

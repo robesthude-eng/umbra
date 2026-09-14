@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Notifications
@@ -42,8 +44,27 @@ internal fun NotificationSettings() {
 }
 
 @Composable
-internal fun StorageSettings() {
+internal fun StorageSettings(preferences: com.umbra.app.data.session.UiPreferences) {
     val context = LocalContext.current
+    val ui by preferences.state.collectAsState()
+    val quality = ui.mediaQuality
+    SettingsCard("Качество отправляемых фото и видео") {
+        SettingsDescription(
+            "Авто: сжимаем на мобильном интернете и для тяжёлых файлов, по Wi-Fi отправляем как есть. " +
+                "Сжатие: фото до 2048 px, видео до 720p. Оригинал: без потерь качества.",
+        )
+    }
+    SettingsGroup {
+        MediaQualityRow("Автоматически", "Решает по типу сети и размеру", quality == com.umbra.app.data.media.MediaSendQuality.AUTO) {
+            preferences.setMediaQuality(com.umbra.app.data.media.MediaSendQuality.AUTO)
+        }
+        MediaQualityRow("Всегда сжимать", "Экономит трафик и время", quality == com.umbra.app.data.media.MediaSendQuality.COMPRESS) {
+            preferences.setMediaQuality(com.umbra.app.data.media.MediaSendQuality.COMPRESS)
+        }
+        MediaQualityRow("Без сжатия", "Исходное качество, файлы тяжелее", quality == com.umbra.app.data.media.MediaSendQuality.ORIGINAL) {
+            preferences.setMediaQuality(com.umbra.app.data.media.MediaSendQuality.ORIGINAL)
+        }
+    }
     SettingsCard("На этом устройстве") {
         SettingsDescription("Umbra сохраняет локальную историю, загруженные вложения и очередь неотправленных сообщений. Занимаемое место можно посмотреть в настройках Android.")
     }
@@ -57,6 +78,22 @@ internal fun StorageSettings() {
         intent = appDetailsIntent(context.packageName),
     )
     SettingsDescription("Очистка данных приложения в Android удалит локальную историю и неотправленные сообщения на этом устройстве и потребует нового входа.")
+}
+
+/** Выбор качества: одна активная строка из трёх. */
+@Composable
+private fun MediaQualityRow(title: String, subtitle: String, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onSelect).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onSelect)
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 private fun appDetailsIntent(packageName: String) = Intent(

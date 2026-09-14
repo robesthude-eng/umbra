@@ -106,8 +106,8 @@ android {
         targetSdk = 35
         // Перед каждым выпуском увеличивайте versionCode, иначе Android не даст
         // обновить установленное приложение («Приложение не установлено»).
-        versionCode = 41
-        versionName = "0.16.18"
+        versionCode = 42
+        versionName = "0.17.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // С 0.7.0 основной источник ICE — сервер (`GET /v1/turn`), оттуда
@@ -183,6 +183,12 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.androidx.security.crypto)
+
+    // Сжатие медиа перед отправкой: видео — media3 Transformer, фото — EXIF-поворот.
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.effect)
+    implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.exifinterface)
 
     // Звонки: нативный WebRTC. Добавляет к APK по ~25 МБ на архитектуру.
     implementation(libs.libwebrtc)

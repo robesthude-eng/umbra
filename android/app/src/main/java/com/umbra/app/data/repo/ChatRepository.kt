@@ -22,10 +22,13 @@ import com.umbra.app.data.db.ChatEntity
 import com.umbra.app.data.db.CryptoRecord
 import com.umbra.app.data.db.MessageEntity
 import com.umbra.app.data.media.Attachments
+import com.umbra.app.data.media.MediaCompressor
+import com.umbra.app.data.media.MediaSendQuality
 import com.umbra.app.data.msg.ATTACHMENT_KINDS
 import com.umbra.app.data.msg.MediaContent
 import com.umbra.app.data.msg.MessageCodec
 import com.umbra.app.data.msg.MessageContent
+import com.umbra.app.data.msg.Reactions
 import com.umbra.app.data.msg.ReplyContent
 import com.umbra.app.data.msg.attachment
 import com.umbra.app.data.msg.voice
@@ -62,6 +65,7 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLException
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /** Фаза приложения относительно сессии. */
 enum class SessionPhase { LOGGED_OUT, NEEDS_PROFILE, READY }
@@ -74,6 +78,13 @@ data class Conversation(
     val subtitle: String,
     val lastAtMillis: Long,
     val unreadCount: Int = 0,
+)
+
+/** Присутствие собеседника для шапки чата и списка диалогов. */
+data class UserPresence(
+    val online: Boolean = false,
+    val lastSeenAtMillis: Long? = null,
+    val hidden: Boolean = false,
 )
 
 /** Сообщение для UI. */
@@ -625,6 +636,12 @@ class ChatRepository(
                     when (event.type) {
                         "security" -> showSecurityNotice(event.data["user_id"]?.jsonPrimitive?.contentOrNull,
                             event.data["device_name"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                        "presence" -> applyPresence(
+                            event.data["user_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            event.data["online"]?.jsonPrimitive?.contentOrNull == "true",
+                            event.data["last_seen_at"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            event.data["hidden"]?.jsonPrimitive?.contentOrNull == "true",
+                        )
                         "connected" -> refresh(forceFull = false) // инкрементально: полная не нужна при каждом переподключении
                         "message" -> persist(key, json.decodeFromJsonElement(MessageDto.serializer(), event.data))
                         "call" -> handleCallEvent(key, json.decodeFromJsonElement(CallDto.serializer(), event.data))
@@ -1125,6 +1142,126 @@ class ChatRepository(
         _readState.value = _readState.value + (chatId to value)
     }
 
+    // ---------- Прогресс файлов и присутствие ----------
+
+    /** Отправка вложений: ключ — stableId строки, значение — проценты 0..100. */
+    private val _mediaProgress = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val mediaProgress: StateFlow<Map<String, Int>> = _mediaProgress.asStateFlow()
+
+    /** «Печатает…»: ключ — id чата, значение — id печатающих без меня. */
+    private val _typing = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val typing: StateFlow<Map<String, List<String>>> = _typing.asStateFlow()
+
+    private val typingSentAt = ConcurrentHashMap<String, Long>()
+
+    /** Отменённые пользователем загрузки: ключ совпадает с stableId строки. */
+    private val cancelledUploads = ConcurrentHashMap<String, Boolean>()
+
+    /** «Был(а) в сети»: ключ — id пользователя. */
+    private val _presence = MutableStateFlow<Map<String, UserPresence>>(emptyMap())
+    val presence: StateFlow<Map<String, UserPresence>> = _presence.asStateFlow()
+
+    private fun publishProgress(key: String, percent: Int?) {
+        _mediaProgress.update { current ->
+            if (percent == null) current - key else current + (key to percent.coerceIn(0, 100))
+        }
+    }
+
+    /** Мобильный интернет считаем платным: в авторежиме там сжимаем. */
+    private fun meteredNetwork(): Boolean {
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        val caps = manager.getNetworkCapabilities(manager.activeNetwork) ?: return true
+        return !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+
+    /**
+     * Запрашивает «был(а) в сети». Старый сервер отвечает 404/405 — это не ошибка.
+     */
+    suspend fun refreshPresence(userId: String) {
+        if (userId.isBlank()) return
+        val key = key()
+        val view = try {
+            request(key) { api.presence(it, userId) }
+        } catch (e: HttpException) {
+            if (e.code() == 404 || e.code() == 405) return else throw e
+        }
+        applyPresence(view.userId.ifBlank { userId }, view.online, view.lastSeenAt, view.hidden)
+    }
+
+    private fun applyPresence(userId: String, online: Boolean, lastSeenAt: String, hidden: Boolean) {
+        if (userId.isBlank()) return
+        val millis = runCatching { Instant.parse(lastSeenAt).toEpochMilli() }.getOrNull()
+        _presence.update { it + (userId to UserPresence(online, millis, hidden)) }
+    }
+
+    /**
+     * Отметка «печатаю». Шлётся не чаще раза в 3 секунды, ошибки не мешают
+     * переписке: старый сервер без этого маршрута просто игнорируется.
+     */
+    suspend fun notifyTyping(chatId: String) {
+        if (chatId.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (now - (typingSentAt[chatId] ?: 0L) < 3_000L) return
+        typingSentAt[chatId] = now
+        val key = key()
+        try {
+            request(key) { api.markTyping(it, chatId) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val code = (e as? HttpException)?.code()
+            if (code != null && code !in listOf(404, 405)) DiagLog.log("typing-mark", e)
+        }
+    }
+
+    /** Кто печатает в чате сейчас. Сервер держит отметку 5 секунд. */
+    suspend fun refreshTyping(chatId: String) {
+        if (chatId.isBlank()) return
+        val key = key()
+        val ids = try {
+            request(key) { api.typing(it, chatId).typing }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val code = (e as? HttpException)?.code()
+            if (code == null || code in listOf(404, 405)) return
+            DiagLog.log("typing-list", e)
+            return
+        } ?: return
+        val mine = me()
+        val others = ids.filter { it.isNotBlank() && it != mine }
+        _typing.update { if (others.isEmpty()) it - chatId else it + (chatId to others) }
+    }
+
+    /**
+     * Отмена загрузки вложения. Строка сразу помечается неотправленной,
+     * файл остаётся в очереди — «Повторить» пошлёт его заново.
+     */
+    suspend fun cancelUpload(stableId: String) {
+        if (stableId.isBlank()) return
+        cancelledUploads[stableId] = true
+        val key = key()
+        val clientId = stableId.substringAfter(':', "")
+        commit(key) {
+            val row = if (clientId.isNotEmpty()) db.messageDao().byClientId(key.owner, clientId)
+                else db.messageDao().get(stableId)
+            if (row != null && row.deliveryState == "pending") db.messageDao().upsert(
+                row.copy(
+                    deliveryState = "failed",
+                    error = "Загрузка отменена. Нажмите «Повторить», чтобы отправить снова.",
+                ),
+            )
+        }
+        publishProgress(stableId, null)
+    }
+
+    /** Скрыть своё время визита (взаимно). */
+    suspend fun setHideLastSeen(hidden: Boolean) {
+        val key = key()
+        request(key) { api.updatePrivacy(it, PrivacyRequest(hidden)) }
+        if (hidden) _presence.value = emptyMap()
+    }
+
     fun messagesFor(chatId: String): Flow<List<UiMessage>> {
         val owner = me().orEmpty()
         return db.messageDao().messagesFor(owner, chatId).map { rows ->
@@ -1334,10 +1471,33 @@ class ChatRepository(
      * системой Uri живёт только до перезапуска), а загрузка в /v1/media и
      * отправка конверта происходят в flushOutbox — с повторами и порядком.
      */
-    suspend fun sendAttachment(chatId: String, uri: Uri, caption: String = "", replyTo: UiMessage? = null) {
+    suspend fun sendAttachment(
+        chatId: String,
+        uri: Uri,
+        caption: String = "",
+        replyTo: UiMessage? = null,
+        quality: MediaSendQuality = MediaSendQuality.AUTO,
+    ) {
         val key = key()
-        val picked = withContext(Dispatchers.IO) {
-            Attachments.copyToOutbox(context, uri, attachOutboxDir(), MAX_ATTACHMENT_BYTES)
+        // Оригинал может быть крупнее лимита отправки: после сжатия он в него
+        // укладывается, поэтому копия берётся с запасом, а лимит проверяется ниже.
+        val copyLimit = if (quality == MediaSendQuality.ORIGINAL) MAX_ATTACHMENT_BYTES else MAX_SOURCE_BYTES
+        val copied = withContext(Dispatchers.IO) {
+            Attachments.copyToOutbox(context, uri, attachOutboxDir(), copyLimit)
+        }
+        val prepared = try {
+            MediaCompressor.prepare(context, copied, quality, meteredNetwork())
+        } catch (e: Throwable) {
+            withContext(NonCancellable + Dispatchers.IO) { copied.file.delete() }
+            throw e
+        }
+        val picked = prepared.attachment
+        if (picked.size > MAX_ATTACHMENT_BYTES) {
+            withContext(NonCancellable + Dispatchers.IO) { picked.file.delete() }
+            throw IllegalArgumentException(
+                "Файл больше " + Attachments.sizeText(MAX_ATTACHMENT_BYTES) +
+                    ". Отправьте его со сжатием или разбейте на части.",
+            )
         }
         try {
             commit(key) {
@@ -1451,7 +1611,7 @@ class ChatRepository(
 
     suspend fun reactToMessage(chatId: String, message: UiMessage, reaction: String) {
         require(!message.pending && !message.failed && !message.deleted) { "Дождитесь отправки сообщения" }
-        require(reaction in listOf("👍", "❤️", "😂", "😮", "😢")) { "Неизвестная реакция" }
+        require(reaction in Reactions.ALL) { "Неизвестная реакция" }
         sendControl(chatId, MessageContent.KIND_REACTION, message.id, reaction = reaction)
     }
 
@@ -1637,8 +1797,17 @@ class ChatRepository(
         val plain = "text/plain".toMediaType()
         val chatScope = m.chatId.takeIf { m.recipientId.isEmpty() && it.isNotEmpty() }
         val peerScope = m.recipientId.takeIf { it.isNotEmpty() }
-        val up = request(key) { auth ->
-            val part = MultipartBody.Part.createFormData("file", fileName, file.asRequestBody(mediaType))
+        // Ключ прогресса совпадает со stableId строки — по нему её находит чат.
+        val progressKey = m.clientId?.let { "${m.senderId}:$it" } ?: m.id
+        // Отмена до начала попытки: флаг снимаем сразу, иначе «Повторить» не сработает.
+        if (cancelledUploads.remove(progressKey) != null) throw IllegalStateException("Загрузка отменена.")
+        val up = try { request(key) { auth ->
+            val body = ProgressRequestBody(file.asRequestBody(mediaType)) { sent, total ->
+                // Не IOException: отмена не должна уходить в автоповторы очереди.
+                if (cancelledUploads.remove(progressKey) != null) throw IllegalStateException("Загрузка отменена.")
+                publishProgress(progressKey, if (total > 0) ((sent * 100) / total).toInt() else 0)
+            }
+            val part = MultipartBody.Part.createFormData("file", fileName, body)
             val response = api.uploadMedia(
                 auth,
                 part,
@@ -1648,7 +1817,7 @@ class ChatRepository(
             )
             if (!response.isSuccessful) throw HttpException(response)
             response.body() ?: throw IOException("Empty upload response")
-        }
+        } } finally { publishProgress(progressKey, null) }
         check(up.id.isNotBlank()) {
             if (voice) "Сервер не сохранил запись. Повторите отправку." else "Сервер не сохранил файл. Повторите отправку."
         }
@@ -1884,5 +2053,8 @@ class ChatRepository(
 
         /** Сервер по умолчанию принимает 50 МиБ на файл; оставляем запас на конверт. */
         const val MAX_ATTACHMENT_BYTES = 48L * 1024 * 1024
+
+        /** Сколько готовы взять из галереи ДО сжатия. */
+        const val MAX_SOURCE_BYTES = 512L * 1024 * 1024
     }
 }

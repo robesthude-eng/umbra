@@ -1,5 +1,7 @@
 package com.umbra.app.ui
 
+import androidx.compose.ui.Alignment
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -39,8 +41,50 @@ private fun ProfileValue(label: String, value: String) {
 }
 
 @Composable
-internal fun PrivacySettings(repo: ChatRepository, busy: Boolean, onLogout: () -> Unit, onDelete: () -> Unit) {
+internal fun PrivacySettings(
+    repo: ChatRepository,
+    preferences: com.umbra.app.data.session.UiPreferences,
+    busy: Boolean,
+    onLogout: () -> Unit,
+    onDelete: () -> Unit,
+) {
     var showDevices by remember { mutableStateOf(false) }
+    val ui by preferences.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    var presenceError by remember { mutableStateOf<String?>(null) }
+    SettingsSectionLabel("Время последнего визита")
+    SettingsGroup {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Скрыть «был(а) в сети»", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Взаимно: скрыв своё время, вы не видите чужое",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                presenceError?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            Switch(
+                checked = ui.hideLastSeen,
+                enabled = !busy,
+                onCheckedChange = { hidden ->
+                    presenceError = null
+                    preferences.setHideLastSeen(hidden)
+                    scope.launch {
+                        runCatching { repo.setHideLastSeen(hidden) }.onFailure {
+                            preferences.setHideLastSeen(!hidden)
+                            presenceError = it.userMessage()
+                        }
+                    }
+                },
+            )
+        }
+    }
     if (showDevices) DevicesDialog(repo) { showDevices = false }
     SettingsGroup { SettingsActionRow("Устройства", "Просмотр и завершение сессий", Icons.Filled.Devices, enabled = !busy, onClick = { showDevices = true }) }
     SettingsCard("Доступ к переписке") {

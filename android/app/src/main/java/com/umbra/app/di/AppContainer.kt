@@ -8,6 +8,7 @@ import com.umbra.app.data.call.CallEngine
 import com.umbra.app.data.db.AppDatabase
 import com.umbra.app.data.diag.DiagLog
 import com.umbra.app.data.repo.ChatRepository
+import com.umbra.app.data.session.Drafts
 import com.umbra.app.data.session.SessionStore
 import com.umbra.app.data.session.UiPreferences
 import com.umbra.app.data.update.AppUpdater
@@ -26,6 +27,9 @@ class AppContainer(context: Context) {
     val database: AppDatabase = AppDatabase.build(context)
     val session = SessionStore(context)
     val uiPreferences = UiPreferences(context)
+
+    /** Черновики по чатам: недописанное сообщение не теряется. */
+    val drafts = Drafts(context)
     val api: UmbraApi = createUmbraApi(baseUrl)
     val webSocketClient = WebSocketClient(baseUrl)
     val chatRepository = ChatRepository(context, api, database, session, webSocketClient)

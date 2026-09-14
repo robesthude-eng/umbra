@@ -111,6 +111,24 @@ data class UserCard(
         listOf(displayName, lastName).filter { it.isNotBlank() }.joinToString(" ").ifBlank { username }
 }
 
+/** Присутствие собеседника: «в сети» либо время последнего визита. */
+@Serializable
+data class PresenceView(
+    @SerialName("user_id") val userId: String = "",
+    val online: Boolean = false,
+    @SerialName("last_seen_at") val lastSeenAt: String = "",
+    /** Собеседник скрыл статус. */
+    val hidden: Boolean = false,
+)
+
+/** Взаимная приватность: скрыл своё — не видишь чужое. */
+@Serializable
+data class PrivacyRequest(@SerialName("hide_last_seen") val hideLastSeen: Boolean)
+
+/** Кто сейчас печатает в чате (сервер держит отметку 5 секунд). */
+@Serializable
+data class TypingResponse(val typing: List<String> = emptyList())
+
 @Serializable
 data class MediaUploadResponse(val id: String = "", @SerialName("content_type") val contentType: String = "", val size: Long = 0)
 
@@ -291,6 +309,20 @@ interface UmbraApi {
 
     @GET("/v1/by-username/{username}")
     suspend fun userByUsername(@Header("Authorization") auth: String, @Path("username") username: String): UserCard
+
+    // Последний визит и собственная приватность.
+    @GET("/v1/users/{id}/presence")
+    suspend fun presence(@Header("Authorization") auth: String, @Path("id") id: String): PresenceView
+
+    @POST("/v1/account/privacy")
+    suspend fun updatePrivacy(@Header("Authorization") auth: String, @Body body: PrivacyRequest): Unit
+
+    // «Печатает…»: отметка и список печатающих.
+    @POST("/v1/chats/{id}/typing")
+    suspend fun markTyping(@Header("Authorization") auth: String, @Path("id") id: String): Unit
+
+    @GET("/v1/chats/{id}/typing")
+    suspend fun typing(@Header("Authorization") auth: String, @Path("id") id: String): TypingResponse
 
     // Сообщения.
     @POST("/v1/messages")

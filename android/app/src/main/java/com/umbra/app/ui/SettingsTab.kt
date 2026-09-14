@@ -85,9 +85,10 @@ internal fun SettingsTab(container: AppContainer) {
                             SettingsCategory.APPEARANCE -> AppearanceSettings(container.uiPreferences)
                             SettingsCategory.NOTIFICATIONS -> NotificationSettings()
                             SettingsCategory.NETWORK -> NetworkSettings(repo)
-                            SettingsCategory.STORAGE -> StorageSettings()
+                            SettingsCategory.STORAGE -> StorageSettings(container.uiPreferences)
                             SettingsCategory.PRIVACY -> PrivacySettings(
                                 repo = repo,
+                                preferences = container.uiPreferences,
                                 busy = busy,
                                 onLogout = { error = null; confirmLogout = true },
                                 onDelete = { error = null; confirmBurn = true },

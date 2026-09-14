@@ -2,6 +2,7 @@ package com.umbra.app.data.session
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.umbra.app.data.media.MediaSendQuality
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -29,6 +30,10 @@ data class AppearancePreferences(
     val alienIntensity: AlienIntensity = AlienIntensity.OFF,
     val interfaceStyle: InterfaceStyle = InterfaceStyle.STANDARD,
     val accentColor: AccentColor = AccentColor.DEFAULT,
+    /** Качество отправки фото и видео по умолчанию. */
+    val mediaQuality: MediaSendQuality = MediaSendQuality.AUTO,
+    /** Не показывать своё «был(а) в сети» (и не видеть чужое). */
+    val hideLastSeen: Boolean = false,
 ) {
     /** Сохранённая сила Alien не включает эффекты в других темах. */
     val effectiveAlienIntensity: AlienIntensity get() = resolveAlienIntensity(interfaceStyle, alienIntensity)
@@ -81,6 +86,10 @@ class UiPreferences(context: Context, preferenceName: String = "umbra_appearance
             accentColor = runCatching {
                 AccentColor.valueOf(prefs.getString("accent_color", "DEFAULT").orEmpty())
             }.getOrDefault(AccentColor.DEFAULT),
+            mediaQuality = runCatching {
+                MediaSendQuality.valueOf(prefs.getString("media_quality", "AUTO").orEmpty())
+            }.getOrDefault(MediaSendQuality.AUTO),
+            hideLastSeen = prefs.getBoolean("hide_last_seen", false),
         ),
     )
     val state = mutableState.asStateFlow()
@@ -108,6 +117,17 @@ class UiPreferences(context: Context, preferenceName: String = "umbra_appearance
     fun setAccentColor(value: AccentColor) {
         prefs.edit().putString("accent_color", value.name).apply()
         mutableState.value = mutableState.value.copy(accentColor = value)
+    }
+
+    /** Качество медиа по умолчанию; в чате его можно перекрыть одной отправкой. */
+    fun setMediaQuality(value: MediaSendQuality) {
+        prefs.edit().putString("media_quality", value.name).apply()
+        mutableState.value = mutableState.value.copy(mediaQuality = value)
+    }
+
+    fun setHideLastSeen(value: Boolean) {
+        prefs.edit().putBoolean("hide_last_seen", value).apply()
+        mutableState.value = mutableState.value.copy(hideLastSeen = value)
     }
 
     fun setTheme(value: ThemeMode) {

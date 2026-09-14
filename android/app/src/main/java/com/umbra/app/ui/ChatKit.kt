@@ -252,6 +252,26 @@ private val dayYearFormat = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.ge
 internal fun clockText(millis: Long): String =
     clockFormat.format(Instant.ofEpochMilli(if (millis > 0) millis else System.currentTimeMillis()))
 
+/**
+ * «Был(а) в сети» для шапки чата: сегодня — только время,
+ * вчера — словом, дальше — дата с временем.
+ */
+internal fun lastSeenText(millis: Long): String {
+    if (millis <= 0L) return "был(а) давно"
+    val now = System.currentTimeMillis()
+    val deltaSeconds = (now - millis) / 1000L
+    if (deltaSeconds in 0..59) return "был(а) только что"
+    val date = localDate(millis)
+    val today = localDate(now)
+    val time = clockText(millis)
+    return when {
+        date == today -> "был(а) в $time"
+        date == today.minusDays(1) -> "был(а) вчера в $time"
+        date.year == today.year -> "был(а) " + dayFormat.format(date) + " в $time"
+        else -> "был(а) " + dayYearFormat.format(date)
+    }
+}
+
 private fun localDate(millis: Long): LocalDate =
     Instant.ofEpochMilli(if (millis > 0) millis else System.currentTimeMillis())
         .atZone(ZoneId.systemDefault()).toLocalDate()

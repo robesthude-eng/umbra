@@ -114,6 +114,9 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	// Публичная карточка пользователя (имя/аватар для диалогов и групп).
 	mux.Handle("GET /v1/users/{user_id}", s.requireAuth(http.HandlerFunc(s.handleGetUser)))
 	mux.Handle("GET /v1/by-username/{username}", s.requireAuth(http.HandlerFunc(s.handleGetUserByUsername)))
+	// «Был(а) в сети» и взаимное скрытие статуса.
+	mux.Handle("GET /v1/users/{user_id}/presence", s.requireAuth(http.HandlerFunc(s.handleGetPresence)))
+	mux.Handle("POST /v1/account/privacy", s.requireAuth(http.HandlerFunc(s.handleUpdatePrivacy)))
 	mux.HandleFunc("GET /v1/ws", s.handleWS)
 
 	// Load/Validate rejects invalid configuration in production. A constructor
@@ -150,6 +153,8 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			}
 			return
 		}
+		// Любой авторизованный запрос обновляет «был(а) в сети» (с дебаунсом).
+		go s.touchPresence(userID)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUserID, userID)))
 	})
 }

@@ -507,6 +507,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return err == nil && id == userID
 	})
 	s.hub.Register(client)
+	go s.touchPresence(userID)
 	go client.WritePump()
 	go client.ReadPump()
 }

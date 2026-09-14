@@ -33,6 +33,8 @@ type MemoryStore struct {
 	transfers   map[string]*accountTransfer            // codeHash -> запись переноса
 	tgChat      map[string]int64                       // phone -> tg chat_id
 	avatars     map[string]string                      // userID -> mediaID
+	presence    map[string]time.Time                   // userID -> последний визит
+	presenceHidden map[string]bool                     // userID -> скрыть статус
 
 	// pushDevices — токен FCM -> устройство. Создаётся при первой записи.
 	pushDevices map[string]model.PushDevice

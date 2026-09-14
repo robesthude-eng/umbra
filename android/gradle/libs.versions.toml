@@ -14,6 +14,9 @@ kotlinxSerialization = "1.7.3"
 coroutines = "1.9.0"
 securityCrypto = "1.1.0-alpha06"
 desugarJdkLibs = "2.1.4"
+# Сжатие видео перед отправкой (Transformer) и EXIF фото.
+media3 = "1.4.1"
+exifinterface = "1.3.7"
 # Звонки на WebRTC. Пакет классов остался org.webrtc, но сборка берётся у
 # webrtc-sdk: Google перестала выкладывать google-webrtc в 2021 году.
 # Если Gradle не найдёт эту версию, он перечислит доступные — подставьте свежую.
@@ -47,6 +50,10 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugarJdkLibs" }
+androidx-media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
+androidx-media3-effect = { group = "androidx.media3", name = "media3-effect", version.ref = "media3" }
+androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
+androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 libwebrtc = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }

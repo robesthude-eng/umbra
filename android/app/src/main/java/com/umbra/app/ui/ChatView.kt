@@ -5,6 +5,10 @@
 
 package com.umbra.app.ui
 
+import com.umbra.app.data.media.MediaSendQuality
+import com.umbra.app.data.msg.Reactions
+import kotlinx.coroutines.delay
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -182,7 +186,9 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     val connected by repo.connected.collectAsState()
     val syncing by repo.syncing.collectAsState()
     val syncError by repo.syncError.collectAsState()
-    var input by rememberSaveable(chatId) { mutableStateOf("") }
+    val drafts = container.drafts
+    // Черновик подставляется один раз при открытии чата.
+    var input by rememberSaveable(chatId) { mutableStateOf(drafts.get(chatId)) }
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showMembers by rememberSaveable(chatId) { mutableStateOf(false) }
@@ -192,6 +198,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     var forwarding by remember(chatId) { mutableStateOf<UiMessage?>(null) }
     var editing by remember(chatId) { mutableStateOf<UiMessage?>(null) }
     var deleting by remember(chatId) { mutableStateOf<UiMessage?>(null) }
+    var showMedia by rememberSaveable(chatId) { mutableStateOf(false) }
     var searching by rememberSaveable(chatId) { mutableStateOf(false) }
     var searchQuery by rememberSaveable(chatId) { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -221,6 +228,12 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
             player.stopAsync()
             recorder.cancelAsync()
         }
+    }
+    // Черновик сохраняется с небольшой задержкой, а собеседник видит «печатает…».
+    LaunchedEffect(chatId, input) {
+        if (input.isNotBlank() && available) runCatching { repo.notifyTyping(chatId) }
+        delay(600)
+        drafts.put(chatId, input)
     }
 
     fun beginRecording() {
@@ -256,6 +269,10 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         scope.launch { runCatching { recorder.cancel() } }
     }
     var showAttachMenu by remember { mutableStateOf(false) }
+    val appearance by container.uiPreferences.state.collectAsState()
+    // Переключатель из панели вложений действует только на этот чат.
+    var sendOriginal by rememberSaveable(chatId) { mutableStateOf(false) }
+    val sendQuality = if (sendOriginal) MediaSendQuality.ORIGINAL else appearance.mediaQuality
     fun sendPicked(uris: List<Uri>) {
         if (uris.isEmpty() || sending) return
         sending = true; error = null
@@ -269,6 +286,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
                         uri,
                         caption = if (index == 0) caption else "",
                         replyTo = if (index == 0) reply else null,
+                        quality = sendQuality,
                     )
                 }
                 if (caption.isNotEmpty()) input = ""
@@ -288,7 +306,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         sending = true; error = null
         scope.launch {
             try {
-                repo.sendAttachment(chatId, Attachments.uriFor(context, file), input.trim(), replyingTo)
+                repo.sendAttachment(chatId, Attachments.uriFor(context, file), input.trim(), replyingTo, sendQuality)
                 if (input.isNotBlank()) input = ""
                 replyingTo = null
                 goToLatest()
@@ -429,6 +447,7 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
                     },
                     onMembers = { showMembers = true },
                     onSearch = { searching = !searching; if (!searching) searchQuery = "" },
+                    onMedia = { showMedia = true },
                 )
             },
         ) { padding ->
@@ -599,6 +618,8 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
     }
     if (showAttachMenu) AttachSheet(
         onDismiss = { showAttachMenu = false },
+        sendOriginal = sendOriginal || appearance.mediaQuality == MediaSendQuality.ORIGINAL,
+        onToggleOriginal = { sendOriginal = it },
         onPickMedia = {
             showAttachMenu = false
             pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
@@ -613,6 +634,16 @@ private fun ChatViewContent(container: AppContainer, chatId: String, onBack: () 
         },
     )
     if (showMembers) GroupMembersDialog(repo, chatId) { showMembers = false }
+    // Галерея чата: клик открывает файл тем же путём, что и из переписки.
+    if (showMedia) ChatMediaDialog(
+        repo = repo,
+        messages = messages,
+        onOpen = { message ->
+            showMedia = false
+            message.attachment?.let { openAttachment(it) }
+        },
+        onDismiss = { showMedia = false },
+    )
     if (showGroupCall) GroupCallDialog(repo, chatId, groupCallVideo, { showGroupCall = false }) { invited ->
         showGroupCall = false
         startGroupCall(invited, groupCallVideo)
@@ -665,12 +696,32 @@ private fun ChatTopBar(
     onCall: (Boolean) -> Unit,
     onMembers: () -> Unit,
     onSearch: () -> Unit,
+    onMedia: () -> Unit,
 ) {
     val palette = LocalUmbraChatColors.current
     val smokedGlass = LocalUmbraSmokedGlass.current
     val reducedMotion = LocalUmbraReducedMotion.current
     val tokens = com.umbra.app.ui.theme.LocalUmbraAlienTokens.current
     var menu by remember { mutableStateOf(false) }
+    // Присутствие собеседника: обновляется событиями ws и редким опросом.
+    val presenceMap by repo.presence.collectAsState()
+    val peer = if (isGroup) null else presenceMap[chatId]
+    val lastSeen = peer?.takeIf { !it.hidden && !it.online }?.lastSeenAtMillis?.let { lastSeenText(it) }
+    if (!isGroup) LaunchedEffect(chatId) {
+        while (true) {
+            runCatching { repo.refreshPresence(chatId) }
+            delay(45_000L)
+        }
+    }
+    // «Печатает…»: отметка живёт 5 секунд, поэтому спрашиваем чаще присутствия.
+    val typingMap by repo.typing.collectAsState()
+    val typingHere = typingMap[chatId].orEmpty()
+    if (available) LaunchedEffect(chatId) {
+        while (true) {
+            runCatching { repo.refreshTyping(chatId) }
+            delay(4_000L)
+        }
+    }
     // В Alien-режиме статус звучит как бортовой журнал, но смысл строк тот же.
     val status = when {
         syncError != null && tokens.enabled -> "канал потерян"
@@ -679,6 +730,10 @@ private fun ChatTopBar(
         syncing -> "Обновление…"
         !connected && tokens.enabled -> "резервный канал"
         !connected -> "Медленный режим"
+        typingHere.isNotEmpty() && isGroup -> if (typingHere.size == 1) "печатает…" else "печатают: ${typingHere.size}"
+        typingHere.isNotEmpty() -> "печатает…"
+        peer?.online == true && !isGroup -> "в сети"
+        lastSeen != null -> lastSeen
         isGroup && tokens.enabled -> "коллектив"
         isGroup -> "Группа"
         tokens.enabled -> "прямой канал"
@@ -686,6 +741,8 @@ private fun ChatTopBar(
     }
     val statusColor = when {
         syncError != null -> MaterialTheme.colorScheme.error
+        typingHere.isNotEmpty() -> palette.accent
+        !isGroup && peer?.online == true -> palette.accent
         connected && !syncing -> palette.accent
         else -> palette.incomingMeta
     }
@@ -754,6 +811,11 @@ private fun ChatTopBar(
                     if (isGroup && available) DropdownMenuItem(
                         text = { Text("Участники группы") }, leadingIcon = { Icon(Icons.Filled.Groups, null) },
                         onClick = { menu = false; onMembers() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Медиа и файлы") },
+                        leadingIcon = { Icon(Icons.Filled.PhotoLibrary, null) },
+                        onClick = { menu = false; onMedia() },
                     )
                     DropdownMenuItem(text = { Text("Обновить сообщения") },
                         leadingIcon = { Icon(Icons.Filled.Refresh, null) }, onClick = { menu = false; onRefresh() })
@@ -904,6 +966,8 @@ private fun ChatComposer(
 @Composable
 private fun AttachSheet(
     onDismiss: () -> Unit,
+    sendOriginal: Boolean,
+    onToggleOriginal: (Boolean) -> Unit,
     onPickMedia: () -> Unit,
     onRecordVideo: () -> Unit,
     onPickFile: () -> Unit,
@@ -925,6 +989,27 @@ private fun AttachSheet(
             AttachOption(Icons.Filled.PhotoLibrary, "Фото или видео", "Из галереи устройства", onPickMedia)
             AttachOption(Icons.Filled.Videocam, "Записать видео", "Камера запишет сообщение", onRecordVideo)
             AttachOption(Icons.Filled.InsertDriveFile, "Файл", "Любой документ или архив", onPickFile)
+            HorizontalDivider(Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+            // Файлы (документы) всегда уходят байт в байт; переключатель касается фото и видео.
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Отправлять без сжатия",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = palette.onIncoming,
+                    )
+                    Text(
+                        if (sendOriginal) "Фото и видео уйдут в исходном качестве — дольше и тяжелее"
+                        else "Фото сжимается до 2048 px, видео — до 720p",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.incomingMeta,
+                    )
+                }
+                Switch(checked = sendOriginal, onCheckedChange = onToggleOriginal)
+            }
             Spacer(Modifier.height(16.dp))
         }
     }
@@ -1086,6 +1171,10 @@ private fun MessageRow(
     val attachment = message.attachment
     val voice = message.voice
     val preview = attachment != null && Attachments.hasPreview(attachment.kind)
+    // Процент отдачи файла на сервер — только для своих недошлённых сообщений.
+    val mediaProgress by repo.mediaProgress.collectAsState()
+    val uploadScope = rememberCoroutineScope()
+    val uploadPercent = mediaProgress[message.stableId]
     var attachmentBounds by remember(message.stableId) { mutableStateOf<Rect?>(null) }
     val fresh = remember(message.stableId) {
         abs(System.currentTimeMillis() - message.createdAtMillis) < 6_000L
@@ -1141,12 +1230,16 @@ private fun MessageRow(
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             menu = true
                         },
-                        // Двойной тап ставит ❤️ — привычный жест из других мессенджеров.
+                        // Двойной тап ставит быструю реакцию — привычный жест из других мессенджеров.
                         onDoubleClick = if (!message.deleted && !message.pending && !message.failed) ({
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onReact("❤️")
+                            onReact(Reactions.QUICK)
                         }) else null,
-                        onClick = { if (attachment != null) onOpen(attachment, attachmentBounds) },
+                        // Обычное касание: фото/видео открывается, текст показывает панель реакций.
+                        onClick = {
+                            if (attachment != null) onOpen(attachment, attachmentBounds)
+                            else if (!message.deleted) menu = true
+                        },
                     ),
             ) {
                 message.forwardedFrom?.let { from ->
@@ -1203,6 +1296,13 @@ private fun MessageRow(
                                 }
                             }
                         }
+                        if (uploadPercent != null) UploadProgressRow(
+                            uploadPercent,
+                            onBubble,
+                            metaColor,
+                            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            onCancel = { uploadScope.launch { runCatching { repo.cancelUpload(message.stableId) } } },
+                        )
                         if (attachment.caption.isNotBlank()) Text(
                             attachment.caption,
                             Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1212,6 +1312,13 @@ private fun MessageRow(
                     }
                     attachment != null -> Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         FileRow(attachment, onBubble, metaColor, palette)
+                        if (uploadPercent != null) UploadProgressRow(
+                            uploadPercent,
+                            onBubble,
+                            metaColor,
+                            Modifier.padding(top = 6.dp),
+                            onCancel = { uploadScope.launch { runCatching { repo.cancelUpload(message.stableId) } } },
+                        )
                         MetaRow(message, metaColor, Modifier.align(Alignment.End).padding(top = 4.dp))
                     }
                     else -> Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
@@ -1278,7 +1385,7 @@ private fun MessageRow(
                     onClick = { menu = false; onDelete() },
                 )
                 if (!message.deleted && !message.pending && !message.failed) Column(Modifier.padding(horizontal = 8.dp)) {
-                    listOf("👍", "❤️", "😂", "😮", "😢").chunked(3).forEach { reactions ->
+                    Reactions.ALL.chunked(4).forEach { reactions ->
                         Row { reactions.forEach { emoji ->
                             TextButton({
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1348,6 +1455,43 @@ private fun MessageRow(
             }
         }
     }
+    }
+}
+
+@Composable
+/**
+ * Индикатор загрузки вложения: полоса + живые проценты 0…100.
+ */
+@Composable
+private fun UploadProgressRow(
+    percent: Int,
+    contentColor: Color,
+    metaColor: Color,
+    modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
+) {
+    val reducedMotion = LocalUmbraReducedMotion.current
+    val animated by animateFloatAsState(
+        targetValue = (percent.coerceIn(0, 100)) / 100f,
+        animationSpec = tween(if (reducedMotion) 0 else 180),
+        label = "upload-progress",
+    )
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        LinearProgressIndicator(
+            progress = { animated },
+            modifier = Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(2.dp)),
+            color = contentColor,
+            trackColor = contentColor.copy(alpha = 0.25f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "$percent%",
+            style = MaterialTheme.typography.labelSmall,
+            color = metaColor,
+        )
+        if (onCancel != null) IconButton(onCancel, Modifier.size(28.dp)) {
+            Icon(Icons.Filled.Close, "Отменить загрузку", Modifier.size(16.dp), tint = metaColor)
+        }
     }
 }
 
