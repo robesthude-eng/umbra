@@ -176,6 +176,6 @@ object VideoCompressor {
         val scale = SHORT_SIDE_PX.toDouble() / minOf(w, h)
         val targetW = (w * scale).toInt().coerceAtLeast(1)
         val targetH = (h * scale).toInt().coerceAtLeast(1)
-        return Presentation.createForWidthAndHeight(targetW, targetH)
+        return Presentation.createForWidthAndHeight(targetW, targetH, Presentation.LAYOUT_SCALE_TO_FIT)
     }
 }
