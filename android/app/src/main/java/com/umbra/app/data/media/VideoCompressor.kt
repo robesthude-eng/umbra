@@ -87,6 +87,8 @@ object VideoCompressor {
         target: File,
         onProgress: (Int) -> Unit,
     ): Boolean = coroutineScope {
+        // Метаданные читаем до перехода на главный поток: это дисковый I/O.
+        val presentation = presentationFor(source)
         // Transformer требует Looper: создаём и опрашиваем его с главного потока.
         withContext(Dispatchers.Main) {
             val holder = ProgressHolder()
@@ -122,7 +124,7 @@ object VideoCompressor {
                         .setEffects(
                             Effects(
                                 emptyList(),
-                                listOf(Presentation.createForShortSide(SHORT_SIDE_PX)),
+                                presentation?.let(::listOf) ?: emptyList(),
                             ),
                         )
                         .build()
@@ -140,5 +142,40 @@ object VideoCompressor {
     private fun mp4Name(name: String): String {
         val base = name.substringBeforeLast('.', name).ifBlank { "video" }
         return "$base.mp4"
+    }
+
+    /**
+     * Размер кадра с учётом поворота метаданных; null, если не читается —
+     * тогда пережатие идёт без масштабирования (только H264/AAC).
+     */
+    private fun frameSize(source: File): Pair<Int, Int>? {
+        val retriever = android.media.MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(source.path)
+            val w = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+            val h = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            val rotation = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            if (w == null || h == null || w <= 0 || h <= 0) null
+            else if (rotation == 90 || rotation == 270) h to w else w to h
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    /**
+     * 720p по короткой стороне без апскейла: маленькие кадры не растягиваем,
+     * маленькие вообще не масштабируем (пережатие только сменой кодека).
+     * Presentation.createForShortSide в media3 1.4.1 отсутствует, поэтому
+     * считаем сами по размеру кадра.
+     */
+    private fun presentationFor(source: File): Presentation? {
+        val (w, h) = frameSize(source) ?: return null
+        return when {
+            w <= SHORT_SIDE_PX && h <= SHORT_SIDE_PX -> null
+            w >= h -> Presentation.createForHeight(SHORT_SIDE_PX)
+            else -> Presentation.createForWidth(SHORT_SIDE_PX)
+        }
     }
 }
