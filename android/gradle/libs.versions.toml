@@ -12,7 +12,7 @@ retrofit = "2.11.0"
 okhttp = "4.12.0"
 kotlinxSerialization = "1.7.3"
 coroutines = "1.9.0"
-securityCrypto = "1.1.0-alpha06"
+securityCrypto = "1.1.0"
 # Фоновая досылка очереди после возврата сети.
 workManager = "2.9.1"
 desugarJdkLibs = "2.1.4"
