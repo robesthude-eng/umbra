@@ -50,7 +50,7 @@ jobs:
         run: |
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           ZIP=/tmp/commandlinetools.zip
-          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-12266719_latest.zip -o "$ZIP"
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip -o "$ZIP"
           mkdir -p "$SDK_ROOT/cmdline-tools"
           rm -rf "$SDK_ROOT/cmdline-tools/_new" "$SDK_ROOT/cmdline-tools/latest"
           unzip -q "$ZIP" -d "$SDK_ROOT/cmdline-tools/_new"
@@ -58,7 +58,7 @@ jobs:
           rm -rf "$SDK_ROOT/cmdline-tools/_new"
           SDKM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-          "$SDKM" "platforms;android-37" "build-tools;34.0.0"
+          "$SDKM" "platforms;android-37.0" "build-tools;34.0.0"
       # Компиляция app + androidTest и lint. Инструментальные тесты на эмуляторе
       # здесь не гоняются: устройство есть у владельца (проверка вручную).
       - name: Build and lint
