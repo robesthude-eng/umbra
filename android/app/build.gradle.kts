@@ -4,7 +4,8 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    // AGP 9.0+: поддержка Kotlin встроена в AGP — плагин org.jetbrains.kotlin.android
+    // больше не применяется (см. kotl.in/gradle/agp-built-in-kotlin).
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
@@ -151,13 +152,6 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
-    }
-}
-
-// KGP 2.3 удалил блок kotlinOptions в android{} — новый способ задать jvmTarget.
-kotlin {
-    compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
