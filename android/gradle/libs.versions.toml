@@ -6,13 +6,13 @@ composeBom = "2024.09.03"
 activityCompose = "1.9.2"
 lifecycle = "2.8.6"
 navigationCompose = "2.8.2"
-room = "2.6.1"
-coreKtx = "1.13.1"
-retrofit = "2.11.0"
+room = "2.8.5"
+coreKtx = "1.19.0"
+retrofit = "3.0.0"
 okhttp = "4.12.0"
 kotlinxSerialization = "1.7.3"
 coroutines = "1.9.0"
-securityCrypto = "1.1.0-alpha06"
+securityCrypto = "1.1.0"
 # Фоновая досылка очереди после возврата сети.
 workManager = "2.9.1"
 desugarJdkLibs = "2.1.4"
@@ -26,7 +26,7 @@ webrtc = "114.5735.09"
 # Push-уведомления: Firebase Cloud Messaging. BOM держит версии
 # согласованными, плагин google-services читает google-services.json.
 firebaseBom = "33.5.1"
-googleServices = "4.4.2"
+googleServices = "4.5.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
