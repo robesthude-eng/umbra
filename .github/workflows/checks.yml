@@ -58,7 +58,7 @@ jobs:
           rm -rf "$SDK_ROOT/cmdline-tools/_new"
           SDKM="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-          "$SDKM" "platforms;android-35" "build-tools;34.0.0"
+          "$SDKM" "platforms;android-37" "build-tools;34.0.0"
       # Компиляция app + androidTest и lint. Инструментальные тесты на эмуляторе
       # здесь не гоняются: устройство есть у владельца (проверка вручную).
       - name: Build and lint

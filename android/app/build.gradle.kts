@@ -87,7 +87,7 @@ if (useStableSigning) {
 
 android {
     namespace = "com.umbra.app"
-    compileSdk = 35
+    compileSdk = 37
 
     signingConfigs {
         if (useStableSigning) {
@@ -143,9 +143,6 @@ android {
         // Дешугаринг java.time/streams для библиотек (EncryptedSharedPreferences и т.п.).
         isCoreLibraryDesugaringEnabled = true
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -154,6 +151,13 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+}
+
+// KGP 2.3 удалил блок kotlinOptions в android{} — новый способ задать jvmTarget.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
