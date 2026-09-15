@@ -107,8 +107,8 @@ android {
         targetSdk = 35
         // Перед каждым выпуском увеличивайте versionCode, иначе Android не даст
         // обновить установленное приложение («Приложение не установлено»).
-        versionCode = 48
-        versionName = "0.18.5"
+        versionCode = 49
+        versionName = "0.18.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // С 0.7.0 основной источник ICE — сервер (`GET /v1/turn`), оттуда
