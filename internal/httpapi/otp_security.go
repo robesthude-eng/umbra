@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
-	"sync"
 	"time"
+
 	"umbra/server/internal/crypto"
+	"umbra/server/internal/model"
+	"umbra/server/internal/store"
 )
 
 const (
@@ -13,7 +16,8 @@ const (
 	otpWindow      = 30 * time.Minute
 	otpMaxSends    = 5
 	otpMaxFailures = 10
-	otpMaxPhones   = 4096
+	// otpMaxPhones защищает таблицу бюджетов от разрастания в пределах окна.
+	otpMaxPhones = 4096
 )
 
 var (
@@ -23,115 +27,117 @@ var (
 	otpErrCapacity = errors.New("слишком много запросов")
 )
 
-type otpEntry struct {
-	codeHash, requestID, binding, device string
-	expires                              time.Time
-	attempts                             int
-	legacy                               bool
-}
-type otpBudget struct {
-	start, lastSent time.Time
-	sends, failures int
-}
-
-// Single-process bounded state. Resending/consuming never resets phone budgets.
+// otpStore — тонкая обёртка над Store (v0.19). Состояние кодов и бюджетов
+// больше не живёт в памяти процесса: код переживает рестарт, а лимиты
+// работают сразу на нескольких инстансах сервера.
 type otpStore struct {
-	mu        sync.Mutex
-	m         map[string]*otpEntry
-	budgets   map[string]*otpBudget
-	now       func() time.Time
-	nextSweep time.Time
+	store store.Store
+	now   func() time.Time
 }
 
-func newOTPStore() *otpStore {
-	return &otpStore{m: make(map[string]*otpEntry), budgets: make(map[string]*otpBudget), now: time.Now}
+func newOTPStore(st store.Store) *otpStore {
+	return &otpStore{store: st, now: time.Now}
 }
-func (o *otpStore) sweep(now time.Time) {
-	if now.Before(o.nextSweep) {
-		return
-	}
-	o.nextSweep = now.Add(time.Minute)
-	for k, e := range o.m {
-		if !e.expires.After(now) {
-			delete(o.m, k)
-		}
-	}
-	for k, b := range o.budgets {
-		if !b.start.Add(otpWindow).After(now) && !b.lastSent.Add(otpCooldown).After(now) && o.m[k+":login"] == nil && o.m[k+":delete_account"] == nil {
-			delete(o.budgets, k)
-		}
+
+func (o *otpStore) policy() store.OTPPolicy {
+	return store.OTPPolicy{
+		Window:      otpWindow,
+		Cooldown:    otpCooldown,
+		MaxSends:    otpMaxSends,
+		MaxFailures: otpMaxFailures,
+		MaxPhones:   otpMaxPhones,
 	}
 }
-func (o *otpStore) issue(phone, purpose, binding, device, code string, legacy bool) (string, time.Duration, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	now := o.now()
-	o.sweep(now)
-	b := o.budgets[phone]
-	if b == nil {
-		if len(o.budgets) >= otpMaxPhones {
-			return "", time.Minute, otpErrCapacity
+
+func otpCodeHash(requestID, code string) string {
+	return crypto.HashToken(requestID + ":" + code)
+}
+
+// issue резервирует отправку в бюджете и сохраняет новый код.
+// При отказе возвращает время до следующей попытки.
+func (o *otpStore) issue(ctx context.Context, phone, purpose, binding, device, code string, legacy bool) (string, time.Duration, error) {
+	now := o.now().UTC()
+	retry, err := o.store.ReserveOTPSend(ctx, phone, now, o.policy())
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrOTPCapacity):
+			if retry <= 0 {
+				retry = otpCooldown
+			}
+			return "", retry, otpErrCapacity
+		case errors.Is(err, store.ErrOTPThrottled):
+			if retry <= 0 {
+				retry = otpCooldown
+			}
+			return "", retry, otpErrTooMany
+		default:
+			return "", 0, err
 		}
-		b = &otpBudget{start: now}
-		o.budgets[phone] = b
-	}
-	if !b.start.Add(otpWindow).After(now) {
-		b.start = now
-		b.sends = 0
-		b.failures = 0
-	}
-	if b.failures >= otpMaxFailures || b.sends >= otpMaxSends {
-		return "", b.start.Add(otpWindow).Sub(now), otpErrTooMany
-	}
-	if retry := b.lastSent.Add(otpCooldown).Sub(now); retry > 0 {
-		return "", retry, otpErrTooMany
 	}
 	id, err := crypto.NewToken()
 	if err != nil {
 		return "", 0, err
 	}
-	b.sends++
-	b.lastSent = now
-	o.m[phone+":"+purpose] = &otpEntry{requestID: id, codeHash: crypto.HashToken(id + ":" + code), expires: now.Add(otpTTL), binding: binding, device: device, legacy: legacy}
+	record := &model.OTPCode{
+		Phone:     phone,
+		Purpose:   purpose,
+		RequestID: id,
+		CodeHash:  otpCodeHash(id, code),
+		Binding:   binding,
+		Device:    device,
+		Legacy:    legacy,
+		CreatedAt: now,
+		ExpiresAt: now.Add(otpTTL),
+	}
+	if err := o.store.SaveOTPCode(ctx, record); err != nil {
+		return "", 0, err
+	}
 	return id, 0, nil
 }
-func (o *otpStore) invalidate(phone, purpose, id string) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	key := phone + ":" + purpose
-	if e := o.m[key]; e != nil && e.requestID == id {
-		delete(o.m, key)
-	}
+
+// invalidate удаляет код (например, если доставка не удалась), но не возвращает
+// израсходованную отправку в бюджет: иначе кулдаун можно было бы обнулять.
+func (o *otpStore) invalidate(ctx context.Context, phone, purpose, id string) {
+	_ = o.store.DeleteOTPCode(ctx, phone, purpose, id)
 }
-func (o *otpStore) verify(phone, purpose, binding, id, code string) (string, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	now := o.now()
-	o.sweep(now)
-	key := phone + ":" + purpose
-	e := o.m[key]
-	b := o.budgets[phone]
-	if e == nil || b == nil || !e.expires.After(now) {
-		delete(o.m, key)
+
+// verify проверяет код и при успехе гасит его (одноразовость).
+func (o *otpStore) verify(ctx context.Context, phone, purpose, binding, id, code string) (string, error) {
+	now := o.now().UTC()
+	record, budget, err := o.store.LoadOTPCode(ctx, phone, purpose)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", otpErrExpired
+		}
+		return "", err
+	}
+	if !record.ExpiresAt.After(now) {
+		o.invalidate(ctx, phone, purpose, record.RequestID)
 		return "", otpErrExpired
 	}
-	if e.binding != binding || (id != e.requestID && !(id == "" && e.legacy)) {
+	if record.Binding != binding || (id != record.RequestID && !(id == "" && record.Legacy)) {
 		return "", otpErrExpired
 	}
-	if !b.start.Add(otpWindow).After(now) {
-		b.start = now
-		b.sends = 0
-		b.failures = 0
+	failures := 0
+	if budget != nil && budget.WindowStart.Add(otpWindow).After(now) {
+		failures = budget.Failures
 	}
-	if e.attempts >= otpMaxAttempts || b.failures >= otpMaxFailures {
+	if record.Attempts >= otpMaxAttempts || failures >= otpMaxFailures {
 		return "", otpErrTooMany
 	}
-	actual := crypto.HashToken(e.requestID + ":" + code)
-	if subtle.ConstantTimeCompare([]byte(actual), []byte(e.codeHash)) != 1 {
-		e.attempts++
-		b.failures++
+	actual := otpCodeHash(record.RequestID, code)
+	if subtle.ConstantTimeCompare([]byte(actual), []byte(record.CodeHash)) != 1 {
+		if err := o.store.FailOTPAttempt(ctx, phone, purpose, record.RequestID, now, otpWindow); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return "", err
+		}
 		return "", otpErrInvalid
 	}
-	delete(o.m, key)
-	return e.device, nil
+	if err := o.store.ConsumeOTPCode(ctx, phone, purpose, record.RequestID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Код уже использован параллельным запросом — второй раз не пускаем.
+			return "", otpErrExpired
+		}
+		return "", err
+	}
+	return record.Device, nil
 }

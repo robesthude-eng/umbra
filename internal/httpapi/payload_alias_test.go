@@ -5,17 +5,17 @@ import (
 	"testing"
 )
 
-// Клиенты до 0.19 присылают тело сообщения в поле ciphertext, новые — в payload.
-// Оба варианта должны работать, причём payload имеет приоритет.
-func TestMessageBodyAcceptsPayloadAndLegacyCiphertext(t *testing.T) {
+// С 0.19 тело сообщения передаётся только в payload: депрекейтед-алиас
+// ciphertext удалён, и старое поле больше не должно приниматься.
+func TestMessageBodyAcceptsOnlyPayload(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
 		want string
 	}{
 		{"новое поле payload", `{"payload":"cGF5"}`, "cGF5"},
-		{"старое поле ciphertext", `{"ciphertext":"Y2lw"}`, "Y2lw"},
-		{"payload приоритетнее", `{"payload":"cGF5","ciphertext":"Y2lw"}`, "cGF5"},
+		{"старое поле ciphertext игнорируется", `{"ciphertext":"Y2lw"}`, ""},
+		{"payload рядом с ciphertext", `{"payload":"cGF5","ciphertext":"Y2lw"}`, "cGF5"},
 		{"пустое тело", `{}`, ""},
 	}
 	for _, tc := range cases {
@@ -39,10 +39,9 @@ func TestMessageBodyAcceptsPayloadAndLegacyCiphertext(t *testing.T) {
 	}
 }
 
-// Ответ сервера обязан содержать оба имени поля с одинаковым значением,
-// иначе старые устройства перестанут показывать сообщения после обновления сервера.
-func TestMessageResponseCarriesBothFieldNames(t *testing.T) {
-	raw, err := json.Marshal(messageResponse{Payload: "cGF5", Ciphertext: "cGF5"})
+// Ответ сервера несёт только payload — дублирующее поле больше не отдаётся.
+func TestMessageResponseCarriesOnlyPayload(t *testing.T) {
+	raw, err := json.Marshal(messageResponse{Payload: "cGF5"})
 	if err != nil {
 		t.Fatalf("сериализация messageResponse: %v", err)
 	}
@@ -50,9 +49,10 @@ func TestMessageResponseCarriesBothFieldNames(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("разбор ответа: %v", err)
 	}
-	for _, field := range []string{"payload", "ciphertext"} {
-		if decoded[field] != "cGF5" {
-			t.Fatalf("поле %q = %v, ожидалось cGF5", field, decoded[field])
-		}
+	if decoded["payload"] != "cGF5" {
+		t.Fatalf("поле payload = %v, ожидалось cGF5", decoded["payload"])
+	}
+	if _, exists := decoded["ciphertext"]; exists {
+		t.Fatal("ответ всё ещё содержит удалённый алиас ciphertext")
 	}
 }

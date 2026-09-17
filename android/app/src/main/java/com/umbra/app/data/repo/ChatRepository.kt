@@ -477,15 +477,21 @@ class ChatRepository(
         _phase.value = SessionPhase.LOGGED_OUT
     }
 
-    suspend fun requestCode(phone: String): RequestCodeResponse {
+    suspend fun requestCode(phone: String, inviteCode: String = ""): RequestCodeResponse {
         val normalized = requireNotNull(InputRules.normalizePhone(phone)) { "Проверьте номер телефона. Пример: +7 999 123-45-67" }
-        return api.requestCode(RequestCodeRequest(normalized, "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80)))
+        return api.requestCode(
+            RequestCodeRequest(
+                normalized,
+                "${Build.MANUFACTURER} ${Build.MODEL}".trim().take(80),
+                inviteCode.trim().take(64),
+            )
+        )
     }
 
-    suspend fun verifyCode(phone: String, code: String, requestId: String = ""): VerifyCodeResponse = scope.async {
+    suspend fun verifyCode(phone: String, code: String, requestId: String = "", inviteCode: String = ""): VerifyCodeResponse = scope.async {
         val normalized = requireNotNull(InputRules.normalizePhone(phone)) { "Проверьте номер телефона" }
         require(code.matches(Regex("[0-9]{6}"))) { "Введите код из 6 цифр" }
-        val result = api.verifyCode(VerifyCodeRequest(normalized, code, requestId))
+        val result = api.verifyCode(VerifyCodeRequest(normalized, code, requestId, inviteCode.trim().take(64)))
         val a = requireNotNull(result.account) { "Сервер не вернул аккаунт. Запросите новый код." }
         check(result.token.isNotBlank() && a.id.isNotBlank()) { "Сервер не завершил вход. Запросите новый код." }
         withContext(NonCancellable) {

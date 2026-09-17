@@ -57,7 +57,7 @@ func NewServerWithBlobStore(cfg *config.Config, st store.Store, hub *ws.Hub, blo
 
 // NewServerForMain собирает сервер с OTP-доставкой кодов (Telegram) и готов к запуску.
 func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blobstore.BlobStore, otpSender OTPSender, keys ...*cloudcrypto.Keyring) *http.Server {
-	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(), otpSender: otpSender, pusher: newPusher(cfg), callLeavers: newCallLeaverStore(), linkPreviews: newLinkPreviewCache(), linkClient: newLinkPreviewClient()}
+	s := &Server{cfg: cfg, store: st, blobs: blobs, hub: hub, challenges: newChallengeStore(), typing: newTypingStore(), uploads: make(chan struct{}, 8), otp: newOTPStore(st), otpSender: otpSender, pusher: newPusher(cfg), callLeavers: newCallLeaverStore(), linkPreviews: newLinkPreviewCache(), linkClient: newLinkPreviewClient()}
 
 	s.allowedPhones, s.phonePolicyErr = config.ParseAllowedPhones(cfg.AllowedPhones)
 	if len(keys) > 0 {
@@ -65,6 +65,8 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// Метрики для мониторинга (токен METRICS_TOKEN; без токена — 404).
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/register", s.handleRegister)
 	mux.HandleFunc("GET /v1/users/{username}/prekeys", s.handlePrekeys)
 	mux.HandleFunc("POST /v1/auth/challenge", s.handleAuthChallenge)
@@ -108,6 +110,11 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	mux.Handle("DELETE /v1/push/devices", s.requireAuth(http.HandlerFunc(s.handleDeletePushDevice)))
 	// Аккаунт: получение и полное удаление («сжечь»).
 	mux.Handle("GET /v1/account", s.requireAuth(http.HandlerFunc(s.handleGetAccount)))
+	// Инвайт-коды владельца (0.19).
+	mux.Handle("POST /v1/invites", s.requireAuth(http.HandlerFunc(s.handleCreateInvite)))
+	mux.Handle("GET /v1/invites", s.requireAuth(http.HandlerFunc(s.handleListInvites)))
+	mux.Handle("DELETE /v1/invites/{id}", s.requireAuth(http.HandlerFunc(s.handleRevokeInvite)))
+	mux.Handle("GET /v1/invites/{id}/uses", s.requireAuth(http.HandlerFunc(s.handleInviteUses)))
 	mux.Handle("POST /v1/account/security/code", s.requireAuth(http.HandlerFunc(s.handleSecurityCode)))
 	mux.Handle("GET /v1/account/sessions", s.requireAuth(http.HandlerFunc(s.handleListSessions)))
 	mux.Handle("DELETE /v1/account/sessions/{id}", s.requireAuth(http.HandlerFunc(s.handleRevokeSession)))
@@ -132,7 +139,7 @@ func NewServerForMain(cfg *config.Config, st store.Store, hub *ws.Hub, blobs blo
 	if err != nil {
 		log.Printf("proxy configuration ignored: %v", err)
 	}
-	s.handler = logMiddleware(newRequestLimiter(trustedProxies...).wrap(mux))
+	s.handler = logMiddleware(metricsMiddleware(newRequestLimiter(trustedProxies...).wrap(mux)))
 	return &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           s,

@@ -17,34 +17,34 @@ import (
 )
 
 func TestOTPBudgetBindingAndSingleUse(t *testing.T) {
-	o := newOTPStore()
+	o := newOTPStore(store.NewMemoryStore())
 	now := time.Now()
 	o.now = func() time.Time { return now }
 	issue := func(purpose, binding string) string {
 		t.Helper()
-		id, _, err := o.issue("phone", purpose, binding, "Device", "123456", false)
+		id, _, err := o.issue(context.Background(), "phone", purpose, binding, "Device", "123456", false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return id
 	}
 	id := issue("login", "")
-	if _, retry, err := o.issue("phone", "login", "", "", "123456", false); !errors.Is(err, otpErrTooMany) || retry <= 0 {
+	if _, retry, err := o.issue(context.Background(), "phone", "login", "", "", "123456", false); !errors.Is(err, otpErrTooMany) || retry <= 0 {
 		t.Fatal("cooldown", err, retry)
 	}
-	if _, err := o.verify("phone", "login", "", "", "123456"); !errors.Is(err, otpErrExpired) {
+	if _, err := o.verify(context.Background(), "phone", "login", "", "", "123456"); !errors.Is(err, otpErrExpired) {
 		t.Fatal("missing ticket accepted", err)
 	}
-	if _, err := o.verify("phone", "delete_account", "", id, "123456"); !errors.Is(err, otpErrExpired) {
+	if _, err := o.verify(context.Background(), "phone", "delete_account", "", id, "123456"); !errors.Is(err, otpErrExpired) {
 		t.Fatal("purpose mismatch", err)
 	}
 	for round := 0; round < 2; round++ {
 		for i := 0; i < 5; i++ {
-			if _, err := o.verify("phone", "login", "", id, "999999"); !errors.Is(err, otpErrInvalid) {
+			if _, err := o.verify(context.Background(), "phone", "login", "", id, "999999"); !errors.Is(err, otpErrInvalid) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := o.verify("phone", "login", "", id, "123456"); !errors.Is(err, otpErrTooMany) {
+		if _, err := o.verify(context.Background(), "phone", "login", "", id, "123456"); !errors.Is(err, otpErrTooMany) {
 			t.Fatal("exhausted code", err)
 		}
 		now = now.Add(otpCooldown)
@@ -52,12 +52,12 @@ func TestOTPBudgetBindingAndSingleUse(t *testing.T) {
 			id = issue("login", "")
 		}
 	}
-	if _, _, err := o.issue("phone", "login", "", "", "123456", false); !errors.Is(err, otpErrTooMany) {
+	if _, _, err := o.issue(context.Background(), "phone", "login", "", "", "123456", false); !errors.Is(err, otpErrTooMany) {
 		t.Fatal("resend reset failures", err)
 	}
 	now = now.Add(otpWindow)
 	id = issue("delete_account", "session-a")
-	if _, err := o.verify("phone", "delete_account", "session-b", id, "123456"); !errors.Is(err, otpErrExpired) {
+	if _, err := o.verify(context.Background(), "phone", "delete_account", "session-b", id, "123456"); !errors.Is(err, otpErrExpired) {
 		t.Fatal("session mismatch", err)
 	}
 	var successes atomic.Int32
@@ -66,7 +66,7 @@ func TestOTPBudgetBindingAndSingleUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := o.verify("phone", "delete_account", "session-a", id, "123456"); err == nil {
+			if _, err := o.verify(context.Background(), "phone", "delete_account", "session-a", id, "123456"); err == nil {
 				successes.Add(1)
 			}
 		}()
@@ -78,52 +78,52 @@ func TestOTPBudgetBindingAndSingleUse(t *testing.T) {
 	now = now.Add(otpCooldown)
 	id = issue("login", "")
 	now = now.Add(otpTTL)
-	if _, err := o.verify("phone", "login", "", id, "123456"); !errors.Is(err, otpErrExpired) {
+	if _, err := o.verify(context.Background(), "phone", "login", "", id, "123456"); !errors.Is(err, otpErrExpired) {
 		t.Fatal("expiry", err)
 	}
 }
 func TestOTPSendBudgetAndCapacity(t *testing.T) {
-	o := newOTPStore()
+	o := newOTPStore(store.NewMemoryStore())
 	now := time.Now()
 	o.now = func() time.Time { return now }
 	for i := 0; i < otpMaxSends; i++ {
-		id, _, err := o.issue("phone", "login", "", "", "123456", false)
+		id, _, err := o.issue(context.Background(), "phone", "login", "", "", "123456", false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = o.verify("phone", "login", "", id, "123456"); err != nil {
+		if _, err = o.verify(context.Background(), "phone", "login", "", id, "123456"); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(otpCooldown)
 	}
-	if _, _, err := o.issue("phone", "login", "", "", "123456", false); !errors.Is(err, otpErrTooMany) {
+	if _, _, err := o.issue(context.Background(), "phone", "login", "", "", "123456", false); !errors.Is(err, otpErrTooMany) {
 		t.Fatal("successful use reset sends", err)
 	}
 	for i := 1; i < otpMaxPhones; i++ {
-		if _, _, err := o.issue(fmt.Sprint(i), "login", "", "", "123456", false); err != nil {
+		if _, _, err := o.issue(context.Background(), fmt.Sprint(i), "login", "", "", "123456", false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := o.issue("overflow", "login", "", "", "123456", false); !errors.Is(err, otpErrCapacity) {
+	if _, _, err := o.issue(context.Background(), "overflow", "login", "", "", "123456", false); !errors.Is(err, otpErrCapacity) {
 		t.Fatal("unbounded", err)
 	}
 	now = now.Add(otpWindow + otpTTL)
-	if _, _, err := o.issue("overflow", "login", "", "", "123456", false); err != nil {
+	if _, _, err := o.issue(context.Background(), "overflow", "login", "", "", "123456", false); err != nil {
 		t.Fatal("capacity not reclaimed", err)
 	}
 }
 func TestOTPLateWindowCodeSurvivesCleanup(t *testing.T) {
-	o := newOTPStore()
+	o := newOTPStore(store.NewMemoryStore())
 	now := time.Now()
 	o.now = func() time.Time { return now }
-	_, _, _ = o.issue("phone", "login", "", "", "000000", false)
+	_, _, _ = o.issue(context.Background(), "phone", "login", "", "", "000000", false)
 	now = now.Add(otpWindow - time.Minute)
-	id, _, err := o.issue("phone", "login", "", "", "123456", false)
+	id, _, err := o.issue(context.Background(), "phone", "login", "", "", "123456", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * time.Minute)
-	if _, err = o.verify("phone", "login", "", id, "123456"); err != nil {
+	if _, err = o.verify(context.Background(), "phone", "login", "", id, "123456"); err != nil {
 		t.Fatal("valid code lost at budget boundary", err)
 	}
 }
@@ -254,12 +254,13 @@ func (failedSender) SendCode(context.Context, string, int64, string) error {
 }
 func TestFailedOTPDeliveryInvalidatesCodeKeepsCooldown(t *testing.T) {
 	const phone = "+79991234567"
-	h, _ := newPolicyServer(t, phone, failedSender{})
+	h, st := newPolicyServer(t, phone, failedSender{})
 	if c, _ := doReq(t, h, "POST", "/v1/auth/request_code", map[string]any{"phone": phone}, ""); c != 502 {
 		t.Fatal(c)
 	}
-	if len(h.otp.m) != 0 {
-		t.Fatal("undelivered code retained")
+	// Недоставленный код удалён из хранилища, но кулдаун остаётся (v0.19).
+	if _, _, err := st.LoadOTPCode(context.Background(), phone, "login"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("undelivered code retained", err)
 	}
 	if c, _ := doReq(t, h, "POST", "/v1/auth/request_code", map[string]any{"phone": phone}, ""); c != 429 {
 		t.Fatal("cooldown reset", c)

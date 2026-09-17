@@ -16,6 +16,10 @@ import (
 	"umbra/server/internal/store"
 )
 
+// Окно OTP-бюджетов: должно совпадать с otpWindow в internal/httpapi/otp_security.go,
+// иначе бюджеты будут стираться раньше, чем истечёт кулдаун отправки.
+const otpStateWindow = 30 * time.Minute
+
 func main() {
 	remove := flag.Bool("delete", false, "удалить найденные сироты (по умолчанию dry-run)")
 	flag.Parse()
@@ -43,6 +47,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer blobs.Close()
+	// Истёкшие коды и старые бюджеты чистит тот же процесс: без этого таблицы
+	// otp_codes и otp_budgets растут бесконечно.
+	if err := st.PurgeOTPState(ctx, time.Now().UTC(), otpStateWindow); err != nil {
+		log.Fatal(err)
+	}
 	if err := collect(ctx, st, blobs, *remove); err != nil {
 		log.Fatal(err)
 	}

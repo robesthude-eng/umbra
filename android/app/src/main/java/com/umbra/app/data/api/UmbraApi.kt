@@ -30,7 +30,12 @@ import java.util.concurrent.TimeUnit
 // ---------- DTO: вход по номеру с кодом из Telegram (v0.4, T1) ----------
 
 @Serializable
-data class RequestCodeRequest(val phone: String, @SerialName("device_name") val deviceName: String = "")
+data class RequestCodeRequest(
+ val phone: String,
+ @SerialName("device_name") val deviceName: String = "",
+ // Инвайт-код владельца (v0.19): нужен только новым пользователям.
+ @SerialName("invite_code") val inviteCode: String = "",
+)
 
 @Serializable
 data class RequestCodeResponse(
@@ -39,7 +44,12 @@ data class RequestCodeResponse(
 )
 
 @Serializable
-data class VerifyCodeRequest(val phone: String, val code: String, @SerialName("request_id") val requestId: String = "")
+data class VerifyCodeRequest(
+ val phone: String,
+ val code: String,
+ @SerialName("request_id") val requestId: String = "",
+ @SerialName("invite_code") val inviteCode: String = "",
+)
 @Serializable
 data class SecurityCodeRequest(val purpose: String = "delete_account")
 @Serializable
@@ -164,8 +174,8 @@ data class MediaUploadResponse(val id: String = "", @SerialName("content_type") 
 // ---------- DTO: сообщения ----------
 // Тело сообщения — base64(utf8(JSON)) конверта. Это НЕ шифротекст:
 // сквозного шифрования нет, сервер видит содержимое и шифрует его лишь
-// при записи в базу. Новое имя поля — payload, ciphertext оставлен для
-// совместимости со серверами и клиентами до 0.19.
+// при записи в базу. С 0.19 используется только имя payload: депрекейтед-
+// алиас ciphertext удалён и на сервере, и в клиенте.
 
 @Serializable
 data class MessageDto(
@@ -173,14 +183,13 @@ data class MessageDto(
     @SerialName("sender_id") val senderId: String,
     @SerialName("recipient_id") val recipientId: String = "",
     @SerialName("chat_id") val chatId: String = "",
-    val ciphertext: String = "",
     val payload: String = "",
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("expires_at") val expiresAt: String? = null,
     @SerialName("client_message_id") val clientMessageId: String? = null,
 ) {
-    /** Тело сообщения: новое поле payload, иначе историческое ciphertext. */
-    val body: String get() = payload.ifBlank { ciphertext }
+    /** Тело сообщения (единственное поле с 0.19). */
+    val body: String get() = payload
 }
 
 @Serializable
@@ -189,11 +198,9 @@ data class MessagesResponse(val messages: List<MessageDto> = emptyList())
 @Serializable
 data class SendMessageRequest(
     @SerialName("recipient_id") val recipientId: String,
-    val ciphertext: String,
+    val payload: String,
     @SerialName("client_message_id") val clientId: String? = null,
     @SerialName("expires_in") val expiresIn: Long? = null,
-    // Отправляем оба имени поля: payload — каноническое, ciphertext — для старого сервера.
-    val payload: String = ciphertext,
 )
 
 // ---------- DTO: чаты/группы ----------
@@ -228,11 +235,9 @@ data class AddMemberRequest(@SerialName("user_id") val userId: String)
 
 @Serializable
 data class SendChatMessageRequest(
-    val ciphertext: String,
+    val payload: String,
     @SerialName("client_message_id") val clientId: String? = null,
     @SerialName("expires_in") val expiresIn: Long? = null,
-    // Отправляем оба имени поля: payload — каноническое, ciphertext — для старого сервера.
-    val payload: String = ciphertext,
 )
 
 // ---------- DTO: звонки (сигналинг; статусный автомат) ----------

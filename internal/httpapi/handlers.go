@@ -83,9 +83,6 @@ type sendMessageRequest struct {
 	// Содержимое НЕ зашифровано клиентом: сквозного шифрования в текущей
 	// версии нет, сервер видит тело и шифрует его только при записи в базу.
 	Payload string `json:"payload"`
-	// Ciphertext — историческое имя того же поля. Остаётся для совместимости
-	// со старыми клиентами; удалить после обновления всех устройств.
-	Ciphertext string `json:"ciphertext"` // base64, deprecated alias для payload
 	// ExpiresIn — секунды до самоуничтожения (секретный чат). 0 = без таймера.
 	ExpiresIn int64  `json:"expires_in"`
 	ClientID  string `json:"client_message_id"`
@@ -96,21 +93,16 @@ type messageResponse struct {
 	SenderID    string `json:"sender_id"`
 	RecipientID string `json:"recipient_id"`
 	ChatID      string `json:"chat_id"`
-	// Payload и Ciphertext всегда содержат одно и то же значение: payload — новое
-	// имя, ciphertext — депрекейтед-алиас для клиентов до 0.19.
-	Payload    string  `json:"payload"`
-	Ciphertext string  `json:"ciphertext"`
-	CreatedAt  string  `json:"created_at"`
-	ExpiresAt  *string `json:"expires_at"`
-	ClientID   string  `json:"client_message_id,omitempty"`
+	// Payload — единственное имя поля с 0.19: алиас ciphertext удалён.
+	Payload   string  `json:"payload"`
+	CreatedAt string  `json:"created_at"`
+	ExpiresAt *string `json:"expires_at"`
+	ClientID  string  `json:"client_message_id,omitempty"`
 }
 
-// body возвращает тело сообщения из payload, а если клиент старый — из ciphertext.
+// body возвращает тело сообщения. С 0.19 принимается только payload.
 func (r sendMessageRequest) body() string {
-	if r.Payload != "" {
-		return r.Payload
-	}
-	return r.Ciphertext
+	return r.Payload
 }
 
 // challengeStore — in-memory хранилище одноразовых challenge (nonce) с TTL.
@@ -396,7 +388,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	body := req.body()
 	ct, err := b64(body)
 	if err != nil || len(ct) == 0 || !validMessageOptions(req.ClientID, req.ExpiresIn) {
-		writeError(w, http.StatusBadRequest, "invalid ciphertext")
+		writeError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
@@ -431,7 +423,6 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		SenderID:    msg.SenderID,
 		RecipientID: msg.RecipientID,
 		Payload:     body,
-		Ciphertext:  body,
 		CreatedAt:   msg.CreatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:   formatTime(msg.ExpiresAt),
 		ClientID:    msg.ClientID,
@@ -481,7 +472,6 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			RecipientID: m.RecipientID,
 			ChatID:      m.ChatID,
 			Payload:     b64e(m.Ciphertext),
-			Ciphertext:  b64e(m.Ciphertext),
 			CreatedAt:   m.CreatedAt.UTC().Format(time.RFC3339Nano),
 			ExpiresAt:   formatTime(m.ExpiresAt),
 			ClientID:    m.ClientID,

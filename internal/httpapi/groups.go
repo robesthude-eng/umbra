@@ -41,19 +41,14 @@ type addMemberRequest struct {
 type chatMessageRequest struct {
 	// Payload — каноническое имя поля (base64 тела сообщения, не шифротекст клиента).
 	Payload string `json:"payload"`
-	// Ciphertext — депрекейтед-алиас для клиентов до 0.19.
-	Ciphertext string `json:"ciphertext"` // base64
 	// ExpiresIn — секунды до самоуничтожения (секретные сообщения в группе). 0 = без таймера.
 	ExpiresIn int64  `json:"expires_in"`
 	ClientID  string `json:"client_message_id"`
 }
 
-// body возвращает тело сообщения из payload, а если клиент старый — из ciphertext.
+// body возвращает тело сообщения. С 0.19 принимается только payload.
 func (r chatMessageRequest) body() string {
-	if r.Payload != "" {
-		return r.Payload
-	}
-	return r.Ciphertext
+	return r.Payload
 }
 
 type contactRequest struct {
@@ -305,7 +300,7 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	body := req.body()
 	ct, err := b64(body)
 	if err != nil || len(ct) == 0 || !validMessageOptions(req.ClientID, req.ExpiresIn) {
-		writeError(w, http.StatusBadRequest, "invalid ciphertext")
+		writeError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
@@ -356,7 +351,6 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		SenderID:   msg.SenderID,
 		ChatID:     msg.ChatID,
 		Payload:    body,
-		Ciphertext: body,
 		CreatedAt:  msg.CreatedAt.Format(time.RFC3339Nano),
 		ExpiresAt:  formatTime(msg.ExpiresAt),
 		ClientID:   msg.ClientID,

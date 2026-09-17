@@ -40,6 +40,12 @@ type MemoryStore struct {
 
 	// pushDevices — токен FCM -> устройство. Создаётся при первой записи.
 	pushDevices map[string]model.PushDevice
+
+	// OTP-состояние и инвайты (v0.19); карты создаются лениво (см. memory_otp.go).
+	otpCodes   map[string]*model.OTPCode  // phone:purpose -> активный код
+	otpBudgets map[string]*model.OTPBudget // phone -> бюджет отправок/ошибок
+	invites    map[string]*model.Invite    // id -> инвайт
+	inviteUses map[string][]InviteUse      // inviteID -> использования
 }
 
 type accountTransfer struct {

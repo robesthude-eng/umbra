@@ -264,11 +264,14 @@ func (s *Server) deliverPush(ctx context.Context, userID string, m push.Message)
 		m.Token = d.Token
 		switch err := s.pusher.Send(ctx, m); {
 		case err == nil:
+			observePush("ok")
 		case errors.Is(err, push.ErrTokenInvalid):
+			observePush("stale_token")
 			if delErr := s.store.DeletePushDevice(ctx, d.Token); delErr != nil && !errors.Is(delErr, store.ErrNotFound) {
 				log.Printf("push: cannot delete stale token: %v", delErr)
 			}
 		default:
+			observePush("error")
 			log.Printf("push: send failed for %s: %v", userID, err)
 		}
 	}

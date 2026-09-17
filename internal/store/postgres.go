@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"umbra/server/internal/cloudcrypto"
+	"umbra/server/internal/metrics"
 	"umbra/server/internal/model"
 )
 
@@ -599,12 +600,18 @@ func mapErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Счётчик ошибок ХРАНИЛИЩА: kind="other" — самый дешёвый детектор проблем с БД.
+	const metricStoreErrors = "umbra_store_errors_total"
+	const metricStoreHelp = "Store errors by kind"
 	if errors.Is(err, pgx.ErrNoRows) {
+		metrics.CounterInc(metricStoreErrors, metricStoreHelp, "kind", "not_found")
 		return ErrNotFound
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		metrics.CounterInc(metricStoreErrors, metricStoreHelp, "kind", "conflict")
 		return ErrConflict
 	}
+	metrics.CounterInc(metricStoreErrors, metricStoreHelp, "kind", "other")
 	return err
 }

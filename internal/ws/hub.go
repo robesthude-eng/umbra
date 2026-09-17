@@ -4,6 +4,13 @@ package ws
 import (
 	"encoding/json"
 	"sync"
+
+	"umbra/server/internal/metrics"
+)
+
+const (
+	metricConnections = "umbra_ws_connections"
+	metricConnHelp    = "Currently registered WebSocket clients"
 )
 
 type Hub struct {
@@ -33,6 +40,7 @@ func (h *Hub) Register(c *Client) {
 		h.clients[c.userID] = make(map[*Client]bool)
 	}
 	h.clients[c.userID][c] = true
+	metrics.GaugeAdd(metricConnections, metricConnHelp, 1)
 }
 
 func (h *Hub) Unregister(c *Client) {
@@ -45,6 +53,7 @@ func (h *Hub) remove(c *Client) {
 	if h.clients[c.userID][c] {
 		delete(h.clients[c.userID], c)
 		close(c.send)
+		metrics.GaugeAdd(metricConnections, metricConnHelp, -1)
 		if len(h.clients[c.userID]) == 0 {
 			delete(h.clients, c.userID)
 		}

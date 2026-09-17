@@ -295,3 +295,73 @@ blobdata либо S3. Каталог data/blobs на хосте не являе�
 
 Systemd-пример находится в deploy/umbra.service. Укажите существующего служебного
 пользователя, каталог данных и EnvironmentFile с собственными настройками.
+
+## Метрики (0.20)
+
+Сервер отдаёт `GET /metrics` в Prometheus text format. Эндпоинт выключен, пока не задан `METRICS_TOKEN`; без токена он отвечает 404, чтобы не подтверждать своё существование.
+
+```bash
+# .env или environment сервиса
+METRICS_TOKEN=$(openssl rand -hex 32)
+```
+
+Проверка (порт наружу не открываем — ходим через SSH-туннель):
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 user@server &
+curl --fail -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metrics | head -30
+```
+
+| Метрика | Тип | Лейблы |
+| --- | --- | --- |
+| `umbra_http_requests_total` | counter | `route`, `method`, `code` |
+| `umbra_http_request_duration_seconds` | histogram | `route` |
+| `umbra_ws_connections` | gauge | — |
+| `umbra_push_total` | counter | `result` = ok \| stale_token \| error |
+| `umbra_store_errors_total` | counter | `kind` = not_found \| conflict \| other |
+
+`route` — шаблон пути, идентификаторы схлопываются в `{id}`. Номера телефонов, токены и содержимое сообщений в метрики не попадают. Отказы OTP видны по маршрутам `/v1/auth/request_code` и `/v1/auth/verify_code` (коды 429 и 4xx).
+
+### Минимальные алерты
+
+```yaml
+- alert: UmbraPushFailing
+  expr: rate(umbra_push_total{result="error"}[15m]) > 0.1
+  for: 15m
+- alert: UmbraStoreErrors
+  expr: rate(umbra_store_errors_total{kind="other"}[10m]) > 0
+  for: 10m
+- alert: UmbraOTPRejected
+  expr: rate(umbra_http_requests_total{route="/v1/auth/request_code",code="429"}[15m]) > 0.2
+  for: 15m
+```
+
+Метрики живут в памяти процесса и сбрасываются при рестарте — для counter'ов это норма, Prometheus учитывает reset.
+
+## Бэкапы и учения по восстановлению (0.20)
+
+`deploy/umbra-backup.sh` теперь держит 7 ежедневных копий и 4 недельные (воскресные помечены `.weekly.umbraenc`, живут 28 дней), а также кладёт рядом копию кейринга `keyring_YYYYMMDD.json` (30 дней, режим 0600).
+
+**Ключи и дампы нельзя держать только в одном месте.** Копию `keyring_*.json` уносите на отдельный носитель или в парольный менеджер: потеря диска = потеря всех данных, а утечка каталога бэкапов целиком = утечка базы.
+
+Раз в месяц — учения:
+
+```bash
+cd /opt/umbra/src
+sudo -u deploy env $(grep -v '^#' /opt/umbra/backup.env | xargs) bash scripts/verify-restore.sh
+```
+
+Скрипт:
+
+1. берёт самый свежий `umbra_*.umbraenc` и падает, если он старше двух суток (значит таймер сломан);
+2. расшифровывает его `umbra-storage decrypt-backup`;
+3. проверяет целостность через `pg_restore --list`;
+4. восстанавливает в одноразовую БД `umbra_restore_check` и удаляет её за собой;
+5. проверяет таблицы `users` / `sessions` / `messages`, считает пользователей и сравнивает число миграций с репо;
+6. проверяет, что кейринг на месте.
+
+Продакшн-база не затрагивается; нужно лишь право `CREATEDB`:
+
+```sql
+ALTER ROLE umbra CREATEDB;
+```

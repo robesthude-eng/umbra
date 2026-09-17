@@ -149,5 +149,31 @@ type Store interface {
 	// ErrNotFound, если кода нет, он использован или истёк.
 	TakeAccountTransfer(ctx context.Context, codeHash string) (string, []byte, error)
 
+	// OTP-состояние (v0.19): коды и бюджеты живут в хранилище, а не в памяти
+	// процесса, иначе рестарт сбрасывал коды и лимиты, а несколько инстансов
+	// считали попытки независимо.
+	// ReserveOTPSend списывает одну отправку; при отказе возвращает время до
+	// следующей попытки и ErrOTPThrottled либо ErrOTPCapacity.
+	ReserveOTPSend(ctx context.Context, phone string, now time.Time, policy OTPPolicy) (time.Duration, error)
+	SaveOTPCode(ctx context.Context, code *model.OTPCode) error
+	LoadOTPCode(ctx context.Context, phone, purpose string) (*model.OTPCode, *model.OTPBudget, error)
+	FailOTPAttempt(ctx context.Context, phone, purpose, requestID string, now time.Time, window time.Duration) error
+	// ConsumeOTPCode гасит код после успешной проверки (однократность).
+	ConsumeOTPCode(ctx context.Context, phone, purpose, requestID string) error
+	DeleteOTPCode(ctx context.Context, phone, purpose, requestID string) error
+	// PurgeOTPState чистит истёкшие коды и остывшие бюджеты (cmd/gc).
+	PurgeOTPState(ctx context.Context, now time.Time, window time.Duration) error
+
+	// Инвайт-коды (v0.19): владелец приглашает новых пользователей без правки
+	// AUTH_ALLOWED_PHONES и рестарта сервера. Хранится только хеш кода.
+	CreateInvite(ctx context.Context, inv *model.Invite) error
+	ListInvites(ctx context.Context, ownerID string) ([]model.Invite, error)
+	RevokeInvite(ctx context.Context, ownerID, id string) error
+	GetInviteByHash(ctx context.Context, codeHash string, now time.Time) (*model.Invite, error)
+	// ClaimInvite атомарно списывает одно использование; повторный вход того же
+	// номера не тратит новое использование.
+	ClaimInvite(ctx context.Context, codeHash, phoneHash, userID string, now time.Time) error
+	InviteUses(ctx context.Context, ownerID, id string) ([]InviteUse, error)
+
 	Close() error
 }

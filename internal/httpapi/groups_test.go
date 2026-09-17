@@ -100,7 +100,7 @@ func TestGroupMessages(t *testing.T) {
 	ciphertext := base64.StdEncoding.EncodeToString([]byte("зашифрованное групповое сообщение"))
 
 	// alice отправляет сообщение в группу
-	code, m := doReq(t, h, http.MethodPost, "/v1/chats/"+groupID+"/messages", map[string]any{"ciphertext": ciphertext}, u["alice"].Token)
+	code, m := doReq(t, h, http.MethodPost, "/v1/chats/"+groupID+"/messages", map[string]any{"payload": ciphertext}, u["alice"].Token)
 	if code != http.StatusCreated {
 		t.Fatalf("отправка группового сообщения: %d (%v)", code, m)
 	}
@@ -118,13 +118,13 @@ func TestGroupMessages(t *testing.T) {
 		t.Fatalf("bob должен получить 1 сообщение, получено %d", len(msgs))
 	}
 	first, _ := msgs[0].(map[string]any)
-	if first["chat_id"] != groupID || first["ciphertext"] != ciphertext {
+	if first["chat_id"] != groupID || first["payload"] != ciphertext {
 		t.Fatalf("неверное сообщение: %v", first)
 	}
 
 	// неучастник не может отправить в группу — 404
 	carol := setupUsers(t, h, "carol")
-	code, _ = doReq(t, h, http.MethodPost, "/v1/chats/"+groupID+"/messages", map[string]any{"ciphertext": ciphertext}, carol["carol"].Token)
+	code, _ = doReq(t, h, http.MethodPost, "/v1/chats/"+groupID+"/messages", map[string]any{"payload": ciphertext}, carol["carol"].Token)
 	if code != http.StatusNotFound {
 		t.Fatalf("неучастник должен получить 404, получен %d", code)
 	}
@@ -146,13 +146,13 @@ func TestChannelWritePermissions(t *testing.T) {
 	ciphertext := base64.StdEncoding.EncodeToString([]byte("пост в канал"))
 
 	// bob (member) не может писать в канал — 403
-	code, _ = doReq(t, h, http.MethodPost, "/v1/chats/"+chanID+"/messages", map[string]any{"ciphertext": ciphertext}, u["bob"].Token)
+	code, _ = doReq(t, h, http.MethodPost, "/v1/chats/"+chanID+"/messages", map[string]any{"payload": ciphertext}, u["bob"].Token)
 	if code != http.StatusForbidden {
 		t.Fatalf("member не должен писать в канал, получен %d", code)
 	}
 
 	// alice (owner) пишет — 201
-	code, _ = doReq(t, h, http.MethodPost, "/v1/chats/"+chanID+"/messages", map[string]any{"ciphertext": ciphertext}, u["alice"].Token)
+	code, _ = doReq(t, h, http.MethodPost, "/v1/chats/"+chanID+"/messages", map[string]any{"payload": ciphertext}, u["alice"].Token)
 	if code != http.StatusCreated {
 		t.Fatalf("owner должен писать в канал, получен %d", code)
 	}

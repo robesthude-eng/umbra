@@ -84,6 +84,9 @@ type Config struct {
 	TelegramAPIKey string
 	// TelegramChatID — чат, в который приходят OTP-коды с любых номеров (владелец).
 	TelegramChatID int64
+	// MetricsToken — Bearer-токен для GET /metrics. Пусто = эндпоинт выключен (404).
+	// Отдельный токен, а не сессия: метрики снимает мониторинг, а не клиент.
+	MetricsToken string
 }
 
 func Load() *Config {
@@ -121,6 +124,7 @@ func Load() *Config {
 		TelegramAPIBase:   getenv("TELEGRAM_API_BASE", ""),
 		TelegramAPIKey:    getenv("TELEGRAM_API_KEY", ""),
 		TelegramChatID:    int64(getenvInt("TELEGRAM_CHAT_ID", 0)),
+		MetricsToken:      getenv("METRICS_TOKEN", ""),
 	}
 }
 

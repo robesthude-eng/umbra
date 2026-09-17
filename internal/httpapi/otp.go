@@ -72,6 +72,8 @@ func normalizeCodeInput(raw string) string {
 type requestCodeRequest struct {
 	DeviceName string `json:"device_name"`
 	Phone      string `json:"phone"`
+	// InviteCode — одноразовый код приглашения владельца (v0.19).
+	InviteCode string `json:"invite_code"`
 }
 
 // handleRequestCode checks the phone policy and requests owner approval.
@@ -86,7 +88,7 @@ func (s *Server) handleRequestCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid phone")
 		return
 	}
-	if !s.allowPhone(w, r, phone) {
+	if !s.allowPhone(w, r, phone, req.InviteCode) {
 		return
 	}
 	s.sendCode(w, r, phone, "login", "", cleanDeviceName(req.DeviceName), req.DeviceName == "")
@@ -112,7 +114,7 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request, phone, purpose
 		writeError(w, 500, "internal error")
 		return
 	}
-	id, retry, err := s.otp.issue(phone, purpose, binding, device, code, legacy)
+	id, retry, err := s.otp.issue(r.Context(), phone, purpose, binding, device, code, legacy)
 	if err != nil {
 		if retry > 0 {
 			seconds := int((retry + time.Second - 1) / time.Second)
@@ -131,7 +133,7 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request, phone, purpose
 		err = s.otpSender.SendCode(ctx, phone, s.cfg.TelegramChatID, code)
 	}
 	if err != nil {
-		s.otp.invalidate(phone, purpose, id)
+		s.otp.invalidate(r.Context(), phone, purpose, id)
 		log.Print("otp: delivery failed")
 		writeError(w, 502, "Не удалось отправить код. Повторите позже.")
 		return
@@ -139,31 +141,45 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request, phone, purpose
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"status": "sent", "expires_in": otpCodeTTLText, "request_id": id, "retry_after": 60})
 }
-func (s *Server) allowPhone(w http.ResponseWriter, r *http.Request, phone string) bool {
+// allowPhone решает, пускать ли номер к отправке/проверке кода (v0.19):
+// 1) существующий аккаунт входит всегда (иначе правка allow-list выбрасывала
+//    уже зарегистрированных пользователей);
+// 2) номер из AUTH_ALLOWED_PHONES;
+// 3) действующий инвайт-код владельца.
+func (s *Server) allowPhone(w http.ResponseWriter, r *http.Request, phone, inviteCode string) bool {
 	if s.phonePolicyErr != nil {
 		writeError(w, 503, "service unavailable")
 		return false
 	}
-	allowed := s.allowedPhones[phone]
-	if len(s.allowedPhones) == 0 {
-		_, err := s.store.GetUserByPhone(r.Context(), phone)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			writeError(w, 503, "service unavailable")
-			return false
-		}
-		allowed = err == nil
-	}
-	if !allowed {
-		writeError(w, 403, "Вход для этого номера не разрешён владельцем Umbra")
+	_, err := s.store.GetUserByPhone(r.Context(), phone)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeError(w, 503, "service unavailable")
 		return false
 	}
-	return true
+	if err == nil {
+		return true
+	}
+	if s.allowedPhones[phone] {
+		return true
+	}
+	if _, ok := s.lookupInvite(r.Context(), inviteCode); ok {
+		return true
+	}
+	if normalizeInviteCode(inviteCode) != "" {
+		writeError(w, 403, "Инвайт-код недействителен или уже использован")
+		return false
+	}
+	writeError(w, 403, "Вход для этого номера не разрешён владельцем Umbra")
+	return false
 }
 
 type verifyCodeRequest struct {
 	RequestID string `json:"request_id"`
 	Phone     string `json:"phone"`
 	Code      string `json:"code"`
+	// InviteCode повторяется на этом шаге: между запросом и подтверждением
+	// кода процесс сервера мог перезапуститься.
+	InviteCode string `json:"invite_code"`
 }
 
 type verifyCodeResponse struct {
@@ -202,10 +218,10 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	if !s.allowPhone(w, r, phone) {
+	if !s.allowPhone(w, r, phone, req.InviteCode) {
 		return
 	}
-	device, err := s.otp.verify(phone, "login", "", req.RequestID, code)
+	device, err := s.otp.verify(r.Context(), phone, "login", "", req.RequestID, code)
 	if err != nil {
 		writeOTPError(w, err)
 		return
@@ -234,6 +250,11 @@ func (s *Server) handleVerifyCode(w http.ResponseWriter, r *http.Request) {
 		} else {
 			newAccount = true
 		}
+	}
+
+	if newAccount {
+		// Инвайт списывается только после фактического создания аккаунта.
+		s.claimInvite(r.Context(), req.InviteCode, phone, u.ID)
 	}
 
 	token, err := crypto.NewToken()

@@ -22,7 +22,7 @@ func TestSecretChatSelfDestruct(t *testing.T) {
 	// alice отправляет bob сообщение с таймером 1 секунда
 	code, m := doReq(t, h, http.MethodPost, "/v1/messages", map[string]any{
 		"recipient_id": u["bob"].ID,
-		"ciphertext":   ciphertext,
+		"payload":   ciphertext,
 		"expires_in":   1,
 	}, u["alice"].Token)
 	if code != http.StatusCreated {
@@ -60,7 +60,7 @@ func TestSecretChatGroupSelfDestruct(t *testing.T) {
 
 	ciphertext := base64.StdEncoding.EncodeToString([]byte("секрет в группе"))
 	code, _ := doReq(t, h, http.MethodPost, "/v1/chats/"+gid+"/messages", map[string]any{
-		"ciphertext": ciphertext,
+		"payload": ciphertext,
 		"expires_in": 1,
 	}, u["alice"].Token)
 	if code != http.StatusCreated {
@@ -90,7 +90,7 @@ func TestBurnAccount(t *testing.T) {
 	// alice шлёт сообщение bob'у
 	ciphertext := base64.StdEncoding.EncodeToString([]byte("перед сжиганием"))
 	doReq(t, h, http.MethodPost, "/v1/messages", map[string]any{
-		"recipient_id": u["bob"].ID, "ciphertext": ciphertext,
+		"recipient_id": u["bob"].ID, "payload": ciphertext,
 	}, u["alice"].Token)
 
 	// alice добавляет bob в контакты

@@ -216,7 +216,7 @@ func TestSendAndListMessages(t *testing.T) {
 	// отправка A -> B
 	code, _ = doReq(t, h, http.MethodPost, "/v1/messages", map[string]any{
 		"recipient_id": bobID,
-		"ciphertext":   ciphertext,
+		"payload":   ciphertext,
 	}, tokA)
 	if code != http.StatusCreated {
 		t.Fatalf("send: ожидался 201, получен %d", code)
@@ -225,7 +225,7 @@ func TestSendAndListMessages(t *testing.T) {
 	// несуществующий получатель — 404
 	code, _ = doReq(t, h, http.MethodPost, "/v1/messages", map[string]any{
 		"recipient_id": "no-such-user",
-		"ciphertext":   ciphertext,
+		"payload":   ciphertext,
 	}, tokA)
 	if code != http.StatusNotFound {
 		t.Fatalf("send несуществующему: ожидался 404, получен %d", code)
@@ -241,8 +241,8 @@ func TestSendAndListMessages(t *testing.T) {
 		t.Fatalf("ожидалось 1 сообщение, получено %d", len(msgs))
 	}
 	first, _ := msgs[0].(map[string]any)
-	if first["ciphertext"] != ciphertext {
-		t.Fatal("ciphertext не совпадает с отправленным")
+	if first["payload"] != ciphertext {
+		t.Fatal("payload не совпадает с отправленным")
 	}
 
 	// без токена — 401
@@ -258,7 +258,7 @@ func TestSendAndListMessages(t *testing.T) {
 	if code != http.StatusOK || len(msgsA) != 1 {
 		t.Fatalf("A должен видеть свою историю (код %d, кол-во %d)", code, len(msgsA))
 	}
-	if a0, _ := msgsA[0].(map[string]any); a0["ciphertext"] != ciphertext {
+	if a0, _ := msgsA[0].(map[string]any); a0["payload"] != ciphertext {
 		t.Fatal("A: своё отправленное не совпадает")
 	}
 }

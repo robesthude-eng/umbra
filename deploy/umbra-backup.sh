@@ -27,5 +27,23 @@ final=${part%.part}.umbraenc
 mv -- "$part" "$final"
 part=''
 sync -f "$BACKUP_DIR"
-find "$BACKUP_DIR" -maxdepth 1 -type f -name 'umbra_*.umbraenc' -mtime +7 -delete
+# Кейринг копируется рядом: без него дамп невозможно расшифровать.
+# Копию обязательно уносить на другой носитель (см. docs/deploy.md).
+if [[ -s "$STORAGE_KEY_FILE" ]]; then
+	install -m 600 "$STORAGE_KEY_FILE" "$BACKUP_DIR/keyring_$(date -u +%Y%m%d).json"
+	find "$BACKUP_DIR" -maxdepth 1 -type f -name 'keyring_*.json' -mtime +30 -delete
+else
+	echo "WARNING: keyring $STORAGE_KEY_FILE is missing; dumps will not be decryptable" >&2
+fi
+
+# Ретеншн: 7 ежедневных + 4 недельных (воскресный дамп помечается жёсткой ссылкой).
+if [[ $(date -u +%u) == 7 ]]; then
+	ln -f -- "$final" "${final%.umbraenc}.weekly.umbraenc"
+fi
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'umbra_*.umbraenc' ! -name '*.weekly.umbraenc' -mtime +7 -delete
+find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.weekly.umbraenc' -mtime +28 -delete
+sync -f "$BACKUP_DIR"
 printf 'Backup completed: %s\n' "${final##*/}"
+printf 'Kept: %s daily, %s weekly\n' \
+	"$(find "$BACKUP_DIR" -maxdepth 1 -name 'umbra_*.umbraenc' ! -name '*.weekly.umbraenc' | wc -l)" \
+	"$(find "$BACKUP_DIR" -maxdepth 1 -name '*.weekly.umbraenc' | wc -l)"

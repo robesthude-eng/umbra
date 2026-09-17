@@ -76,7 +76,7 @@ func (s *Server) confirmAccountDeletion(w http.ResponseWriter, r *http.Request, 
 		return false
 	}
 	token, _ := bearerToken(r)
-	if _, err := s.otp.verify(u.Phone, "delete_account", crypto.HashToken(token), req.RequestID, req.Code); err != nil {
+	if _, err := s.otp.verify(r.Context(), u.Phone, "delete_account", crypto.HashToken(token), req.RequestID, req.Code); err != nil {
 		if errors.Is(err, otpErrInvalid) {
 			writeError(w, 400, "Неверный код удаления")
 		} else {

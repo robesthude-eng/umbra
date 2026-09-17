@@ -40,6 +40,8 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
     var step by rememberSaveable { mutableStateOf(AuthStep.PHONE.name) }
     var phone by rememberSaveable { mutableStateOf(repo.accountInfo().phone) }
     var requestId by rememberSaveable { mutableStateOf("") }
+    // Инвайт-код владельца (v0.19): нужен только при первом входе нового номера.
+    var inviteCode by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf(repo.accountInfo().displayName) }
     var lastName by rememberSaveable { mutableStateOf(repo.accountInfo().lastName) }
@@ -69,7 +71,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
         loading = true; error = null
         scope.launch {
             try {
-                val response = repo.requestCode(phone)
+                val response = repo.requestCode(phone, inviteCode)
                 requestId = response.requestId
                 phone = InputRules.normalizePhone(phone) ?: phone
                 code = ""; step = AuthStep.CODE.name
@@ -82,7 +84,7 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
         if (loading || code.length != 6) return
         loading = true; error = null
         scope.launch {
-            try { repo.verifyCode(phone, code, requestId) }
+            try { repo.verifyCode(phone, code, requestId, inviteCode) }
             catch (e: Exception) { error = e.userMessage() }
             finally { loading = false }
         }
@@ -130,6 +132,12 @@ fun AuthScreen(container: AppContainer, onDone: () -> Unit) {
                             phone, { phone = it.take(32); error = null }, Modifier.fillMaxWidth(), enabled = !loading,
                             label = { Text("Номер телефона") }, placeholder = { Text("+7 999 123-45-67") }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { if (InputRules.normalizePhone(phone) != null) requestCode() }),
+                        )
+                        OutlinedTextField(
+                            inviteCode, { inviteCode = it.take(32); error = null }, Modifier.fillMaxWidth(), enabled = !loading,
+                            label = { Text("Инвайт-код (если есть)") }, placeholder = { Text("UMBRA-XXXXXXXXXX") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done),
                             keyboardActions = KeyboardActions(onDone = { if (InputRules.normalizePhone(phone) != null) requestCode() }),
                         )
                         UmbraPrimaryButton(::requestCode, Modifier.fillMaxWidth(), enabled = !loading && InputRules.normalizePhone(phone) != null) { Text("Получить код") }

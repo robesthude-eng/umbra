@@ -108,7 +108,7 @@ func TestSendRetryAndValidation(t *testing.T) {
 		t.Fatal(code)
 	}
 	a, b := authenticate(t, h, "alice", alice.privEd), authenticate(t, h, "bob", bob.privEd)
-	req := map[string]any{"recipient_id": registered["id"], "ciphertext": b64e([]byte("opaque")), "client_message_id": "client-1", "expires_in": 60}
+	req := map[string]any{"recipient_id": registered["id"], "payload": b64e([]byte("opaque")), "client_message_id": "client-1", "expires_in": 60}
 	code, first := doReq(t, h, "POST", "/v1/messages", req, a)
 	if code != 201 {
 		t.Fatalf("send: %d %v", code, first)
@@ -124,7 +124,7 @@ func TestSendRetryAndValidation(t *testing.T) {
 	if got := inbox["messages"].([]any)[0].(map[string]any)["client_message_id"]; got != "client-1" {
 		t.Fatalf("REST history must retain the acknowledgement id: %v", got)
 	}
-	req["ciphertext"] = b64e([]byte("different"))
+	req["payload"] = b64e([]byte("different"))
 	if code, _ := doReq(t, h, "POST", "/v1/messages", req, a); code != 409 {
 		t.Fatal("client id conflict not rejected")
 	}
