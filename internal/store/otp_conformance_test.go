@@ -70,7 +70,7 @@ func otpContract(t *testing.T, st Store) {
 	t.Run("capacity", func(t *testing.T) {
 		small := policy
 		small.MaxPhones = 4
-		at := base.Add(2 * policy.Window)
+		at := base.Add(3 * policy.Window)
 		for i := 0; i < small.MaxPhones; i++ {
 			phone := fmt.Sprintf("+7100000%04d", i)
 			if _, err := st.ReserveOTPSend(ctx, phone, at, small); err != nil {

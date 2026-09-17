@@ -122,7 +122,7 @@ func TestLegacyEndpointsAndWebSocket(t *testing.T) {
 	}
 	ct := b64e([]byte{0, 255, 1, 128, 42})
 	var sent messageResponse
-	call("POST", "/v1/messages", tokens["alice"], sendMessageRequest{RecipientID: ids["bob"], Ciphertext: ct}, 201, &sent)
+	call("POST", "/v1/messages", tokens["alice"], sendMessageRequest{RecipientID: ids["bob"], Payload: ct}, 201, &sent)
 	var event struct {
 		Type string          `json:"type"`
 		Data messageResponse `json:"data"`
@@ -133,19 +133,19 @@ func TestLegacyEndpointsAndWebSocket(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatal(err)
 	}
-	if event.Type != "message" || event.Data.ID != sent.ID || event.Data.Ciphertext != ct {
+	if event.Type != "message" || event.Data.ID != sent.ID || event.Data.Payload != ct {
 		t.Fatalf("WebSocket delivery changed: %#v", event)
 	}
 	var inbox struct {
 		Messages []messageResponse `json:"messages"`
 	}
 	call("GET", "/v1/messages", tokens["bob"], nil, 200, &inbox)
-	if len(inbox.Messages) != 1 || inbox.Messages[0].ID != sent.ID || inbox.Messages[0].Ciphertext != ct {
+	if len(inbox.Messages) != 1 || inbox.Messages[0].ID != sent.ID || inbox.Messages[0].Payload != ct {
 		t.Fatalf("inbox changed: %#v", inbox)
 	}
 	// Облачная история: alice тоже видит собственное отправленное (своя сторона DM).
 	call("GET", "/v1/messages", tokens["alice"], nil, 200, &inbox)
-	if len(inbox.Messages) != 1 || inbox.Messages[0].ID != sent.ID || inbox.Messages[0].Ciphertext != ct {
+	if len(inbox.Messages) != 1 || inbox.Messages[0].ID != sent.ID || inbox.Messages[0].Payload != ct {
 		t.Fatalf("alice не видит свою отправленную историю: %#v", inbox)
 	}
 }

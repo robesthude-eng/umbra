@@ -287,8 +287,6 @@ func TestPrekeys(t *testing.T) {
 
 func advanceOTPClock(h http.Handler) {
 	o := h.(*Server).otp
-	o.mu.Lock()
-	defer o.mu.Unlock()
 	now := o.now().Add(otpCooldown)
 	o.now = func() time.Time { return now }
 }
